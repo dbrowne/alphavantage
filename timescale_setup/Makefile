@@ -38,3 +38,9 @@ psql:
 clean:
 	$(DOCKER_ENV) docker-compose down -v
 	@echo "✅ All containers, networks, and volumes removed"
+
+delete:
+	docker volume rm av_archive_dev av_pgadmin_dev av_pg_data_dev
+	docker network rm -f av_network_dev
+
+

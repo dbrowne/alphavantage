@@ -13,7 +13,8 @@ default_statistics_target = 100
 random_page_cost = 1.1                  # For SSD storage
 
 # TimescaleDB specific
-shared_preload_libraries = 'timescaledb,pg_cron'
+#shared_preload_libraries = 'timescaledb,pg_cron'
+shared_preload_libraries = 'timescaledb'
 timescaledb.max_background_workers = 16
 timescaledb.last_tuned = '2024-01-01'
 timescaledb.last_tuned_version = '0.12.0'

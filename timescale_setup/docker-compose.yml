@@ -1,6 +1,4 @@
 # docker-compose.yml
-version: '3.8'
-
 
 services:
   ts_postgres:
@@ -44,7 +42,7 @@ services:
     container_name: ts_pg_admin_${PROJECT_NAME:-av}_${ENVIRONMENT:-dev}
     environment:
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@av.local}
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@av.com}
       PGADMIN_CONFIG_SERVER_MODE: 'False'
       PGADMIN_LISTEN_PORT: 80
     ports:

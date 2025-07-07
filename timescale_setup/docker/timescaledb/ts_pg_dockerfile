@@ -1,16 +1,7 @@
-# docker/timescaledb/ts_pg_dockerfile
 FROM timescale/timescaledb:latest-pg15
 
-# TimescaleDB images typically include pg_cron already
-# No need to install it separately
-
-# Copy custom PostgreSQL configuration
-COPY postgresql.conf /etc/postgresql/postgresql.conf
-COPY pg_hba.conf /etc/postgresql/pg_hba.conf
-
-# Copy initialization scripts
+# Only copy init scripts
 COPY init-scripts/ /docker-entrypoint-initdb.d/
 RUN chmod +x /docker-entrypoint-initdb.d/*.sh || true
 
-# Set custom PostgreSQL configuration
-CMD ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+# Use TimescaleDB defaults - no custom config!
