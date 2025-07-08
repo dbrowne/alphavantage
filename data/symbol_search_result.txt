@@ -1,0 +1,23 @@
+symbol,name,type,region,marketOpen,marketClose,timezone,currency,matchScore
+
+AA,Alcoa Corp,Equity,United States,09:30,16:00,UTC-04,USD,1.0000
+
+AAA,ALTERNATIVE ACCESS FIRST PRIORITY CLO BOND ETF ,ETF,United States,09:30,16:00,UTC-04,USD,0.8000
+
+AA2.FRK,Amada Co. Ltd,Equity,Frankfurt,08:00,20:00,UTC+02,EUR,0.5714
+
+AA4.LON,Amedeo Air Four Plus Limited,Equity,United Kingdom,08:00,16:30,UTC+01,GBX,0.5714
+
+AA9.FRK,Alfa Laval AB (publ),Equity,Frankfurt,08:00,20:00,UTC+02,EUR,0.5714
+
+AAAAX,DWS RREEF REAL ASSETS FUND CLASS A,Mutual Fund,United States,09:30,16:00,UTC-04,USD,0.5714
+
+AAACX,Alpha Alternative Assets Fd. USD,Mutual Fund,United States,09:30,16:00,UTC-04,USD,0.5714
+
+AAADX,ALPINE RISING DIVIDEND FUND CLASS A,Mutual Fund,United States,09:30,16:00,UTC-04,USD,0.5714
+
+AAAFX,One Choice Blend+ 2015 Port USD Class INV,Mutual Fund,United States,09:30,16:00,UTC-04,USD,0.5714
+
+AAAHX,One Choice Blend+ 2015 Port USD Class I,Mutual Fund,United States,09:30,16:00,UTC-04,USD,0.5714
+
+

@@ -1,0 +1,11 @@
+[package]
+name = "av-database-postgres"│
+version = "0.1.0"
+description "Timescaledb Postgres implementation "
+
+[dependencies]
+diesel = {version = "2.1.11", features = ["postgres", "chrono", "uuid"]}
+diesel-async = {version = "0.6.1", features = ["postgres", "bb8"]
+bb8 = "0.9.0"
+tokio = {version = "1.46.1", features = ["rt-multi-thread"]
+

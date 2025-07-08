@@ -1,0 +1,11 @@
+symbol,companyname,securityname,marketcategory,testissue,financialstatus,roundlotsize
+AAPL,Apple Inc.,Apple Inc. - Common Stock,Q,N,N,100.0
+INTC,Intel Corporation,Intel Corporation - Common Stock,Q,N,N,100.0
+INTU,Intuit Inc.,Intuit Inc. - Common Stock,Q,N,N,100.0
+INTX,"Intersections, Inc.","Intersections, Inc. - Common Stock",G,N,N,100.0
+LECO,"Lincoln Electric Holdings, Inc.","Lincoln Electric Holdings, Inc. - Common Shares",Q,N,N,100.0
+NVDA,NVIDIA Corporation,NVIDIA Corporation - Common Stock,Q,N,N,100.0
+PLAB,"Photronics, Inc.","Photronics, Inc. - Common Stock",Q,N,N,100.0
+SBGI,"Sinclair Broadcast Group, Inc.","Sinclair Broadcast Group, Inc. - Class A Common Stock",Q,N,N,100.0
+SBLK,Star Bulk Carriers Corp.,Star Bulk Carriers Corp. - Common Stock,Q,N,N,100.0
+SBLKL,Star Bulk Carriers Corp.,Star Bulk Carriers Corp. - 8.00% Senior Notes Due 2019,Q,N,N,100.0
