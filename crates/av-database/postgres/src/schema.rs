@@ -1,6 +1,24 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    use diesel::sql_types::*;
+
+    articles (hashid) {
+        hashid -> Text,
+        sourceid -> Int4,
+        category -> Text,
+        title -> Text,
+        url -> Text,
+        summary -> Text,
+        banner -> Text,
+        author -> Int4,
+        ct -> Timestamp,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     authormaps (id) {
         id -> Int4,
         feedid -> Int4,
@@ -9,6 +27,17 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
+    authors (id) {
+        id -> Int4,
+        author_name -> Text,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     feeds (id) {
         id -> Int4,
         sid -> Int8,
@@ -23,6 +52,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     intradayprices (tstamp, sid, eventid) {
         eventid -> Int8,
         tstamp -> Timestamptz,
@@ -38,6 +69,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     newsoverviews (creation, id) {
         id -> Int4,
         creation -> Timestamptz,
@@ -48,6 +81,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     overviewexts (sid) {
         sid -> Int8,
         revenue_per_share_ttm -> Float4,
@@ -81,6 +116,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     overviews (sid) {
         sid -> Int8,
         #[max_length = 20]
@@ -117,6 +154,18 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
+    sources (id) {
+        id -> Int4,
+        source_name -> Text,
+        domain -> Text,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     summaryprices (tstamp, sid, eventid) {
         eventid -> Int8,
         tstamp -> Timestamptz,
@@ -133,6 +182,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     symbols (sid) {
         sid -> Int8,
         #[max_length = 20]
@@ -157,6 +208,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     tickersentiments (id) {
         id -> Int4,
         feedid -> Int4,
@@ -169,6 +222,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     topicmaps (id) {
         id -> Int4,
         sid -> Int8,
@@ -179,6 +234,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     topicrefs (id) {
         id -> Int4,
         #[max_length = 100]
@@ -187,6 +244,8 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+
     topstats (date, event_type, sid) {
         date -> Timestamptz,
         #[max_length = 50]
@@ -201,6 +260,8 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(articles -> authors (author));
+diesel::joinable!(articles -> sources (sourceid));
 diesel::joinable!(authormaps -> feeds (feedid));
 diesel::joinable!(feeds -> symbols (sid));
 diesel::joinable!(intradayprices -> symbols (sid));
@@ -216,12 +277,15 @@ diesel::joinable!(topicmaps -> topicrefs (topicid));
 diesel::joinable!(topstats -> symbols (sid));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    articles,
     authormaps,
+    authors,
     feeds,
     intradayprices,
     newsoverviews,
     overviewexts,
     overviews,
+    sources,
     summaryprices,
     symbols,
     tickersentiments,

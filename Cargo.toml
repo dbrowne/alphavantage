@@ -1,6 +1,91 @@
-[package]
-name = "alpha_db_testbed"
+[workspace]
+members = [
+  "crates/av-database/postgres"
+]
+  resolver = "2"
+[workspace.package]
 version = "0.1.0"
-edition = "2024"
+authors = ["Dwight Browne <dwight@dwightjbrowne.com"]
+edition = "2021"
+rust-version = "1.86.0"
+readme = "README.md"
+repository = "https://github.com/dbrowne/PLACEHOLDER!!!!"
+homepage = "https://github.com/dbrowne/PLACHOLDER!!!!"
+keywords = ["alphavantage", "finance", "api", "trading", "market-data"]
+categories = ["api-bindings", "finance"]
+license = "MIT"
 
-[dependencies]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.46.1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0.140", features = ["derive"] }
+serde_json = "1.0.140"
+
+# Error handling
+thiserror = "2.0.12"
+anyhow = "1.0.98"
+
+# Logging and tracing
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+
+# Time handling
+chrono = { version = "0.4.41", features = ["serde"] }
+
+# Database
+diesel = { version = "2.2.11", features = ["postgres", "chrono", "uuid", "numeric", "r2d2", "serde_json", "postgres_backend"] }
+diesel-async = { version = "0.6.1", features = ["postgres", "bb8"] }
+diesel_migrations = "2.2.0"
+bb8 = "0.9.0"
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Utility
+url = "2.5"
+futures = "0.3"
+uuid = { version = "1.6", features = ["serde", "v4"] }
+bigdecimal = { version = "0.4", features = ["serde"] }
+csv = "1.3"
+dotenv = "0.15"
+
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
+indicatif = "0.17"
+
+
+# Development dependencies
+# Optimize release builds
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+# Optimize for size if needed
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Development profile with some optimizations
+[profile.dev]
+opt-level = 1
+
+# Test profile with optimizations
+[profile.test]
+opt-level = 2
+
+# Benchmark profile
+[profile.bench]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+

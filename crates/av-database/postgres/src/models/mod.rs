@@ -1,10 +1,8 @@
-pub mod security;
-pub mod price;
 pub mod news;
-pub mod process;
+pub mod price;
+pub mod security;
 
 // Re-export commonly used types
-pub use security::{Symbol, Overview, OverviewExt};
+pub use news::{Article, Feed, NewsOverview, TickerSentiment};
 pub use price::{IntradayPrice, SummaryPrice, TopStat};
-pub use news::{NewsOverview, Feed, Article, TickerSentiment};
-pub use process::{ProcState, ProcType};
+pub use security::{Overview, Overviewext, Symbol};
