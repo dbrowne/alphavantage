@@ -1,7 +1,10 @@
 [workspace]
 members = [
   "crates/av-database/postgres",
-  "crates/av-core"
+  "crates/av-core",
+  "crates/av-models",
+  "crates/av-client"
+  
 
 ]
   resolver = "2"

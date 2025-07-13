@@ -1,0 +1,47 @@
+[package]
+name = "av-client"
+version = "0.1.0"
+edition = "2021"
+description = "AlphaVantage API client - pure API client without database dependencies"
+license = "MIT"
+repository = "https://github.com/dbrowne/AlphaVantage_Rust"
+documentation = "https://docs.rs/av-client"
+keywords = ["alphavantage", "finance", "api", "client", "stocks"]
+categories = ["api-bindings", "finance", "web-programming"]
+
+[dependencies]
+av-core = { path = "../av-core", version = "0.1.0" }
+av-models = { path = "../av-models", version = "0.1.0" }
+
+# HTTP client
+reqwest = { version = "0.12.22", features = ["json", "stream"] }
+
+# Async runtime
+tokio = { version = "1.46.1", features = ["rt", "macros", "time"] }
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling and logging
+thiserror = "2.0.12"
+tracing = "0.1.41"
+
+# Rate limiting
+governor = "0.10.0"
+futures = "0.3.31"
+
+# URL handling
+url = "2.5.4"
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6.4"
+env_logger = "0.11.8"
+
+[features]
+default = []
+# Enable detailed request/response logging
+debug-logging = []
+# Enable metrics collection
+metrics = []
