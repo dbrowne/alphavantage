@@ -31,6 +31,8 @@ tracing = "0.1.41"
 governor = "0.10.0"
 futures = "0.3.31"
 
+chrono = "0.4.41"
+
 # URL handling
 url = "2.5.4"
 

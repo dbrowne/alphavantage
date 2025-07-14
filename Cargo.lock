@@ -175,6 +175,7 @@ version = "0.1.0"
 dependencies = [
  "av-core",
  "av-models",
+ "chrono",
  "env_logger",
  "futures",
  "governor",
