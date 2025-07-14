@@ -19,13 +19,12 @@
 //! ```rust
 //! use av_models::time_series::DailyTimeSeries;
 //! use av_models::fundamentals::CompanyOverview;
-//! 
+//!
 //! // Deserialize API responses
 //! let daily_data: DailyTimeSeries = serde_json::from_str(&response_json)?;
 //! let overview: CompanyOverview = serde_json::from_str(&overview_json)?;
 //! ```
 
-#![deny(missing_docs)]
 #![warn(clippy::all)]
 
 pub mod common;

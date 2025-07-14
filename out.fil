@@ -1,0 +1,357 @@
+warning: use of `async fn` in public traits is discouraged as auto trait bounds cannot be specified
+  --> crates/av-client/src/endpoints/mod.rs:22:3
+   |
+22 |   async fn wait_for_rate_limit(&self) -> Result<()>;
+   |   ^^^^^
+   |
+   = note: you can suppress this lint if you plan to use the trait only in your own code, or do not care about auto traits like `Send` on the `Future`
+   = note: `#[warn(async_fn_in_trait)]` on by default
+help: you can alternatively desugar to a normal `fn` that returns `impl Future` and add any desired bounds such as `Send`, but these cannot be relaxed without a breaking API change
+   |
+22 -   async fn wait_for_rate_limit(&self) -> Result<()>;
+22 +   fn wait_for_rate_limit(&self) -> impl std::future::Future<Output = Result<()>> + Send;
+   |
+
+warning: `av-client` (lib) generated 1 warning
+   Compiling av-client v0.1.0 (/home/djb/GRepository/alpha_db_testbed/crates/av-client)
+error: invalid format string: expected `}`, found `,`
+   --> crates/av-client/examples/portfolio_tracker.rs:276:40
+    |
+276 |     println!("  Total Market Value: ${:,.2}", analysis.total_value);
+    |                                      - ^ expected `}` in format string
+    |                                      |
+    |                                      because of this opening brace
+    |
+    = note: if you intended to print `{`, you can escape it using `{{`
+
+error: invalid format string: expected `}`, found `,`
+   --> crates/av-client/examples/portfolio_tracker.rs:277:40
+    |
+277 |     println!("  Total Cost Basis:   ${:,.2}", analysis.total_cost);
+    |                                      - ^ expected `}` in format string
+    |                                      |
+    |                                      because of this opening brace
+    |
+    = note: if you intended to print `{`, you can escape it using `{{`
+
+error: invalid format string: expected `}`, found `,`
+   --> crates/av-client/examples/portfolio_tracker.rs:280:43
+    |
+280 |     println!("  Total Gain/Loss:    {} ${:,.2} ({:+.2}%)", 
+    |                                         - ^ expected `}` in format string
+    |                                         |
+    |                                         because of this opening brace
+    |
+    = note: if you intended to print `{`, you can escape it using `{{`
+
+error[E0432]: unresolved import `av_models::news::SentimentLabel`
+  --> crates/av-client/examples/news_analysis.rs:13:51
+   |
+13 | use av_models::news::{NewsSentiment, NewsArticle, SentimentLabel};
+   |                                                   ^^^^^^^^^^^^^^ no `SentimentLabel` in `news`
+   |
+   = help: consider importing this enum instead:
+           av_core::types::common::SentimentLabel
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `tracing_subscriber`
+  --> crates/av-client/examples/news_analysis.rs:71:5
+   |
+71 |     tracing_subscriber::fmt::init();
+   |     ^^^^^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `tracing_subscriber`
+   |
+   = help: if you wanted to use a crate named `tracing_subscriber`, use `cargo add tracing_subscriber` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `tracing_subscriber`
+  --> crates/av-client/examples/portfolio_tracker.rs:57:5
+   |
+57 |     tracing_subscriber::fmt::init();
+   |     ^^^^^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `tracing_subscriber`
+   |
+   = help: if you wanted to use a crate named `tracing_subscriber`, use `cargo add tracing_subscriber` to add it to your `Cargo.toml`
+
+warning: unused imports: `CompanyOverview`, `DailyTimeSeries`, `TopGainersLosers`, and `news::NewsSentiment`
+  --> crates/av-client/examples/portfolio_tracker.rs:13:20
+   |
+13 |     fundamentals::{CompanyOverview, TopGainersLosers},
+   |                    ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+14 |     news::NewsSentiment,
+   |     ^^^^^^^^^^^^^^^^^^^
+15 |     time_series::{DailyTimeSeries, GlobalQuote},
+   |                   ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `std::collections::HashMap`
+  --> crates/av-client/examples/portfolio_tracker.rs:17:5
+   |
+17 | use std::collections::HashMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `NewsArticle`
+  --> crates/av-client/examples/news_analysis.rs:13:38
+   |
+13 | use av_models::news::{NewsSentiment, NewsArticle, SentimentLabel};
+   |                                      ^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+error[E0599]: no method named `news_sentiment_with_options` found for struct `NewsEndpoints` in the current scope
+   --> crates/av-client/examples/news_analysis.rs:118:30
+    |
+118 |     let news = client.news().news_sentiment_with_options(
+    |                --------------^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `news_sentiment` with a similar name
+    |
+118 -     let news = client.news().news_sentiment_with_options(
+118 +     let news = client.news().news_sentiment(
+    |
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+   --> crates/av-client/examples/portfolio_tracker.rs:202:36
+    |
+202 |         match client.time_series().daily(symbol).await {
+    |                                    ^^^^^-------- argument #2 of type `&str` is missing
+    |
+note: method defined here
+   --> /home/djb/GRepository/alpha_db_testbed/crates/av-client/src/endpoints/time_series.rs:85:18
+    |
+85  |     pub async fn daily(&self, symbol: &str, outputsize: &str) -> Result<DailyTimeSeries> {
+    |                  ^^^^^
+help: provide the argument
+    |
+202 -         match client.time_series().daily(symbol).await {
+202 +         match client.time_series().daily(symbol, /* &str */).await {
+    |
+
+error[E0599]: no method named `news_sentiment_by_tickers` found for struct `NewsEndpoints` in the current scope
+   --> crates/av-client/examples/news_analysis.rs:143:30
+    |
+143 |     let news = client.news().news_sentiment_by_tickers(ticker_strings.clone(), 80).await?;
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `news_sentiment` with a similar name, but with different arguments
+   --> /home/djb/GRepository/alpha_db_testbed/crates/av-client/src/endpoints/news.rs:61:5
+    |
+61  | /     pub async fn news_sentiment(
+62  | |         &self,
+63  | |         tickers: Option<&str>,
+64  | |         topics: Option<&str>,
+...   |
+68  | |         limit: Option<u32>,
+69  | |     ) -> Result<NewsSentiment> {
+    | |______________________________^
+
+error[E0599]: no method named `news_sentiment_by_topics` found for struct `NewsEndpoints` in the current scope
+   --> crates/av-client/examples/news_analysis.rs:176:30
+    |
+176 |     let news = client.news().news_sentiment_by_topics(
+    |                --------------^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `news_sentiment` with a similar name, but with different arguments
+   --> /home/djb/GRepository/alpha_db_testbed/crates/av-client/src/endpoints/news.rs:61:5
+    |
+61  | /     pub async fn news_sentiment(
+62  | |         &self,
+63  | |         tickers: Option<&str>,
+64  | |         topics: Option<&str>,
+...   |
+68  | |         limit: Option<u32>,
+69  | |     ) -> Result<NewsSentiment> {
+    | |______________________________^
+
+error[E0599]: no method named `news_sentiment_by_tickers` found for struct `NewsEndpoints` in the current scope
+   --> crates/av-client/examples/portfolio_tracker.rs:254:29
+    |
+254 |         match client.news().news_sentiment_by_tickers(vec![symbol.to_string()], 20).await {
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `news_sentiment` with a similar name, but with different arguments
+   --> /home/djb/GRepository/alpha_db_testbed/crates/av-client/src/endpoints/news.rs:61:5
+    |
+61  | /     pub async fn news_sentiment(
+62  | |         &self,
+63  | |         tickers: Option<&str>,
+64  | |         topics: Option<&str>,
+...   |
+68  | |         limit: Option<u32>,
+69  | |     ) -> Result<NewsSentiment> {
+    | |______________________________^
+
+error[E0599]: no method named `news_sentiment_with_options` found for struct `NewsEndpoints` in the current scope
+   --> crates/av-client/examples/news_analysis.rs:227:30
+    |
+227 |     let news = client.news().news_sentiment_with_options(
+    |                --------------^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `news_sentiment` with a similar name
+    |
+227 -     let news = client.news().news_sentiment_with_options(
+227 +     let news = client.news().news_sentiment(
+    |
+
+error[E0599]: no method named `news_sentiment_by_tickers` found for struct `NewsEndpoints` in the current scope
+   --> crates/av-client/examples/portfolio_tracker.rs:355:25
+    |
+355 |     match client.news().news_sentiment_by_tickers(symbols, 50).await {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `news_sentiment` with a similar name, but with different arguments
+   --> /home/djb/GRepository/alpha_db_testbed/crates/av-client/src/endpoints/news.rs:61:5
+    |
+61  | /     pub async fn news_sentiment(
+62  | |         &self,
+63  | |         tickers: Option<&str>,
+64  | |         topics: Option<&str>,
+...   |
+68  | |         limit: Option<u32>,
+69  | |     ) -> Result<NewsSentiment> {
+    | |______________________________^
+
+error[E0599]: no method named `news_sentiment_with_options` found for struct `NewsEndpoints` in the current scope
+   --> crates/av-client/examples/news_analysis.rs:270:34
+    |
+270 |         let news = client.news().news_sentiment_with_options(
+    |                    --------------^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `news_sentiment` with a similar name
+    |
+270 -         let news = client.news().news_sentiment_with_options(
+270 +         let news = client.news().news_sentiment(
+    |
+
+error[E0277]: `AlphaVantageClient` is not a future
+  --> crates/av-client/examples/portfolio_tracker.rs:67:50
+   |
+67 |     let client = AlphaVantageClient::new(config).await?;
+   |                  --------------------------------^^^^^
+   |                  |                              ||
+   |                  |                              |`AlphaVantageClient` is not a future
+   |                  |                              help: remove the `.await`
+   |                  this call returns `AlphaVantageClient`
+   |
+   = help: the trait `futures::Future` is not implemented for `AlphaVantageClient`
+   = note: AlphaVantageClient must be a future or must implement `IntoFuture` to be awaited
+   = note: required for `AlphaVantageClient` to implement `IntoFuture`
+
+error[E0277]: `AlphaVantageClient` is not a future
+  --> crates/av-client/examples/news_analysis.rs:80:50
+   |
+80 |     let client = AlphaVantageClient::new(config).await?;
+   |                  --------------------------------^^^^^
+   |                  |                              ||
+   |                  |                              |`AlphaVantageClient` is not a future
+   |                  |                              help: remove the `.await`
+   |                  this call returns `AlphaVantageClient`
+   |
+   = help: the trait `futures::Future` is not implemented for `AlphaVantageClient`
+   = note: AlphaVantageClient must be a future or must implement `IntoFuture` to be awaited
+   = note: required for `AlphaVantageClient` to implement `IntoFuture`
+
+warning: unused variable: `total_articles`
+   --> crates/av-client/examples/news_analysis.rs:334:9
+    |
+334 |     let total_articles = news.feed.len() as f64;
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_total_articles`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+Some errors have detailed explanations: E0061, E0277, E0433, E0599.
+For more information about an error, try `rustc --explain E0061`.
+warning: `av-client` (example "portfolio_tracker") generated 2 warnings
+error: could not compile `av-client` (example "portfolio_tracker") due to 8 previous errors; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+Some errors have detailed explanations: E0277, E0432, E0433, E0599.
+For more information about an error, try `rustc --explain E0277`.
+warning: `av-client` (example "news_analysis") generated 2 warnings
+error: could not compile `av-client` (example "news_analysis") due to 8 previous errors; 2 warnings emitted
+error[E0308]: mismatched types
+   --> crates/av-client/src/transport.rs:166:17
+    |
+166 |       base_url: Some("https://mock.alphavantage.co".to_string()),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `String`, found `Option<String>`
+    |
+    = note: expected struct `std::string::String`
+                 found enum `std::option::Option<std::string::String>`
+
+error[E0560]: struct `av_core::Config` has no field named `is_premium`
+   --> crates/av-client/src/transport.rs:167:7
+    |
+167 |       is_premium: false,
+    |       ^^^^^^^^^^ `av_core::Config` does not have this field
+    |
+    = note: available fields are: `rate_limit`, `timeout_secs`, `max_retries`
+
+error[E0560]: struct `av_core::Config` has no field named `timeout_seconds`
+   --> crates/av-client/src/transport.rs:168:7
+    |
+168 |       timeout_seconds: Some(10),
+    |       ^^^^^^^^^^^^^^^ unknown field
+    |
+help: a field with a similar name exists
+    |
+168 -       timeout_seconds: Some(10),
+168 +       timeout_secs: Some(10),
+    |
+
+error[E0308]: mismatched types
+   --> crates/av-client/src/transport.rs:191:17
+    |
+191 |       base_url: None,
+    |                 ^^^^ expected `String`, found `Option<_>`
+    |
+    = note: expected struct `std::string::String`
+                 found enum `std::option::Option<_>`
+
+error[E0560]: struct `av_core::Config` has no field named `is_premium`
+   --> crates/av-client/src/transport.rs:192:7
+    |
+192 |       is_premium: false,
+    |       ^^^^^^^^^^ `av_core::Config` does not have this field
+    |
+    = note: available fields are: `rate_limit`, `timeout_secs`, `max_retries`
+
+error[E0560]: struct `av_core::Config` has no field named `timeout_seconds`
+   --> crates/av-client/src/transport.rs:193:7
+    |
+193 |       timeout_seconds: None,
+    |       ^^^^^^^^^^^^^^^ unknown field
+    |
+help: a field with a similar name exists
+    |
+193 -       timeout_seconds: None,
+193 +       timeout_secs: None,
+    |
+
+error[E0308]: mismatched types
+   --> crates/av-client/src/transport.rs:205:17
+    |
+205 |       base_url: Some(custom_url.to_string()),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `String`, found `Option<String>`
+    |
+    = note: expected struct `std::string::String`
+                 found enum `std::option::Option<std::string::String>`
+
+error[E0560]: struct `av_core::Config` has no field named `is_premium`
+   --> crates/av-client/src/transport.rs:206:7
+    |
+206 |       is_premium: false,
+    |       ^^^^^^^^^^ `av_core::Config` does not have this field
+    |
+    = note: available fields are: `rate_limit`, `timeout_secs`, `max_retries`
+
+error[E0560]: struct `av_core::Config` has no field named `timeout_seconds`
+   --> crates/av-client/src/transport.rs:207:7
+    |
+207 |       timeout_seconds: None,
+    |       ^^^^^^^^^^^^^^^ unknown field
+    |
+help: a field with a similar name exists
+    |
+207 -       timeout_seconds: None,
+207 +       timeout_secs: None,
+    |
+
+Some errors have detailed explanations: E0308, E0560.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `av-client` (lib test) due to 9 previous errors

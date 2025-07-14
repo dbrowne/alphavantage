@@ -1,10 +1,12 @@
-
 use super::{EndpointBase, impl_endpoint_base};
 use crate::transport::Transport;
 use av_core::{FuncType, Result};
 use av_models::crypto::*;
 use governor::{
-  RateLimiter, clock::DefaultClock, middleware::NoOpMiddleware, state::{InMemoryState, NotKeyed},
+  RateLimiter,
+  clock::DefaultClock,
+  middleware::NoOpMiddleware,
+  state::{InMemoryState, NotKeyed},
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,7 +90,7 @@ impl CryptoEndpoints {
     symbol: &str,
     market: &str,
     interval: &str,
-  ) -> Result<CryptoIntradayTimeSeries> {
+  ) -> Result<CryptoIntraday> {
     self.wait_for_rate_limit().await?;
 
     let mut params = HashMap::new();
@@ -119,7 +121,7 @@ impl CryptoEndpoints {
   /// # Ok::<(), av_core::Error>(())
   /// ```
   #[instrument(skip(self), fields(symbol, market))]
-  pub async fn daily(&self, symbol: &str, market: &str) -> Result<CryptoDailyTimeSeries> {
+  pub async fn daily(&self, symbol: &str, market: &str) -> Result<CryptoDaily> {
     self.wait_for_rate_limit().await?;
 
     let mut params = HashMap::new();
@@ -136,7 +138,7 @@ impl CryptoEndpoints {
   /// * `symbol` - The cryptocurrency symbol (e.g., "BTC", "ETH")
   /// * `market` - The market currency (e.g., "USD", "EUR")
   #[instrument(skip(self), fields(symbol, market))]
-  pub async fn weekly(&self, symbol: &str, market: &str) -> Result<CryptoWeeklyTimeSeries> {
+  pub async fn weekly(&self, symbol: &str, market: &str) -> Result<CryptoWeekly> {
     self.wait_for_rate_limit().await?;
 
     let mut params = HashMap::new();
@@ -153,7 +155,7 @@ impl CryptoEndpoints {
   /// * `symbol` - The cryptocurrency symbol (e.g., "BTC", "ETH")
   /// * `market` - The market currency (e.g., "USD", "EUR")
   #[instrument(skip(self), fields(symbol, market))]
-  pub async fn monthly(&self, symbol: &str, market: &str) -> Result<CryptoMonthlyTimeSeries> {
+  pub async fn monthly(&self, symbol: &str, market: &str) -> Result<CryptoMonthly> {
     self.wait_for_rate_limit().await?;
 
     let mut params = HashMap::new();
@@ -187,23 +189,23 @@ impl CryptoEndpoints {
   #[instrument(skip(self), fields(symbol, market))]
   pub async fn health_score(&self, symbol: &str, market: &str) -> Result<f64> {
     let data = self.daily(symbol, market).await?;
-    
+
     // Extract closing prices for the last 30 days
-    let prices: Vec<f64> = 
+    let prices: Vec<f64> =
       data.time_series.values().take(30).filter_map(|price| price.close_usd.parse().ok()).collect();
-    
+
     if prices.len() < 10 {
       return Err(av_core::Error::Parse("Insufficient data for health analysis".to_string()));
     }
-    
+
     // Calculate volatility (standard deviation)
     let mean = prices.iter().sum::<f64>() / prices.len() as f64;
     let variance = prices.iter().map(|p| (p - mean).powi(2)).sum::<f64>() / prices.len() as f64;
     let volatility = variance.sqrt();
-    
+
     // Health score: lower volatility = higher health (inverted and normalized)
-    let health_score = 100.0 - (volatility / mean * 100.0).min(100.0);
-    
+    let health_score: f64 = 100.0 - (volatility / mean * 100.0).min(100.0);
+
     Ok(health_score.max(0.0))
   }
 }

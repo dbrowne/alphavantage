@@ -38,15 +38,15 @@ pub enum Error {
   /// General unexpected error
   #[error("Unexpected error: {0}")]
   Unexpected(String),
-  
+
   /// HTTP transport error
   #[error("HTTP error: {0}")]
   Http(String),
-  
+
   /// API error from AlphaVantage
   #[error("API error: {0}")]
   Api(String),
-  
+
   /// Parse error for data processing
   #[error("Parse error: {0}")]
   Parse(String),
