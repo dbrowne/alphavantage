@@ -1,17 +1,3 @@
-//! API endpoint modules for different AlphaVantage functions
-//!
-//! This module contains organized endpoint implementations for all major
-//! AlphaVantage API categories:
-//!
-//! - `time_series`: Historical and real-time stock price data
-//! - `fundamentals`: Company fundamentals and financial statements
-//! - `news`: News sentiment analysis and feeds
-//! - `forex`: Foreign exchange rates and data
-//! - `crypto`: Cryptocurrency price data
-//!
-//! Each endpoint module provides methods that correspond to specific AlphaVantage
-//! API functions, with proper type safety and error handling.
-
 pub mod crypto;
 pub mod forex;
 pub mod fundamentals;
@@ -20,7 +6,9 @@ pub mod time_series;
 
 use crate::transport::Transport;
 use av_core::Result;
-use governor::RateLimiter;
+use governor::{
+  RateLimiter, state::{InMemoryState, NotKeyed}, clock::DefaultClock, middleware::NoOpMiddleware
+};
 use std::sync::Arc;
 
 /// Base trait for endpoint implementations
@@ -41,8 +29,7 @@ macro_rules! impl_endpoint_base {
             async fn wait_for_rate_limit(&self) -> Result<()> {
                 self.rate_limiter
                     .until_ready()
-                    .await
-                    .map_err(|_| av_core::Error::RateLimit("Rate limiter error".to_string()))?;
+                    .await;
                 Ok(())
             }
             
@@ -61,14 +48,14 @@ pub(crate) use impl_endpoint_base;
 /// and rate limiter for consistent behavior.
 pub struct EndpointCore {
     pub transport: Arc<Transport>,
-    pub rate_limiter: Arc<RateLimiter<governor::clock::DefaultClock, governor::state::InMemoryState>>,
+    pub rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
 }
 
 impl EndpointCore {
     /// Create a new endpoint core
     pub fn new(
         transport: Arc<Transport>,
-        rate_limiter: Arc<RateLimiter<governor::clock::DefaultClock, governor::state::InMemoryState>>,
+        rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
     ) -> Self {
         Self { transport, rate_limiter }
     }

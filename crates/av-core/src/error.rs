@@ -1,5 +1,3 @@
-//! Error types for the AlphaVantage Rust client
-
 use thiserror::Error;
 
 /// The main error type for av-* crates
@@ -40,6 +38,18 @@ pub enum Error {
   /// General unexpected error
   #[error("Unexpected error: {0}")]
   Unexpected(String),
+  
+  /// HTTP transport error
+  #[error("HTTP error: {0}")]
+  Http(String),
+  
+  /// API error from AlphaVantage
+  #[error("API error: {0}")]
+  Api(String),
+  
+  /// Parse error for data processing
+  #[error("Parse error: {0}")]
+  Parse(String),
 }
 
 /// Result type alias for av-* crates

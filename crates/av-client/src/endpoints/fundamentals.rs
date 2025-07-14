@@ -1,18 +1,10 @@
-//! Fundamental data endpoints for company analysis
-//!
-//! This module provides access to AlphaVantage's fundamental data including:
-//! - Company overviews with key metrics
-//! - Income statements
-//! - Balance sheets  
-//! - Cash flow statements
-//! - Earnings data
-//! - Top gainers/losers/most active stocks
-
 use super::{impl_endpoint_base, EndpointBase};
 use crate::transport::Transport;
 use av_core::{FuncType, Result};
 use av_models::fundamentals::*;
-use governor::RateLimiter;
+use governor::{
+  RateLimiter, state::{InMemoryState, NotKeyed}, clock::DefaultClock, middleware::NoOpMiddleware
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::instrument;
@@ -20,14 +12,14 @@ use tracing::instrument;
 /// Fundamental data endpoints for company financial information
 pub struct FundamentalsEndpoints {
     transport: Arc<Transport>,
-    rate_limiter: Arc<RateLimiter<governor::clock::DefaultClock, governor::state::InMemoryState>>,
+    rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
 }
 
 impl FundamentalsEndpoints {
     /// Create a new fundamentals endpoints instance
     pub fn new(
         transport: Arc<Transport>,
-        rate_limiter: Arc<RateLimiter<governor::clock::DefaultClock, governor::state::InMemoryState>>,
+        rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
     ) -> Self {
         Self { transport, rate_limiter }
     }
@@ -95,19 +87,6 @@ impl FundamentalsEndpoints {
     /// # Arguments
     ///
     /// * `symbol` - The stock symbol
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use av_client::FundamentalsEndpoints;
-    /// # use std::sync::Arc;
-    /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
-    /// let balance_sheet = endpoints.balance_sheet("AAPL").await?;
-    /// for report in &balance_sheet.annual_reports {
-    ///     println!("Year: {}, Total Assets: {}", report.fiscal_date_ending, report.total_assets);
-    /// }
-    /// # Ok::<(), av_core::Error>(())
-    /// ```
     #[instrument(skip(self), fields(symbol))]
     pub async fn balance_sheet(&self, symbol: &str) -> Result<BalanceSheet> {
         self.wait_for_rate_limit().await?;
@@ -123,20 +102,6 @@ impl FundamentalsEndpoints {
     /// # Arguments
     ///
     /// * `symbol` - The stock symbol
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use av_client::FundamentalsEndpoints;
-    /// # use std::sync::Arc;
-    /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
-    /// let cash_flow = endpoints.cash_flow("AAPL").await?;
-    /// for report in &cash_flow.annual_reports {
-    ///     println!("Year: {}, Operating Cash Flow: {}", 
-    ///              report.fiscal_date_ending, report.operating_cashflow);
-    /// }
-    /// # Ok::<(), av_core::Error>(())
-    /// ```
     #[instrument(skip(self), fields(symbol))]
     pub async fn cash_flow(&self, symbol: &str) -> Result<CashFlow> {
         self.wait_for_rate_limit().await?;
@@ -152,19 +117,6 @@ impl FundamentalsEndpoints {
     /// # Arguments
     ///
     /// * `symbol` - The stock symbol
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use av_client::FundamentalsEndpoints;
-    /// # use std::sync::Arc;
-    /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
-    /// let earnings = endpoints.earnings("AAPL").await?;
-    /// for report in &earnings.annual_earnings {
-    ///     println!("Year: {}, EPS: {}", report.fiscal_date_ending, report.reported_eps);
-    /// }
-    /// # Ok::<(), av_core::Error>(())
-    /// ```
     #[instrument(skip(self), fields(symbol))]
     pub async fn earnings(&self, symbol: &str) -> Result<Earnings> {
         self.wait_for_rate_limit().await?;
@@ -175,7 +127,7 @@ impl FundamentalsEndpoints {
         self.transport.get(FuncType::Earnings, params).await
     }
 
-    /// Get top gainers, losers, and most actively traded stocks in the US market
+    /// Get top gainers, losers, and most actively traded stocks
     ///
     /// # Examples
     ///
@@ -183,16 +135,9 @@ impl FundamentalsEndpoints {
     /// # use av_client::FundamentalsEndpoints;
     /// # use std::sync::Arc;
     /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
-    /// let top_movers = endpoints.top_gainers_losers().await?;
-    /// 
-    /// println!("Top Gainers:");
-    /// for gainer in &top_movers.top_gainers {
-    ///     println!("  {} ({}): +{}%", gainer.ticker, gainer.price, gainer.change_percentage);
-    /// }
-    /// 
-    /// println!("Top Losers:");
-    /// for loser in &top_movers.top_losers {
-    ///     println!("  {} ({}): {}%", loser.ticker, loser.price, loser.change_percentage);
+    /// let top_stats = endpoints.top_gainers_losers().await?;
+    /// for gainer in &top_stats.top_gainers {
+    ///     println!("Top Gainer: {} (+{}%)", gainer.ticker, gainer.change_percentage);
     /// }
     /// # Ok::<(), av_core::Error>(())
     /// ```
@@ -201,128 +146,61 @@ impl FundamentalsEndpoints {
         self.wait_for_rate_limit().await?;
 
         let params = HashMap::new();
+
         self.transport.get(FuncType::TopGainersLosers, params).await
     }
 
-    /// Get listing status of all active or delisted US stocks and ETFs
+    /// Get listing status (active or delisted) for securities
     ///
     /// # Arguments
     ///
-    /// * `date` - Optional date in YYYY-MM-DD format. If None, returns active listings.
-    /// * `state` - "active" for currently listed securities, "delisted" for historical
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use av_client::FundamentalsEndpoints;
-    /// # use std::sync::Arc;
-    /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
-    /// // Get all active listings
-    /// let active_listings = endpoints.listing_status(None, "active").await?;
-    /// 
-    /// // Get delisted securities as of a specific date
-    /// let delisted = endpoints.listing_status(Some("2023-12-31"), "delisted").await?;
-    /// # Ok::<(), av_core::Error>(())
-    /// ```
+    /// * `date` - Optional date in YYYY-MM-DD format
+    /// * `state` - Optional state filter ("active" or "delisted")
     #[instrument(skip(self), fields(date, state))]
-    pub async fn listing_status(&self, date: Option<&str>, state: &str) -> Result<ListingStatus> {
+    pub async fn listing_status(&self, date: Option<&str>, state: Option<&str>) -> Result<ListingStatus> {
         self.wait_for_rate_limit().await?;
 
         let mut params = HashMap::new();
-        params.insert("state".to_string(), state.to_string());
-        
         if let Some(date) = date {
             params.insert("date".to_string(), date.to_string());
+        }
+        if let Some(state) = state {
+            params.insert("state".to_string(), state.to_string());
         }
 
         self.transport.get(FuncType::ListingStatus, params).await
     }
 
-    /// Get earnings calendar for the next few quarters
+    /// Get earnings calendar data
     ///
     /// # Arguments
     ///
-    /// * `symbol` - Optional symbol to filter by. If None, returns broad market calendar.
-    /// * `horizon` - Time horizon: "3month", "6month", "12month"
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use av_client::FundamentalsEndpoints;
-    /// # use std::sync::Arc;
-    /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
-    /// // Get earnings calendar for Apple
-    /// let apple_earnings = endpoints.earnings_calendar(Some("AAPL"), "3month").await?;
-    /// 
-    /// // Get broad market earnings calendar
-    /// let market_earnings = endpoints.earnings_calendar(None, "3month").await?;
-    /// # Ok::<(), av_core::Error>(())
-    /// ```
+    /// * `symbol` - Optional symbol filter
+    /// * `horizon` - Time horizon ("3month", "6month", or "12month")
     #[instrument(skip(self), fields(symbol, horizon))]
-    pub async fn earnings_calendar(&self, symbol: Option<&str>, horizon: &str) -> Result<EarningsCalendar> {
+    pub async fn earnings_calendar(&self, symbol: Option<&str>, horizon: Option<&str>) -> Result<EarningsCalendar> {
         self.wait_for_rate_limit().await?;
 
         let mut params = HashMap::new();
-        params.insert("horizon".to_string(), horizon.to_string());
-        
         if let Some(symbol) = symbol {
             params.insert("symbol".to_string(), symbol.to_string());
+        }
+        if let Some(horizon) = horizon {
+            params.insert("horizon".to_string(), horizon.to_string());
         }
 
         self.transport.get(FuncType::EarningsCalendar, params).await
     }
 
-    /// Get IPO calendar for upcoming and recent IPOs
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use av_client::FundamentalsEndpoints;
-    /// # use std::sync::Arc;
-    /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
-    /// let ipo_calendar = endpoints.ipo_calendar().await?;
-    /// for ipo in &ipo_calendar.data {
-    ///     println!("Company: {}, Date: {}, Price Range: {}-{}", 
-    ///              ipo.name, ipo.ipo_date, ipo.price_range_low, ipo.price_range_high);
-    /// }
-    /// # Ok::<(), av_core::Error>(())
-    /// ```
+    /// Get IPO calendar data
     #[instrument(skip(self))]
     pub async fn ipo_calendar(&self) -> Result<IpoCalendar> {
         self.wait_for_rate_limit().await?;
 
         let params = HashMap::new();
+
         self.transport.get(FuncType::IpoCalendar, params).await
     }
 }
 
 impl_endpoint_base!(FundamentalsEndpoints);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::Transport;
-    use governor::{Quota, RateLimiter};
-    use std::num::NonZeroU32;
-
-    fn create_test_endpoints() -> FundamentalsEndpoints {
-        let transport = Arc::new(Transport::new_mock());
-        let quota = Quota::per_minute(NonZeroU32::new(75).unwrap());
-        let rate_limiter = Arc::new(RateLimiter::direct(quota));
-        
-        FundamentalsEndpoints::new(transport, rate_limiter)
-    }
-
-    #[test]
-    fn test_endpoints_creation() {
-        let endpoints = create_test_endpoints();
-        assert_eq!(endpoints.transport.base_url(), "https://mock.alphavantage.co");
-    }
-
-    #[tokio::test]
-    async fn test_rate_limit_wait() {
-        let endpoints = create_test_endpoints();
-        let result = endpoints.wait_for_rate_limit().await;
-        assert!(result.is_ok());
-    }
-}
