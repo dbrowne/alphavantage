@@ -188,9 +188,8 @@ mod tests {
   fn test_transport_creation() {
     let config = Config {
       api_key: "test_key".to_string(),
-      base_url: None,
-      is_premium: false,
-      timeout_seconds: None,
+      base_url: "https://www.alphavantage.co".to_string(), // Use default URL
+      timeout_secs: None,
     };
 
     let transport = Transport::new(config);
@@ -202,9 +201,8 @@ mod tests {
     let custom_url = "https://custom.alphavantage.co/query";
     let config = Config {
       api_key: "test_key".to_string(),
-      base_url: Some(custom_url.to_string()),
-      is_premium: false,
-      timeout_seconds: None,
+      base_url: "https://mock.alphavantage.co".to_string(),
+      timeout_secs: Some(10),
     };
 
     let transport = Transport::new(config);
