@@ -1,4 +1,6 @@
-use super::{EndpointBase, impl_endpoint_base};
+use super::EndpointBase;
+use crate::impl_endpoint_base;
+
 use crate::transport::Transport;
 use av_core::{FuncType, Result};
 use av_models::forex::*;
