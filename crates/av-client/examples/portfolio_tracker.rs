@@ -66,7 +66,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   // Create the AlphaVantage client
   let client = AlphaVantageClient::new(config);
   println!("📊 AlphaVantage Portfolio Tracker initialized");
-  println!("Rate limit: {} requests/minute\n", client.config().rate_limit);
+  let (available, _reset_time) = client.rate_limit_status();
+  println!("Rate limit: {} requests/minute\n", available);
 
   // Define our portfolio
   let portfolio = vec![

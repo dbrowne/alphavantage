@@ -339,7 +339,11 @@ async fn monitor_breaking_news(client: &AlphaVantageClient) -> Result<(), Error>
         if !article.ticker_sentiment.is_empty() {
           let tickers: Vec<_> =
             article.ticker_sentiment.iter().take(3).map(|ts| &ts.ticker).collect();
-          println!("    Mentions: {}", tickers.join(", "));
+
+          println!(
+            "    Mentions: {}",
+            tickers.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+          );
         }
       }
     }
@@ -363,7 +367,7 @@ fn analyze_sentiment(news: &NewsSentiment, tickers: Option<Vec<String>>) -> Sent
 
   // Calculate sentiment distribution
   let distribution = news.sentiment_distribution();
-  let total_articles = news.feed.len() as f64;
+  let _total_articles = news.feed.len() as f64;
 
   let sentiment_distribution = SentimentDistribution {
     bullish_count: distribution.bullish_count,

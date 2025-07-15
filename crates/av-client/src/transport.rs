@@ -163,9 +163,10 @@ impl Transport {
   pub fn new_mock() -> Self {
     let config = Config {
       api_key: "mock_key".to_string(),
-      base_url: Some("https://mock.alphavantage.co".to_string()),
-      is_premium: false,
-      timeout_seconds: Some(10),
+      base_url: "https://mock.alphavantage.co".to_string(),
+      rate_limit: 75,
+      timeout_secs: 10,
+      max_retries: 3,
     };
     Self::new(config)
   }
@@ -188,12 +189,14 @@ mod tests {
   fn test_transport_creation() {
     let config = Config {
       api_key: "test_key".to_string(),
-      base_url: "https://www.alphavantage.co".to_string(), // Use default URL
-      timeout_secs: None,
+      base_url: "https://www.alphavantage.co/query".to_string(),
+      rate_limit: 75,
+      timeout_secs: 30,
+      max_retries: 3,
     };
 
     let transport = Transport::new(config);
-    assert_eq!(transport.base_url(), av_core::ALPHA_VANTAGE_BASE_URL);
+    assert_eq!(transport.base_url(), "https://www.alphavantage.co/query");
   }
 
   #[test]
@@ -201,8 +204,10 @@ mod tests {
     let custom_url = "https://custom.alphavantage.co/query";
     let config = Config {
       api_key: "test_key".to_string(),
-      base_url: "https://mock.alphavantage.co".to_string(),
-      timeout_secs: Some(10),
+      base_url: custom_url.to_string(),
+      rate_limit: 75,
+      timeout_secs: 10,
+      max_retries: 3,
     };
 
     let transport = Transport::new(config);
