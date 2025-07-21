@@ -1,5 +1,13 @@
 # Makefile
 DOCKER_ENV = ./docker-env.sh
+SCHEMASPY_JAR = ~/local/bin/schemaspy-6.2.4.jar
+POSTGRES_DRIVER = ~/local/bin/postgresql-42.7.7.jar
+DB_NAME = sec_master
+DB_HOST = localhost
+DB_USER = ts_user
+DB_PORT = 6433
+DB_PASS = dev_pw
+OUTPUT_DIR = ../db_relations
 
 .PHONY: check-conflicts up down logs psql clean
 
@@ -43,4 +51,19 @@ delete:
 	docker volume rm av_archive_dev av_pgadmin_dev av_pg_data_dev
 	docker network rm -f av_network_dev
 
+.PHONY: generate-db-docs
+generate-db-docs:
+	rm -rf $(OUTPUT_DIR)/*
+	java -jar $(SCHEMASPY_JAR) \
+		-t pgsql11 \
+		-dp $(POSTGRES_DRIVER) \
+		-db $(DB_NAME) \
+		-host $(DB_HOST) \
+		-port $(DB_PORT) \
+		-u $(DB_USER) \
+		-p $(DB_PASS) \
+		-o $(OUTPUT_DIR)
 
+.PHONY: view-db-docs
+view-db-docs:
+	google-chrome $(OUTPUT_DIR)/index.html
