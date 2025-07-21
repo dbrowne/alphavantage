@@ -43,3 +43,8 @@ pub use forex::*;
 pub use fundamentals::*;
 pub use news::*;
 pub use time_series::*;
+
+
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
+//

@@ -1,7 +1,6 @@
 pub mod config;
 pub mod error;
 pub mod types;
-
 pub use config::Config;
 pub use error::{Error, Result};
 
@@ -119,3 +118,7 @@ pub const ALPHA_VANTAGE_BASE_URL: &str = "https://www.alphavantage.co/query";
 /// API rate limits
 pub const DEFAULT_RATE_LIMIT: u32 = 75; // requests per minute
 pub const PREMIUM_RATE_LIMIT: u32 = 600; // requests per minute
+
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
+//
