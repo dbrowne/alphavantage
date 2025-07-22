@@ -1,3 +1,6 @@
+
+-- Drop continuous aggregates first
+DROP MATERIALIZED VIEW IF EXISTS intradayprices_hourly;
 -- This file should undo anything in `up.sql`
 DROP TABLE IF EXISTS tickersentiments CASCADE;
 DROP TABLE IF EXISTS topicmaps CASCADE;
@@ -12,3 +15,5 @@ DROP TABLE IF EXISTS overviewexts CASCADE;
 DROP TABLE IF EXISTS overviews CASCADE;
 DROP TABLE IF EXISTS symbols CASCADE;
 
+-- Drop functions
+DROP FUNCTION IF EXISTS update_modified_time() CASCADE;

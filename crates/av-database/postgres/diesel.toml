@@ -5,6 +5,9 @@
 file = "src/schema.rs"
 custom_type_derives = ["diesel::query_builder::QueryId", "Clone"]
 import_types = ["diesel::sql_types::*"]
+# Exclude TimescaleDB internal tables
+filter = { except_tables = ["_timescaledb_internal.*", "_timescaledb_catalog.*", "_timescaledb_config.*"] }
+
 
 [migrations_directory]
 dir = "migrations"
