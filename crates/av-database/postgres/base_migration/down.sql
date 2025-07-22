@@ -14,6 +14,13 @@ DROP TABLE IF EXISTS intradayprices CASCADE;
 DROP TABLE IF EXISTS overviewexts CASCADE;
 DROP TABLE IF EXISTS overviews CASCADE;
 DROP TABLE IF EXISTS symbols CASCADE;
-
+drop table if exists authors;
+drop table if exists sources;
+drop table if exists articles;
+DROP TRIGGER IF EXISTS prevent_procstate_update ON procstates;
+DROP FUNCTION IF EXISTS prevent_completed_update();
+DROP TABLE IF EXISTS procstates;
+DROP TABLE IF EXISTS states;
+DROP TABLE IF EXISTS proctypes;
 -- Drop functions
 DROP FUNCTION IF EXISTS update_modified_time() CASCADE;
