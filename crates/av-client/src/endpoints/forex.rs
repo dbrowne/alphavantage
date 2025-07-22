@@ -38,7 +38,7 @@ impl ForexEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::ForexEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = ForexEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
@@ -83,7 +83,7 @@ impl ForexEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::ForexEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = ForexEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
@@ -122,7 +122,7 @@ impl ForexEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::ForexEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = ForexEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));

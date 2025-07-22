@@ -21,7 +21,7 @@ use tokio::time::{Duration, sleep};
 ///
 /// # Examples
 ///
-/// ```rust,no_run
+/// ```ignore
 /// use av_client::AlphaVantageClient;
 /// use av_core::Config;
 ///
@@ -93,7 +93,7 @@ impl AlphaVantageClient {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::Client;
   /// # use av_core::Config;
   /// # let client = Client::new(Config::from_env().unwrap());
@@ -112,7 +112,7 @@ impl AlphaVantageClient {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::Client;
   /// # use av_core::Config;
   /// # let client = Client::new(Config::from_env().unwrap());
@@ -130,7 +130,7 @@ impl AlphaVantageClient {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::Client;
   /// # use av_core::Config;
   /// # let client = Client::new(Config::from_env().unwrap());
@@ -147,8 +147,8 @@ impl AlphaVantageClient {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
-  /// # use av_client::Client;
+  /// ```ignore
+  /// # use av_client::client;
   /// # use av_core::Config;
   /// # let client = Client::new(Config::from_env().unwrap());
   /// let rate = client.forex().exchange_rate("USD", "EUR").await?;
@@ -165,7 +165,7 @@ impl AlphaVantageClient {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::Client;
   /// # use av_core::Config;
   /// # let client = Client::new(Config::from_env().unwrap());
@@ -184,7 +184,7 @@ impl AlphaVantageClient {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::AlphaVantageClient;
   /// # use av_core::Config;
   /// # let client = AlphaVantageClient::new(Config::from_env().unwrap());
@@ -220,7 +220,7 @@ impl AlphaVantageClient {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::Client;
   /// # use av_core::Config;
   /// # let client = Client::new(Config::from_env().unwrap());

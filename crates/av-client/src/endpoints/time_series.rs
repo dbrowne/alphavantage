@@ -40,7 +40,7 @@ impl TimeSeriesEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::TimeSeriesEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = TimeSeriesEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));

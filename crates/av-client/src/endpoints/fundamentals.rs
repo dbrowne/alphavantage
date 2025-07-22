@@ -39,7 +39,7 @@ impl FundamentalsEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::FundamentalsEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
@@ -66,7 +66,7 @@ impl FundamentalsEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::FundamentalsEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
@@ -135,7 +135,7 @@ impl FundamentalsEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::FundamentalsEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = FundamentalsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));

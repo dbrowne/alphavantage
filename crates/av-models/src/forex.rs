@@ -416,7 +416,8 @@ impl CurrencyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
+    use av_core::test_utils::{assert_approx_eq, DEFAULT_TOLERANCE};
     #[test]
     fn test_exchange_rate_calculations() {
         let rate_data = ExchangeRateData {
@@ -434,7 +435,7 @@ mod tests {
         assert_eq!(rate_data.rate_as_f64().unwrap(), 1.0850);
         assert_eq!(rate_data.bid_as_f64().unwrap(), 1.0849);
         assert_eq!(rate_data.ask_as_f64().unwrap(), 1.0851);
-        assert_eq!(rate_data.spread().unwrap(), 0.0002);
+        assert_approx_eq(rate_data.spread().unwrap(), 0.0002, DEFAULT_TOLERANCE);
         assert_eq!(rate_data.pair_symbol(), "EURUSD");
         
         let spread_pct = rate_data.spread_percentage().unwrap();

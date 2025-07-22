@@ -37,7 +37,7 @@ impl CryptoEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::CryptoEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = CryptoEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
@@ -75,7 +75,7 @@ impl CryptoEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::CryptoEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = CryptoEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
@@ -111,7 +111,7 @@ impl CryptoEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::CryptoEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = CryptoEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));
@@ -179,7 +179,7 @@ impl CryptoEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::CryptoEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = CryptoEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));

@@ -14,3 +14,7 @@ serde = {  workspace = true}
 chrono = {  workspace = true}
 url = { workspace = true}
 serde_json = "1.0"
+
+[features]
+# Feature for test utilities
+test-utils = []
