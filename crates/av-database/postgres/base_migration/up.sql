@@ -47,7 +47,7 @@ CREATE TABLE overviews (
     dividend_yield       REAL NOT NULL,
     eps                  REAL NOT NULL,
     c_time               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    mod_time             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    m_time             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_overviews_sector ON overviews(sector);
@@ -82,7 +82,7 @@ CREATE TABLE overviewexts (
     dividend_date               DATE,
     ex_dividend_date            DATE,
     c_time                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    mod_time                    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    m_time                    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
@@ -175,8 +175,8 @@ CREATE TABLE feeds (
     id             SERIAL PRIMARY KEY,
     sid            BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
     newsoverviewid INTEGER NOT NULL, -- Will add FK after hypertable creation
-    articleid      TEXT NOT NULL, -- Assuming articles table exists
-    sourceid       INTEGER NOT NULL, -- Assuming sources table exists
+    articleid      TEXT NOT NULL,
+    sourceid       INTEGER NOT NULL,
     osentiment     REAL NOT NULL,
     sentlabel      VARCHAR(20) NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -325,3 +325,100 @@ COMMENT ON TABLE intradayprices IS 'Intraday price data - TimescaleDB hypertable
 COMMENT ON TABLE summaryprices IS 'Daily summary price data - TimescaleDB hypertable with 1-month chunks';
 COMMENT ON TABLE topstats IS 'Top gainers/losers - TimescaleDB hypertable with 1-week chunks';
 COMMENT ON TABLE newsoverviews IS 'News overview data - TimescaleDB hypertable with 1-month chunks';-- Your SQL goes here
+CREATE TABLE authors
+(
+    id          SERIAL PRIMARY KEY,
+    author_name text unique not NULL
+);
+
+insert into authors(author_name)
+VALUES ('NONE');
+
+
+create table sources
+(
+    id          serial primary key,
+    source_name text not null,
+    domain      text not null
+);
+
+create table articles
+(
+    hashid   Text primary key not null,
+    sourceid int references sources (id) not null,
+    category text      not null,
+    title    text      not null,
+    url      text      not null,
+    summary  text      not null,
+    banner   text      not null,
+    author   int references authors (id) not null,
+    ct       timestamp not null
+);
+
+-- Process types table
+CREATE TABLE IF NOT EXISTS proctypes (
+                                         id   SERIAL PRIMARY KEY,
+                                         name TEXT NOT NULL UNIQUE
+);
+
+-- Insert process types, ignoring conflicts
+INSERT INTO proctypes (name) VALUES
+                                 ('load_symbols'),
+                                 ('load_overviews'),
+                                 ('load_intraday'),
+                                 ('load_summary'),
+                                 ('load_topstats'),
+                                 ('load_news'),
+                                 ('calculate_sentiment')
+    ON CONFLICT (name) DO NOTHING;
+
+-- States table
+CREATE TABLE IF NOT EXISTS states (
+                                      id   SERIAL PRIMARY KEY,
+                                      name TEXT NOT NULL UNIQUE
+);
+
+-- Insert states, ignoring conflicts
+INSERT INTO states (name) VALUES
+                              ('started'),
+                              ('completed'),
+                              ('failed'),
+                              ('cancelled'),
+                              ('retrying')
+    ON CONFLICT (name) DO NOTHING;
+
+-- Process states table
+CREATE TABLE IF NOT EXISTS procstates (
+                                          spid       SERIAL PRIMARY KEY,
+                                          proc_id    INTEGER REFERENCES proctypes(id),
+    start_time TIMESTAMP NOT NULL DEFAULT NOW(),
+    end_state  INTEGER REFERENCES states(id),
+    end_time   TIMESTAMP,
+    error_msg  TEXT,
+    records_processed INTEGER DEFAULT 0
+    );
+
+-- Create indexes if they don't exist
+CREATE INDEX IF NOT EXISTS idx_procstates_proc_id ON procstates(proc_id);
+CREATE INDEX IF NOT EXISTS idx_procstates_start_time ON procstates(start_time DESC);
+CREATE INDEX IF NOT EXISTS idx_procstates_end_state ON procstates(end_state);
+
+-- Drop trigger if exists before recreating
+DROP TRIGGER IF EXISTS prevent_procstate_update ON procstates;
+
+-- Function with CREATE OR REPLACE handles existing function
+CREATE OR REPLACE FUNCTION prevent_completed_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.end_state = 2 AND OLD.end_state IS NOT NULL THEN
+        RAISE EXCEPTION 'Cannot update completed process %', OLD.spid;
+END IF;
+RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Recreate trigger
+CREATE TRIGGER prevent_procstate_update
+    BEFORE UPDATE ON procstates
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_completed_update();

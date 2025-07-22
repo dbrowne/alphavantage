@@ -111,7 +111,7 @@ diesel::table! {
         dividend_date -> Nullable<Date>,
         ex_dividend_date -> Nullable<Date>,
         c_time -> Timestamptz,
-        mod_time -> Timestamptz,
+        m_time -> Timestamptz,
     }
 }
 
@@ -149,7 +149,7 @@ diesel::table! {
         dividend_yield -> Float4,
         eps -> Float4,
         c_time -> Timestamptz,
-        mod_time -> Timestamptz,
+        m_time -> Timestamptz,
     }
 }
 
@@ -162,6 +162,8 @@ diesel::table! {
         start_time -> Timestamp,
         end_state -> Nullable<Int4>,
         end_time -> Nullable<Timestamp>,
+        error_msg -> Nullable<Text>,
+        records_processed -> Nullable<Int4>,
     }
 }
 
