@@ -156,10 +156,40 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
+    procstates (spid) {
+        spid -> Int4,
+        proc_id -> Nullable<Int4>,
+        start_time -> Timestamp,
+        end_state -> Nullable<Int4>,
+        end_time -> Nullable<Timestamp>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    proctypes (id) {
+        id -> Int4,
+        name -> Text,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     sources (id) {
         id -> Int4,
         source_name -> Text,
         domain -> Text,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    states (id) {
+        id -> Int4,
+        name -> Text,
     }
 }
 
@@ -268,6 +298,8 @@ diesel::joinable!(intradayprices -> symbols (sid));
 diesel::joinable!(newsoverviews -> symbols (sid));
 diesel::joinable!(overviewexts -> symbols (sid));
 diesel::joinable!(overviews -> symbols (sid));
+diesel::joinable!(procstates -> proctypes (proc_id));
+diesel::joinable!(procstates -> states (end_state));
 diesel::joinable!(summaryprices -> symbols (sid));
 diesel::joinable!(tickersentiments -> feeds (feedid));
 diesel::joinable!(tickersentiments -> symbols (sid));
@@ -285,7 +317,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     newsoverviews,
     overviewexts,
     overviews,
+    procstates,
+    proctypes,
     sources,
+    states,
     summaryprices,
     symbols,
     tickersentiments,
