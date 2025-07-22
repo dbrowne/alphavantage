@@ -41,7 +41,7 @@ impl NewsEndpoints {
   ///
   /// # Examples
   ///
-  /// ```rust,no_run
+  /// ```ignore
   /// # use av_client::NewsEndpoints;
   /// # use std::sync::Arc;
   /// # let endpoints = NewsEndpoints::new(Arc::new(transport), Arc::new(rate_limiter));

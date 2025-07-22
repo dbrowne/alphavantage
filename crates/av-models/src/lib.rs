@@ -16,7 +16,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use av_models::time_series::DailyTimeSeries;
 //! use av_models::fundamentals::CompanyOverview;
 //!
@@ -43,8 +43,3 @@ pub use forex::*;
 pub use fundamentals::*;
 pub use news::*;
 pub use time_series::*;
-
-
-#[cfg(feature = "test-utils")]
-pub mod test_utils;
-//

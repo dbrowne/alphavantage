@@ -413,7 +413,7 @@ impl NewsSentiment {
   }
 }
 #[cfg(test)]
-use av_core::test_utils;
+use av_core::test_utils::{assert_approx_eq, DEFAULT_TOLERANCE};
 
 #[cfg(test)]
 mod tests {
@@ -511,6 +511,6 @@ mod tests {
     assert_eq!(distribution.bullish_count, 1);
     assert_eq!(distribution.bearish_count, 1);
     assert_eq!(distribution.neutral_count, 1);
-    test_utils::assert_approx_eq!(distribution.bullish_percentage, 100.0 / 3.0, DEFAULT_TOLERANCE);
+    test_utils::assert_approx_eq(distribution.bullish_percentage, 100.0 / 3.0, DEFAULT_TOLERANCE);
   }
 }
