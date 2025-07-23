@@ -12,6 +12,7 @@ description = "Core types and traits for AlphaVantage Rust client"
 thiserror = { workspace = true}
 serde = {  workspace = true}
 chrono = {  workspace = true}
+dotenvy = {workspace = true}
 url = { workspace = true}
 serde_json = "1.0"
 

@@ -33,6 +33,9 @@ serde_json = "1.0.140"
 thiserror = "2.0.12"
 anyhow = "1.0.98"
 
+#environment handling
+dotenvy = "0.15.0"
+
 # Logging and tracing
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
@@ -81,7 +84,12 @@ panic = "abort"
 
 # Development profile with some optimizations
 [profile.dev]
-opt-level = 1
+opt-level = 0
+debug =  true
+overflow-checks = true
+
+[profile.dev.package."*"]
+opt-level = 0
 
 # Test profile with optimizations
 [profile.test]
