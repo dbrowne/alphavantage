@@ -3,6 +3,7 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
+use dotenvy::dotenv;
 
 /// Main configuration struct for AlphaVantage client
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -26,6 +27,9 @@ pub struct Config {
 impl Config {
   /// Load configuration from environment variables
   pub fn from_env() -> Result<Self> {
+
+    dotenv().ok();
+
     let api_key = env::var("ALPHA_VANTAGE_API_KEY")
       .map_err(|_| Error::ApiKey("ALPHA_VANTAGE_API_KEY not set".to_string()))?;
 
