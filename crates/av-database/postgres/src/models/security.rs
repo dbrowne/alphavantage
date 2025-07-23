@@ -102,7 +102,7 @@ pub struct Overview {
   pub dividend_yield: f32,
   pub eps: f32,
   pub c_time: NaiveDateTime,
-  pub mod_time: NaiveDateTime,
+  pub m_time: NaiveDateTime,
 }
 
 // Add conversion methods
@@ -152,7 +152,7 @@ impl NewOverviewOwned {
       dividend_yield: &self.dividend_yield,
       eps: &self.eps,
       c_time: &self.c_time,
-      mod_time: &self.mod_time,
+      m_time: &self.m_time,
     }
   }
 }
@@ -187,7 +187,7 @@ impl NewOverviewextOwned {
       dividend_date: self.dividend_date.as_ref(),
       ex_dividend_date: self.ex_dividend_date.as_ref(),
       c_time: &self.c_time,
-      mod_time: &self.mod_time,
+      m_time: &self.m_time,
     }
   }
 }
@@ -276,7 +276,7 @@ pub struct NewOverview<'a> {
   pub dividend_yield: &'a f32,
   pub eps: &'a f32,
   pub c_time: &'a NaiveDateTime,
-  pub mod_time: &'a NaiveDateTime,
+  pub m_time: &'a NaiveDateTime,
 }
 
 // Add owned versions for easier API integration
@@ -324,7 +324,7 @@ pub struct NewOverviewOwned {
   pub dividend_yield: f32,
   pub eps: f32,
   pub c_time: NaiveDateTime,
-  pub mod_time: NaiveDateTime,
+  pub m_time: NaiveDateTime,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
@@ -357,7 +357,7 @@ pub struct NewOverviewextOwned {
   pub dividend_date: Option<NaiveDate>,
   pub ex_dividend_date: Option<NaiveDate>,
   pub c_time: NaiveDateTime,
-  pub mod_time: NaiveDateTime,
+  pub m_time: NaiveDateTime,
 }
 
 #[derive(Queryable, Selectable, Identifiable, Associations, Debug, Clone, Serialize)]
@@ -392,7 +392,7 @@ pub struct Overviewext {
   pub dividend_date: Option<NaiveDate>,
   pub ex_dividend_date: Option<NaiveDate>,
   pub c_time: NaiveDateTime,
-  pub mod_time: NaiveDateTime,
+  pub m_time: NaiveDateTime,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
@@ -425,5 +425,5 @@ pub struct NewOverviewext<'a> {
   pub dividend_date: Option<&'a NaiveDate>,
   pub ex_dividend_date: Option<&'a NaiveDate>,
   pub c_time: &'a NaiveDateTime,
-  pub mod_time: &'a NaiveDateTime,
+  pub m_time: &'a NaiveDateTime,
 }
