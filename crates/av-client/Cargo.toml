@@ -12,6 +12,8 @@ categories = ["api-bindings", "finance", "web-programming"]
 [dependencies]
 av-core = { path = "../av-core", version = "0.1.0" }
 av-models = { path = "../av-models", version = "0.1.0" }
+colored = "2.2.0"
+prettytable-rs = {version = "0.10.0", optional = true}
 
 # HTTP client
 reqwest = { version = "0.12.22", features = ["json", "stream"] }
@@ -38,6 +40,7 @@ chrono = "0.4.41"
 
 # URL handling
 url = "2.5.4"
+atty = "0.2.14"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -51,3 +54,5 @@ default = []
 debug-logging = []
 # Enable metrics collection
 metrics = []
+pretty-table = ["prettytable-rs"]
+

@@ -9,6 +9,9 @@
 
 use av_client::AlphaVantageClient;
 use av_core::{Config, Error};
+use colored::*;
+use std::io::{self, Write};
+
 use av_models::{
   fundamentals::{CompanyOverview, TopGainersLosers},
   news::NewsSentiment,
@@ -36,7 +39,7 @@ struct PortfolioAnalysis {
 }
 
 /// Individual holding analysis
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HoldingAnalysis {
   symbol: String,
   shares: f64,
@@ -53,6 +56,13 @@ struct HoldingAnalysis {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+
+  if !atty::is(atty::Stream::Stdout) {
+    colored::control::set_override(false);
+  }
+  else{
+    colored::control::set_override(true);
+  }
   // Initialize logging
   tracing_subscriber::fmt::init();
 
@@ -76,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Holding { symbol: "MSFT".to_string(), shares: 30.0, cost_basis: 300.00 },
     Holding { symbol: "TSLA".to_string(), shares: 10.0, cost_basis: 800.00 },
     Holding { symbol: "NVDA".to_string(), shares: 25.0, cost_basis: 400.00 },
+    Holding { symbol: "INTC".to_string(), shares: 2555.0, cost_basis: 15.00 },
   ];
 
   println!("🎯 Portfolio Holdings:");
@@ -260,63 +271,474 @@ async fn get_sentiment_with_retry(client: &AlphaVantageClient, symbol: &str) -> 
   Err(Error::Api("No sentiment data available".to_string()))
 }
 
-/// Display portfolio analysis results
+
+
+
+
+
+/// Display portfolio analysis with formatted columns and colored values
 fn display_portfolio_analysis(analysis: &PortfolioAnalysis) {
-  println!("\n💼 Portfolio Analysis Results:");
-  println!("═══════════════════════════════════════════════");
+  // Check if terminal supports colors
+  colored::control::set_override(true);
 
-  println!("📊 Portfolio Summary:");
-  println!("  Total Market Value: ${:.2}", analysis.total_value);
-  println!("  Total Cost Basis:   ${:.2}", analysis.total_cost);
+  println!("\n📊 Portfolio Analysis");
+  println!("{}", "═".repeat(100));
 
-  let gain_loss_symbol = if analysis.total_gain_loss >= 0.0 { "📈" } else { "📉" };
-  println!(
-    "  Total Gain/Loss:    {} ${:.2} ({:+.2}%)",
-    gain_loss_symbol, analysis.total_gain_loss, analysis.total_gain_loss_percent
+  // Portfolio Summary Section
+  println!("\n💼 Portfolio Summary:");
+  println!("{}", "─".repeat(100));
+
+  // Define column widths for summary
+  let label_width = 25;
+
+  // Total Value
+  println!("{:<width$} ${:>12.2}",
+           "Total Market Value:",
+           analysis.total_value,
+           width = label_width
   );
 
-  println!("\n📋 Individual Holdings:");
-  println!("┌─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┐");
-  println!("│ Symbol  │ Shares  │  Price  │  Value  │ Gain/Loss│ Gain %  │ Weight  │   P/E   │");
-  println!("├─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┤");
+  // Total Cost
+  println!("{:<width$} ${:>12.2}",
+           "Total Cost Basis:",
+           analysis.total_cost,
+           width = label_width
+  );
 
-  for holding in &analysis.holdings_analysis {
-    let gain_loss_symbol = if holding.unrealized_gain_loss >= 0.0 { "+" } else { "" };
-    let pe_str =
-      holding.pe_ratio.map(|pe| format!("{:.1}", pe)).unwrap_or_else(|| "N/A".to_string());
+  // Total Gain/Loss with color
+  let gain_loss_str = format!("${:>12.2}", analysis.total_gain_loss);
+  let colored_gain_loss = if analysis.total_gain_loss >= 0.0 {
+    gain_loss_str.green()
+  } else {
+    gain_loss_str.red()
+  };
+  println!("{:<width$} {}",
+           "Total Gain/Loss:",
+           colored_gain_loss,
+           width = label_width
+  );
 
-    println!(
-      "│ {:<7} │ {:<7.1} │ ${:<6.2} │ ${:<6.0} │ {}{:<6.0} │ {:+<6.1}% │ {:<6.1}% │ {:<7} │",
-      holding.symbol,
-      holding.shares,
-      holding.current_price,
-      holding.market_value,
-      gain_loss_symbol,
-      holding.unrealized_gain_loss,
-      holding.unrealized_gain_loss_percent,
-      holding.weight,
-      pe_str
+  // Percentage with color
+  let percent_str = format!("{:>11.2}%", analysis.total_gain_loss_percent);
+  let colored_percent = if analysis.total_gain_loss_percent >= 0.0 {
+    percent_str.green()
+  } else {
+    percent_str.red()
+  };
+  println!("{:<width$} {}",
+           "Total Return:",
+           colored_percent,
+           width = label_width
+  );
+
+  // Holdings Detail Section
+  println!("\n📈 Holdings Detail:");
+  println!("{}", "─".repeat(100));
+
+  // Header row
+  println!(
+    "{:<8} {:>10} {:>12} {:>12} {:>14} {:>14} {:>10} {:>8} {:>10}",
+    "Symbol",
+    "Shares",
+    "Cost/Share",
+    "Current",
+    "Market Value",
+    "Gain/Loss",
+    "Return %",
+    "Weight",
+    "Sentiment"
+  );
+  println!("{}", "─".repeat(100));
+
+  // Sort holdings by weight (largest positions first)
+  let mut sorted_holdings = analysis.holdings_analysis.clone();
+  sorted_holdings.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+
+  // Display each holding
+  for holding in &sorted_holdings {
+    // Format basic columns
+    print!("{:<8} {:>10.2} {:>12.2} {:>12.2} ",
+           holding.symbol,
+           holding.shares,
+           holding.cost_basis,
+           holding.current_price
+    );
+
+    // Market value
+    print!("{:>14.2} ", holding.market_value);
+
+    // Gain/Loss with color
+    let gain_loss = format!("{:>14.2}", holding.unrealized_gain_loss);
+    if holding.unrealized_gain_loss >= 0.0 {
+      print!("{} ", gain_loss.green());
+    } else {
+      print!("{} ", gain_loss.red());
+    }
+
+    // Return % with color
+    let return_pct = format!("{:>9.2}%", holding.unrealized_gain_loss_percent);
+    if holding.unrealized_gain_loss_percent >= 0.0 {
+      print!("{} ", return_pct.green());
+    } else {
+      print!("{} ", return_pct.red());
+    }
+
+    // Weight
+    print!("{:>7.1}% ", holding.weight);
+
+    // Sentiment with color
+    if let Some(sentiment) = holding.sentiment_score {
+      let sentiment_str = format!("{:>9.3}", sentiment);
+      if sentiment > 0.35 {
+        print!("{}", sentiment_str.green());
+      } else if sentiment < -0.35 {
+        print!("{}", sentiment_str.red());
+      } else {
+        print!("{}", sentiment_str.yellow());
+      }
+    } else {
+      print!("{:>9}", "N/A");
+    }
+
+    println!(); // End the line
+  }
+
+  // Footer
+  println!("{}", "─".repeat(100));
+
+  // Additional metrics
+  println!("\n📊 Additional Metrics:");
+  println!("{}", "─".repeat(50));
+
+  // Best and worst performers
+  if let Some(best) = sorted_holdings.iter()
+      .max_by(|a, b| a.unrealized_gain_loss_percent.partial_cmp(&b.unrealized_gain_loss_percent).unwrap()) {
+
+    let best_str = format!("{} ({:+.2}%)", best.symbol, best.unrealized_gain_loss_percent);
+    println!("{:<25} {}",
+             "Best Performer:",
+             if best.unrealized_gain_loss_percent > 0.0 { best_str.green() } else { best_str.red() }
     );
   }
-  println!("└─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┘");
 
-  // Show sentiment analysis
-  println!("\n🎭 Sentiment Analysis:");
-  for holding in &analysis.holdings_analysis {
-    if let Some(sentiment) = holding.sentiment_score {
-      let sentiment_label = if sentiment > 0.35 {
-        "🟢 Bullish"
-      } else if sentiment < -0.35 {
-        "🔴 Bearish"
+  if let Some(worst) = sorted_holdings.iter()
+      .min_by(|a, b| a.unrealized_gain_loss_percent.partial_cmp(&b.unrealized_gain_loss_percent).unwrap()) {
+
+    let worst_str = format!("{} ({:+.2}%)", worst.symbol, worst.unrealized_gain_loss_percent);
+    println!("{:<25} {}",
+             "Worst Performer:",
+             if worst.unrealized_gain_loss_percent < 0.0 { worst_str.red() } else { worst_str.green() }
+    );
+  }
+
+  // Diversification check
+  let max_weight = sorted_holdings.iter()
+      .map(|h| h.weight)
+      .max_by(|a, b| a.partial_cmp(b).unwrap())
+      .unwrap_or(0.0);
+
+  let diversification_msg = if max_weight > 30.0 {
+    format!("⚠️  Concentrated position: {} at {:.1}%", sorted_holdings[0].symbol, max_weight).yellow()
+  } else {
+    "✅ Well diversified".green()
+  };
+
+  println!("{:<25} {}", "Diversification:", diversification_msg);
+}
+
+/// Display top gainers and losers with formatted columns
+fn display_top_movers(movers: &TopGainersLosers) {
+  println!("\n🚀 Market Movers");
+  println!("{}", "═".repeat(80));
+
+  // Top Gainers
+  println!("\n📈 Top Gainers:");
+  println!("{:<10} {:>10} {:>12} {:>10} {:>15}", "Symbol", "Price", "Change", "Change %", "Volume");
+  println!("{}", "─".repeat(60));
+
+  for gainer in movers.top_gainers.iter().take(5) {
+    println!("{:<10} {:>10} {:>12} {:>9}% {:>15}",
+             gainer.ticker,
+             gainer.price,
+             gainer.change_amount.green(),
+             gainer.change_percentage.green(),
+             format_volume(&gainer.volume)
+    );
+  }
+
+  // Top Losers
+  println!("\n📉 Top Losers:");
+  println!("{:<10} {:>10} {:>12} {:>10} {:>15}", "Symbol", "Price", "Change", "Change %", "Volume");
+  println!("{}", "─".repeat(60));
+
+  for loser in movers.top_losers.iter().take(5) {
+    println!("{:<10} {:>10} {:>12} {:>9}% {:>15}",
+             loser.ticker,
+             loser.price,
+             loser.change_amount.red(),
+             loser.change_percentage.red(),
+             format_volume(&loser.volume)
+    );
+  }
+
+  // Most Active
+  if !movers.most_actively_traded.is_empty() {
+    println!("\n📊 Most Active:");
+    println!("{:<10} {:>10} {:>12} {:>10} {:>15}", "Symbol", "Price", "Change", "Change %", "Volume");
+    println!("{}", "─".repeat(60));
+
+    for active in movers.most_actively_traded.iter().take(5) {
+      let change_color = if active.change_amount.starts_with('-') {
+        active.change_amount.red()
       } else {
-        "🟡 Neutral"
+        active.change_amount.green()
       };
-      println!("  {}: {} ({:.3})", holding.symbol, sentiment_label, sentiment);
-    } else {
-      println!("  {}: No sentiment data", holding.symbol);
+
+      let pct_color = if active.change_percentage.starts_with('-') {
+        active.change_percentage.red()
+      } else {
+        active.change_percentage.green()
+      };
+
+      println!("{:<10} {:>10} {:>12} {:>9}% {:>15}",
+               active.ticker,
+               active.price,
+               change_color,
+               pct_color,
+               format_volume(&active.volume)
+      );
     }
   }
 }
+
+/// Format large numbers with K/M/B suffixes
+fn format_volume(volume: &str) -> String {
+  if let Ok(vol) = volume.parse::<f64>() {
+    if vol >= 1_000_000_000.0 {
+      format!("{:.1}B", vol / 1_000_000_000.0)
+    } else if vol >= 1_000_000.0 {
+      format!("{:.1}M", vol / 1_000_000.0)
+    } else if vol >= 1_000.0 {
+      format!("{:.1}K", vol / 1_000.0)
+    } else {
+      format!("{:.0}", vol)
+    }
+  } else {
+    volume.to_string()
+  }
+}
+
+/// Display portfolio news sentiment with colors
+fn display_portfolio_sentiment(portfolio: &[Holding], sentiment_data: &HashMap<String, f64>) {
+  println!("\n📰 Portfolio News Sentiment");
+  println!("{}", "═".repeat(80));
+
+  println!("{:<10} {:>20} {:>20} {:>15}", "Symbol", "Sentiment Score", "Sentiment Label", "Market Impact");
+  println!("{}", "─".repeat(70));
+
+  let mut total_weighted_sentiment = 0.0;
+  let mut total_weight = 0.0;
+
+  for holding in portfolio {
+    if let Some(&sentiment) = sentiment_data.get(&holding.symbol) {
+      // Determine sentiment label and color
+      let (label, color) = if sentiment > 0.35 {
+        ("Bullish", "green")
+      } else if sentiment < -0.35 {
+        ("Bearish", "red")
+      } else {
+        ("Neutral", "yellow")
+      };
+
+      // Format sentiment score with color
+      let score_str = format!("{:>20.3}", sentiment);
+      let colored_score = match color {
+        "green" => score_str.green(),
+        "red" => score_str.red(),
+        _ => score_str.yellow(),
+      };
+
+      // Calculate position weight for weighted average
+      let position_value = holding.shares * holding.cost_basis;
+      total_weighted_sentiment += sentiment * position_value;
+      total_weight += position_value;
+
+      // Market impact indicator
+      let impact = if sentiment.abs() > 0.5 && holding.shares > 50.0 {
+        "High".bright_yellow()
+      } else if sentiment.abs() > 0.3 {
+        "Medium".yellow()
+      } else {
+        "Low".dimmed()
+      };
+
+      println!("{:<10} {} {:>20} {:>15}",
+               holding.symbol,
+               colored_score,
+               match color {
+                 "green" => label.green(),
+                 "red" => label.red(),
+                 _ => label.yellow(),
+               },
+               impact
+      );
+    } else {
+      println!("{:<10} {:>20} {:>20} {:>15}",
+               holding.symbol,
+               "N/A".dimmed(),
+               "No Data".dimmed(),
+               "-".dimmed()
+      );
+    }
+  }
+
+  // Portfolio weighted sentiment
+  if total_weight > 0.0 {
+    let weighted_avg = total_weighted_sentiment / total_weight;
+    println!("{}", "─".repeat(70));
+
+    let avg_str = format!("{:>20.3}", weighted_avg);
+    let (avg_label, avg_colored) = if weighted_avg > 0.2 {
+      ("Bullish", avg_str.green())
+    } else if weighted_avg < -0.2 {
+      ("Bearish", avg_str.red())
+    } else {
+      ("Neutral", avg_str.yellow())
+    };
+
+    println!("{:<10} {} {:>20} {:>15}",
+             "WEIGHTED",
+             avg_colored,
+             if weighted_avg > 0.2 { avg_label.green() }
+             else if weighted_avg < -0.2 { avg_label.red() }
+             else { avg_label.yellow() },
+             "Portfolio Avg".bright_white()
+    );
+  }
+}
+
+/// Helper function to create a progress bar for loading
+fn show_loading_progress(current: usize, total: usize, symbol: &str) {
+  let percentage = (current as f32 / total as f32 * 100.0) as u32;
+  let filled = (percentage / 2) as usize;
+  let bar = "█".repeat(filled) + &"░".repeat(50 - filled);
+
+  print!("\r Loading {} [{}] {}% ", symbol, bar, percentage);
+  io::stdout().flush().unwrap();
+
+  if current == total {
+    println!(" ✓");
+  }
+}
+
+/// Display a single holding with colors (for real-time updates)
+fn display_holding_update(holding: &HoldingAnalysis) {
+  let gain_loss_str = format!("{:+.2}", holding.unrealized_gain_loss);
+  let percent_str = format!("{:+.2}%", holding.unrealized_gain_loss_percent);
+
+  let (gl_color, pct_color) = if holding.unrealized_gain_loss >= 0.0 {
+    (gain_loss_str.green(), percent_str.green())
+  } else {
+    (gain_loss_str.red(), percent_str.red())
+  };
+
+  println!(
+    "{}: ${:.2} {} ({}) | Weight: {:.1}%",
+    holding.symbol.bright_white(),
+    holding.current_price,
+    gl_color,
+    pct_color,
+    holding.weight
+  );
+}
+
+/// Clear screen and move cursor to top (for live updates)
+fn clear_screen() {
+  print!("\x1B[2J\x1B[1;1H");
+  io::stdout().flush().unwrap();
+}
+
+/// Enable raw mode for better terminal control (optional)
+#[cfg(unix)]
+fn setup_terminal_colors() {
+  // Enable 256 colors if available
+  if let Ok(term) = std::env::var("TERM") {
+    if term.contains("256color") {
+      colored::control::set_override(true);
+    }
+  }
+}
+
+#[cfg(windows)]
+fn setup_terminal_colors() {
+  // Enable ANSI escape sequences on Windows 10+
+  colored::control::set_virtual_terminal(true).ok();
+}
+
+
+/// Helper function to create a progress bar for loading
+fn show_progress(current: usize, total: usize, message: &str) {
+  let percentage = (current as f32 / total as f32 * 100.0) as u32;
+  let filled = (percentage / 2) as usize;
+  let bar = "█".repeat(filled) + &"░".repeat(50 - filled);
+
+  print!("\r{} [{}] {}% ", message, bar, percentage);
+  io::stdout().flush().unwrap();
+
+  if current == total {
+    println!(" ✓");
+  }
+}
+
+/// Alternative display using a table crate for even better formatting
+#[cfg(feature = "pretty-table")]
+fn display_portfolio_table(analysis: &PortfolioAnalysis) {
+  use prettytable::{Table, Row, Cell, format};
+
+  let mut table = Table::new();
+  table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+
+  // Add header
+  table.set_titles(row![
+        "Symbol",
+        "Shares",
+        "Cost",
+        "Current",
+        "Value",
+        "Gain/Loss",
+        "Return",
+        "Weight",
+        "Sentiment"
+    ]);
+
+  // Add rows
+  for holding in &analysis.holdings_analysis {
+    let gain_loss_cell = if holding.unrealized_gain_loss >= 0.0 {
+      Cell::new(&format!("{:.2}", holding.unrealized_gain_loss))
+          .style_spec("Fg")
+    } else {
+      Cell::new(&format!("{:.2}", holding.unrealized_gain_loss))
+          .style_spec("Fr")
+    };
+
+    table.add_row(Row::new(vec![
+      Cell::new(&holding.symbol),
+      Cell::new(&format!("{:.2}", holding.shares)),
+      Cell::new(&format!("{:.2}", holding.cost_basis)),
+      Cell::new(&format!("{:.2}", holding.current_price)),
+      Cell::new(&format!("{:.2}", holding.market_value)),
+      gain_loss_cell,
+      Cell::new(&format!("{:.2}%", holding.unrealized_gain_loss_percent)),
+      Cell::new(&format!("{:.1}%", holding.weight)),
+      Cell::new(&holding.sentiment_score
+          .map(|s| format!("{:.3}", s))
+          .unwrap_or_else(|| "N/A".to_string())),
+    ]));
+  }
+
+  table.printstd();
+}
+
 
 /// Get market overview using top gainers/losers
 async fn get_market_overview(client: &AlphaVantageClient) -> Result<(), Error> {
