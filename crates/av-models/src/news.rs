@@ -52,7 +52,7 @@ pub struct NewsArticle {
   pub topics: Vec<TopicInfo>,
 
   /// Overall sentiment score (-1 to 1)
-  pub overall_sentiment_score: String,
+  pub overall_sentiment_score: f64,
 
   /// Overall sentiment label (Bearish/Neutral/Bullish)
   pub overall_sentiment_label: String,
@@ -255,7 +255,7 @@ pub struct SentimentQuery {
 impl NewsArticle {
   /// Parse overall sentiment score as f64
   pub fn overall_sentiment_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
-    self.overall_sentiment_score.parse()
+    Ok(self.overall_sentiment_score)
   }
 
   /// Check if the article is bullish

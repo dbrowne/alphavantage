@@ -92,8 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   // 3. Analyze financial sector sentiment
   println!("\n🏦 Financial Sector Sentiment");
-  let financial_stocks = vec!["JPM", "BAC", "WFC", "GS", "MS", "C"];
-  analyze_sector_sentiment(&client, "Financial", &financial_stocks).await?;
+  let financial_stocks = vec!["C", "BAC", "WFC", "GS", "MS"];
+  analyze_sector_sentiment(&client, "financial_markets", &financial_stocks).await?;
 
   // 4. Analyze specific earnings-related news
   println!("\n📊 Earnings-Related News Analysis");
@@ -115,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn analyze_market_sentiment(client: &AlphaVantageClient) -> Result<(), Error> {
   println!("📈 Fetching general market news...");
 
-  let news = client
+  let news: NewsSentiment = client
     .news()
     .news_sentiment(
       None,           // tickers
