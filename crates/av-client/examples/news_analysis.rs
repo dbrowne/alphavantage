@@ -254,8 +254,8 @@ async fn analyze_crypto_sentiment(client: &AlphaVantageClient) -> Result<(), Err
   let news = client
     .news()
     .news_sentiment(
-      None,                                // tickers
-      Some("earnings,merger_acquisition"), // topics
+     None,
+      Some("Blockchain"), // topics
       None,                                // time_from
       None,                                // time_to
       None,                                // sort
