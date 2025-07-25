@@ -413,7 +413,7 @@ impl NewsSentiment {
   }
 }
 #[cfg(test)]
-use av_core::test_utils::{assert_approx_eq, DEFAULT_TOLERANCE};
+use av_core::test_utils::{DEFAULT_TOLERANCE, assert_approx_eq};
 
 #[cfg(test)]
 mod tests {
@@ -433,7 +433,7 @@ mod tests {
       category_within_source: "Technology".to_string(),
       source_domain: "financialnews.com".to_string(),
       topics: vec![],
-      overall_sentiment_score: "0.5".to_string(),
+      overall_sentiment_score: 0.5,
       overall_sentiment_label: "Bullish".to_string(),
       ticker_sentiment: vec![TickerSentiment {
         ticker: "AAPL".to_string(),
@@ -470,7 +470,7 @@ mod tests {
           category_within_source: "".to_string(),
           source_domain: "".to_string(),
           topics: vec![],
-          overall_sentiment_score: "0.5".to_string(),
+          overall_sentiment_score: 0.5,
           overall_sentiment_label: "Bullish".to_string(),
           ticker_sentiment: vec![],
         },
@@ -485,7 +485,7 @@ mod tests {
           category_within_source: "".to_string(),
           source_domain: "".to_string(),
           topics: vec![],
-          overall_sentiment_score: "-0.3".to_string(),
+          overall_sentiment_score: -0.3,
           overall_sentiment_label: "Bearish".to_string(),
           ticker_sentiment: vec![],
         },
@@ -500,7 +500,7 @@ mod tests {
           category_within_source: "".to_string(),
           source_domain: "".to_string(),
           topics: vec![],
-          overall_sentiment_score: "0.0".to_string(),
+          overall_sentiment_score: 0.0,
           overall_sentiment_label: "Neutral".to_string(),
           ticker_sentiment: vec![],
         },
