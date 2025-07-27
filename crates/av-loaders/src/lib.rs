@@ -28,7 +28,7 @@ pub use process_tracker::{ProcessState, ProcessTracker};
 
 // Re-export loaders with their data types
 pub use security_loader::{
-  SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput,
+  SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode
 };
 
 // Add similar exports for other loaders when they're updated
