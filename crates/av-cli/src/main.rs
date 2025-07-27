@@ -16,7 +16,6 @@ struct Cli {
   #[arg(short, long, global = true)]
   verbose: bool,
 }
-
 #[derive(Subcommand)]
 enum Commands {
   /// Load data from various sources

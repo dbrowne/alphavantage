@@ -4,14 +4,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::collections::HashMap;
 use chrono::{NaiveDateTime, Utc};
-use diesel::dsl::now;
 use tracing::{info, warn, error, debug};
 
 use av_client::AlphaVantageClient;
-use av_core::types::market::{SecurityIdentifier, SecurityType};
+use av_core::types::market::{SecurityIdentifier, SecurityType, Exchange};
 use av_loaders::{
   SecurityLoader, SecurityLoaderInput, LoaderConfig, LoaderContext,
-  process_tracker::ProcessTracker, DataLoader,
+  process_tracker::ProcessTracker, DataLoader, SymbolMatchMode,
 };
 
 // Import diesel types
@@ -41,6 +40,24 @@ pub struct SecuritiesArgs {
   /// Continue on errors
   #[arg(short = 'k', long)]
   continue_on_error: bool,
+
+  /// Symbol matching mode
+  #[arg(long, value_enum, default_value = "exact")]
+  match_mode: MatchMode,
+
+  /// Number of top matches to accept (only used with --match-mode=top)
+  #[arg(long, default_value = "3")]
+  top_matches: usize,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum MatchMode {
+  /// Only accept exact symbol matches
+  Exact,
+  /// Accept all symbols returned from search
+  All,
+  /// Accept top N matches based on match score
+  Top,
 }
 
 /// Maintains the next available raw_id for each security type
@@ -143,8 +160,15 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     context = context.with_process_tracker(tracker);
   }
 
-  // Create security loader
-  let loader = SecurityLoader::new(args.concurrent);
+  // Create security loader with match mode
+  let match_mode = match args.match_mode {
+    MatchMode::Exact => SymbolMatchMode::ExactMatch,
+    MatchMode::All => SymbolMatchMode::AllMatches,
+    MatchMode::Top => SymbolMatchMode::TopMatches(args.top_matches),
+  };
+
+  let loader = SecurityLoader::new(args.concurrent)
+      .with_match_mode(match_mode);
 
   let mut total_loaded = 0;
   let mut total_errors = 0;
@@ -162,8 +186,8 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     match loader.load(&context, input).await {
       Ok(output) => {
         info!(
-                    "NASDAQ API calls complete: {} loaded, {} errors",
-                    output.loaded_count, output.errors
+                    "NASDAQ API calls complete: {} loaded, {} errors, {} skipped, {} duplicates prevented",
+                    output.loaded_count, output.errors, output.skipped_count, output.duplicates_prevented
                 );
 
         if !args.dry_run {
@@ -202,8 +226,8 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     match loader.load(&context, input).await {
       Ok(output) => {
         info!(
-                    "NYSE API calls complete: {} loaded, {} errors",
-                    output.loaded_count, output.errors
+                    "NYSE API calls complete: {} loaded, {} errors, {} skipped, {} duplicates prevented",
+                    output.loaded_count, output.errors, output.skipped_count, output.duplicates_prevented
                 );
 
         if !args.dry_run {
@@ -245,6 +269,8 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     );
   Ok(())
 }
+
+
 async fn save_symbols_to_db(
   conn: &mut PgConnection,
   securities: &[av_loaders::SecurityData],
@@ -264,37 +290,57 @@ async fn save_symbols_to_db(
 
   let mut saved_count = 0;
   let mut updated_count = 0;
+  let mut symbol_map = HashMap::new(); // Track symbols we're processing in this batch
 
   for security_data in securities {
-    let overview = &security_data.overview;
-
     // Only save if we got valid data from the API
-    if overview.symbol.is_empty() || overview.symbol == "None" {
+    if security_data.symbol.is_empty() || security_data.symbol == "None" {
       continue;
     }
 
-    // Use the av-core mapping function
-    let security_type = SecurityType::from_alpha_vantage(&overview.asset_type);
+    // Check for duplicates within this batch
+    if symbol_map.contains_key(&security_data.symbol.to_uppercase()) {
+      debug!("Duplicate symbol {} found in batch, skipping", security_data.symbol);
+      continue;
+    }
+    symbol_map.insert(security_data.symbol.to_uppercase(), true);
+
+    // Log if the matched symbol differs from original query
+    if let Some(original) = &security_data.original_query {
+      if !original.eq_ignore_ascii_case(&security_data.symbol) {
+        info!("Symbol {} mapped to {} (match score: {:?})",
+              original, security_data.symbol, security_data.match_score);
+      }
+    }
+
+    // Use the av-core mapping function for security type
+    let security_type = SecurityType::from_alpha_vantage(&security_data.stock_type);
 
     if security_type == SecurityType::Other {
       warn!(
-                "Unknown asset type '{}' for symbol {}, mapping to Other",
-                overview.asset_type, overview.symbol
-            );
+        "Unknown asset type '{}' for symbol {}, mapping to Other",
+        security_data.stock_type, security_data.symbol
+      );
     }
 
-    // Parse market hours with defaults
-    let market_open = chrono::NaiveTime::parse_from_str("09:30:00", "%H:%M:%S").unwrap();
-    let market_close = chrono::NaiveTime::parse_from_str("16:00:00", "%H:%M:%S").unwrap();
+    // Parse market hours from the security data
+    let market_open = chrono::NaiveTime::parse_from_str(&security_data.market_open, "%H:%M")
+        .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("09:30:00", "%H:%M:%S").unwrap());
+    let market_close = chrono::NaiveTime::parse_from_str(&security_data.market_close, "%H:%M")
+        .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("16:00:00", "%H:%M:%S").unwrap());
 
-    // Determine timezone - handle Option<String> properly
-    let timezone = <std::string::String AsRef<T>>::as_ref(&overview.exchange)
-        .map(|_ex| "US/Eastern".to_string()) // Use _ex to avoid unused variable warning
-        .unwrap_or_else(|| "US/Eastern".to_string());
+    // Use the timezone from the security data or fall back to Exchange lookup
+    let timezone = if !security_data.timezone.is_empty() {
+      security_data.timezone.clone()
+    } else {
+      Exchange::from_str(&security_data.exchange)
+          .map(|ex| ex.timezone().to_string())
+          .unwrap_or_else(|| "US/Eastern".to_string())
+    };
 
     // Check if symbol already exists
     let existing: Option<(i64, String)> = symbols::table
-        .filter(symbols::symbol.eq(&overview.symbol))
+        .filter(symbols::symbol.eq(&security_data.symbol))
         .select((symbols::sid, symbols::sec_type))
         .first(conn)
         .optional()?;
@@ -308,17 +354,17 @@ async fn save_symbols_to_db(
 
         if format!("{:?}", existing_security_type) != existing_sec_type {
           warn!(
-                        "Security type mismatch for {}: database has '{}', API returned '{}'",
-                        overview.symbol, existing_sec_type, overview.asset_type
-                    );
+            "Security type mismatch for {}: database has '{}', API returned '{}'",
+            security_data.symbol, existing_sec_type, security_data.stock_type
+          );
         }
 
         // Update the symbol data
         let updated = diesel::update(symbols::table.find(sid_val))
             .set((
-              symbols::name.eq(&overview.name),
-              symbols::region.eq(&overview.country),
-              symbols::currency.eq(&overview.currency),
+              symbols::name.eq(&security_data.name),
+              symbols::region.eq(&security_data.region),
+              symbols::currency.eq(&security_data.currency),
               symbols::timezone.eq(&timezone),
               symbols::m_time.eq(diesel::dsl::now),
             ))
@@ -326,51 +372,44 @@ async fn save_symbols_to_db(
 
         if updated > 0 {
           updated_count += 1;
-          debug!("Updated symbol {} with SID {}", overview.symbol, sid_val);
+          debug!("Updated symbol {} with SID {}", security_data.symbol, sid_val);
         }
       }
       None => {
         // New symbol, generate SID using our in-memory generator
         let new_sid = sid_generator.next_sid(security_type);
-        let now_t :NaiveDateTime = Utc::now().naive_local();
+        let now_t = Utc::now().naive_local();
 
         let new_symbol = NewSymbol {
-          sid: &new_sid,  // Changed to reference
-          symbol: &overview.symbol,
-          name: &overview.name,
+          sid: &new_sid,
+          symbol: &security_data.symbol,
+          name: &security_data.name,
           sec_type: &format!("{:?}", security_type),
-          region: &overview.country,
+          region: &security_data.region,
           market_open: &market_open,
           market_close: &market_close,
           timezone: &timezone,
-          currency: &overview.currency,
-          overview: &false,  // Changed to reference
-          intraday: &false,  // Changed to reference
-          summary: &false,   // Changed to reference
+          currency: &security_data.currency,
+          overview: &false,
+          intraday: &false,
+          summary: &false,
           c_time: &now_t,
           m_time: &now_t,
         };
 
-        // Insert with explicit SID
         diesel::insert_into(symbols::table)
             .values(&new_symbol)
             .execute(conn)?;
 
         saved_count += 1;
-        info!(
-                    "Inserted new symbol {} with SID {} (type: {:?})",
-                    overview.symbol, new_sid, security_type
-                );
+        debug!("Saved new symbol {} with SID {}", security_data.symbol, new_sid);
       }
     }
 
     progress.inc(1);
   }
 
-  progress.finish_with_message(format!(
-    "Symbol save complete: {} new, {} updated",
-    saved_count, updated_count
-  ));
+  progress.finish_with_message(format!("Saved {} symbols, updated {}", saved_count, updated_count));
 
-  Ok(saved_count + updated_count)
+  Ok(saved_count)
 }
