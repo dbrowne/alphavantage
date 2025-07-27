@@ -24,6 +24,9 @@ tracing = "0.1"
 thiserror = "1.0"
 indicatif = "0.17"
 rayon = "1.8"
+anyhow = "1.0.98"
+clap = "4.5.41"
+diesel = "2.2.12"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -1,9 +1,11 @@
+// crates/av-loaders/src/lib.rs
+
 //! # av-loaders
 //!
 //! Data loading functionality for AlphaVantage market data.
 //!
 //! This crate provides loaders for various data types including:
-//! - Securities (symbols) from CSV files via API lookup  
+//! - Securities (symbols) from CSV files via API lookup
 //! - Company overviews and fundamentals
 //! - Intraday and daily price data
 //! - News articles with sentiment analysis
@@ -19,6 +21,7 @@ pub mod error;
 pub mod loader;
 pub mod process_tracker;
 pub mod security_loader;
+pub mod overview_loader;
 
 // Re-export commonly used types
 pub use batch_processor::{BatchConfig, BatchProcessor};
@@ -28,16 +31,19 @@ pub use process_tracker::{ProcessState, ProcessTracker};
 
 // Re-export loaders with their data types
 pub use security_loader::{
-  SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode
+    SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode
+};
+
+pub use overview_loader::{
+    OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput, OverviewData, SymbolInfo
 };
 
 // Add similar exports for other loaders when they're updated
 
 // Prelude for convenient imports
 pub mod prelude {
-  pub use crate::{
-    BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
-    LoaderResult, ProcessState, ProcessTracker,
-  };
+    pub use crate::{
+        BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
+        LoaderResult, ProcessState, ProcessTracker,
+    };
 }
-
