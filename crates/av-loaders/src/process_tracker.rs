@@ -1,107 +1,63 @@
-//! Process tracking for ETL job monitoring
-//!
-//! Tracks the state of data loading processes in the database:
-//! - Process start time
-//! - Process completion state (success, failed, completed with errors)
-//! - Process duration
-//!
-//! This enables monitoring of long-running ETL jobs and provides
-//! the ability to restart failed processes from where they left off.
+//! Process tracking for monitoring ETL jobs
+//! This version uses in-memory tracking instead of database
 
+use crate::LoaderResult;
 use chrono::{DateTime, Utc};
-use av_database::models::{NewProcState, ProcState, ProcType};
-use crate::{LoaderError, LoaderResult};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ProcessState {
-    Running,
-    Success,
-    Failed,
-    CompletedWithErrors,
+  Running,
+  Success,
+  Failed,
+  CompletedWithErrors,
 }
 
-impl ProcessState {
-    pub fn to_state_id(&self) -> i32 {
-        match self {
-            ProcessState::Running => 1,
-            ProcessState::Success => 2,
-            ProcessState::Failed => 3,
-            ProcessState::CompletedWithErrors => 4,
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct ProcessInfo {
+  pub process_name: String,
+  pub start_time: DateTime<Utc>,
+  pub end_time: Option<DateTime<Utc>>,
+  pub state: ProcessState,
+  pub error_message: Option<String>,
+  pub records_processed: Option<usize>,
 }
 
+/// In-memory process tracker
 pub struct ProcessTracker {
-    proc_type_id: i32,
-    spid: Option<i32>,
-    start_time: DateTime<Utc>,
+  processes: Arc<Mutex<Vec<ProcessInfo>>>,
 }
 
 impl ProcessTracker {
-    pub async fn new(
-        conn: &mut av_database::DbConnection,
-        process_name: &str,
-    ) -> LoaderResult<Self> {
-        // Get or create process type
-        let proc_type = ProcType::find_or_create(conn, process_name).await
-            .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
+  pub fn new() -> Self {
+    Self { processes: Arc::new(Mutex::new(Vec::new())) }
+  }
 
-        Ok(Self {
-            proc_type_id: proc_type.id,
-            spid: None,
-            start_time: Utc::now(),
-        })
+  pub async fn start(&self, process_name: &str) -> LoaderResult<()> {
+    let mut processes = self.processes.lock().await;
+    processes.push(ProcessInfo {
+      process_name: process_name.to_string(),
+      start_time: Utc::now(),
+      end_time: None,
+      state: ProcessState::Running,
+      error_message: None,
+      records_processed: None,
+    });
+    Ok(())
+  }
+
+  pub async fn complete(&self, state: ProcessState) -> LoaderResult<()> {
+    let mut processes = self.processes.lock().await;
+    if let Some(last) = processes.last_mut() {
+      last.state = state;
+      last.end_time = Some(Utc::now());
     }
+    Ok(())
+  }
 
-    pub async fn start(
-        &mut self,
-        _process_name: &str,
-    ) -> LoaderResult<()> {
-        // Process is started on creation
-        Ok(())
-    }
-
-    pub async fn log_start(
-        &mut self,
-        conn: &mut av_database::DbConnection,
-    ) -> LoaderResult<i32> {
-        let new_state = NewProcState {
-            proc_id: self.proc_type_id,
-            start_time: self.start_time,
-            end_state: None,
-            end_time: None,
-        };
-
-        let state = new_state.insert(conn).await
-            .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
-
-        self.spid = Some(state.spid);
-        Ok(state.spid)
-    }
-
-    pub async fn complete(
-        &self,
-        state: ProcessState,
-    ) -> LoaderResult<()> {
-        // Completion is logged separately
-        Ok(())
-    }
-
-    pub async fn log_complete(
-        &self,
-        conn: &mut av_database::DbConnection,
-        state: ProcessState,
-    ) -> LoaderResult<()> {
-        if let Some(spid) = self.spid {
-            ProcState::update_end_state(
-                conn,
-                spid,
-                state.to_state_id(),
-                Utc::now(),
-            ).await
-                .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
-        }
-
-        Ok(())
-    }
+  pub async fn get_all(&self) -> Vec<ProcessInfo> {
+    self.processes.lock().await.clone()
+  }
 }
+

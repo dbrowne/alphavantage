@@ -3,9 +3,9 @@ members = [
   "crates/av-database/postgres",
   "crates/av-core",
   "crates/av-models",
-  "crates/av-client"
-  
-
+  "crates/av-client",
+  "crates/av-loaders",
+  "crates/av-cli"
 ]
   resolver = "2"
 [workspace.package]
