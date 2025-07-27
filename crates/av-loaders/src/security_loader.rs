@@ -5,7 +5,7 @@ use futures::stream::{self, StreamExt};
 use indicatif::ProgressBar;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tracing::{info, warn, debug};
+use tracing::{info, warn, debug, error};
 
 use av_models::time_series::SymbolSearch;
 use av_models::common::SymbolMatch;
@@ -28,7 +28,7 @@ pub enum SymbolMatchMode {
 
 impl Default for SymbolMatchMode {
   fn default() -> Self {
-    SymbolMatchMode::ExactMatch
+    SymbolMatchMode::AllMatches
   }
 }
 
@@ -164,6 +164,14 @@ impl DataLoader for SecurityLoader {
             let mut security_data = Vec::new();
 
             for symbol_match in matches {
+              // Validate the symbol match data from API
+              if symbol_match.symbol.len() > 10 {
+                error!("API PARSING ERROR: Received symbol '{}' with length {} from symbol search",
+          symbol_match.symbol, symbol_match.symbol.len());
+                error!("  API Response: {:?}", symbol_match);
+                error!("  Original query was: '{}'", original_symbol);
+                continue; // Skip this malformed result
+              }
               debug!("Found match for {}: {} (score: {}, type: {}, region: {})",
                     original_symbol,
                     symbol_match.symbol,
@@ -171,6 +179,11 @@ impl DataLoader for SecurityLoader {
                     symbol_match.stock_type,
                     symbol_match.region);
 
+              // Additional validation
+              if symbol_match.symbol.is_empty() {
+                warn!("Received empty symbol from API for query '{}'", original_symbol);
+                continue;
+              }
               security_data.push(SecurityData {
                 symbol: symbol_match.symbol,
                 name: symbol_match.name,
