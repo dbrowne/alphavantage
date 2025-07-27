@@ -269,12 +269,15 @@ dependencies = [
 name = "av-loaders"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "av-client",
  "av-core",
  "av-models",
  "chrono",
+ "clap",
  "csv",
+ "diesel",
  "futures",
  "indicatif",
  "mockall",
@@ -691,9 +694,9 @@ checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 
 [[package]]
 name = "diesel"
-version = "2.2.11"
+version = "2.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a917a9209950404d5be011c81d081a2692a822f73c3d6af586f0cab5ff50f614"
+checksum = "229850a212cd9b84d4f0290ad9d294afc0ae70fccaa8949dbe8b43ffafa1e20c"
 dependencies = [
  "bigdecimal",
  "bitflags",

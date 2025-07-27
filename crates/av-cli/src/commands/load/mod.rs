@@ -3,6 +3,7 @@ use anyhow::Result;
 use crate::config::Config;
 
 pub mod securities;
+pub mod overviews;
 
 #[derive(Args)]
 pub struct LoadCommand {
@@ -16,11 +17,7 @@ enum LoadSubcommands {
   Securities(securities::SecuritiesArgs),
 
   /// Load company overviews for existing securities
-  Overviews {
-    /// Limit the number of securities to process
-    #[arg(short, long)]
-    limit: Option<usize>,
-  },
+  Overviews(overviews::OverviewsArgs),
 
   /// Load intraday price data
   Intraday {
@@ -52,9 +49,7 @@ enum LoadSubcommands {
 pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
   match cmd.command {
     LoadSubcommands::Securities(args) => securities::execute(args, config).await,
-    LoadSubcommands::Overviews { limit: _ } => {
-      todo!("Implement overview loading")
-    }
+    LoadSubcommands::Overviews(args) => overviews::execute(args, config).await,
     LoadSubcommands::Intraday { symbol: _, interval: _ } => {
       todo!("Implement intraday loading")
     }
