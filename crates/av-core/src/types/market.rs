@@ -421,6 +421,61 @@ impl SecurityType {
     }
   }
 
+  /// Map AlphaVantage asset type string to SecurityType
+  pub fn from_alpha_vantage(asset_type: &str) -> Self {
+    match asset_type.to_uppercase().replace([' ', '_', '-'], "").as_str() {
+      "COMMONSTOCK" | "CS" => SecurityType::CommonStock,
+      "PREFERREDSTOCK" | "PS" => SecurityType::PreferredStock,
+      "EXCHANGETRADEDFUND" | "ETF" => SecurityType::ETF,
+      "MUTUALFUND" | "MF" => SecurityType::MutualFund,
+      "AMERICANDEPOSITARYRECEIPT" | "ADR" => SecurityType::ADR,
+      "REALESTATEINVESTMENTTRUST" | "REIT" => SecurityType::REIT,
+      "WARRANT" | "WT" => SecurityType::Warrant,
+      "BOND" => SecurityType::Bond,
+      "GOVERNMENTBOND" => SecurityType::GovernmentBond,
+      "CORPORATEBOND" => SecurityType::CorporateBond,
+      "MUNICIPALBOND" => SecurityType::MunicipalBond,
+      "TREASURYBILL" | "TBILL" => SecurityType::TreasuryBill,
+      "OPTION" => SecurityType::Option,
+      "FUTURE" | "FUTURES" => SecurityType::Future,
+      "CRYPTOCURRENCY" | "CRYPTO" | "DIGITALCURRENCY" => SecurityType::Cryptocurrency,
+      "CURRENCY" | "FX" | "FOREX" => SecurityType::Currency,
+      "INDEX" => SecurityType::Index,
+      "COMMODITY" => SecurityType::Commodity,
+      "CERTIFICATEOFDEPOSIT" | "CD" => SecurityType::CD,
+      _ => SecurityType::Other,
+    }
+  }
+
+  /// Convert SecurityType to AlphaVantage asset type string
+  pub fn to_alpha_vantage(&self) -> &'static str {
+    match self {
+      SecurityType::CommonStock => "Common Stock",
+      SecurityType::PreferredStock => "Preferred Stock",
+      SecurityType::ETF => "Exchange Traded Fund",
+      SecurityType::MutualFund => "Mutual Fund",
+      SecurityType::ADR => "American Depositary Receipt",
+      SecurityType::REIT => "Real Estate Investment Trust",
+      SecurityType::Warrant => "Warrant",
+      SecurityType::Bond => "Bond",
+      SecurityType::GovernmentBond => "Government Bond",
+      SecurityType::CorporateBond => "Corporate Bond",
+      SecurityType::MunicipalBond => "Municipal Bond",
+      SecurityType::TreasuryBill => "Treasury Bill",
+      SecurityType::Option => "Option",
+      SecurityType::Future => "Future",
+      SecurityType::Currency => "Currency",
+      SecurityType::Index => "Index",
+      SecurityType::Commodity => "Commodity",
+      SecurityType::Cryptocurrency => "Cryptocurrency",
+      SecurityType::CD => "Certificate of Deposit",
+      SecurityType::Other => "Other",
+    }
+  }
+
+  ///
+  ///
+  ///
   /// Parse security type from string
   pub fn from_str(s: &str) -> Option<Self> {
     match s.to_uppercase().replace([' ', '-', '_'], "").as_str() {

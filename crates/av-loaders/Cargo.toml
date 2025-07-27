@@ -2,7 +2,7 @@
 name = "av-loaders"
 version = "0.1.0"
 edition = "2021"
-authors = ["Dwight Browne <dwught@dwightjbrowne.com>"]
+authors = ["Dwight Browne <dwight@dwightjbrowne.com>"]
 description = "Data loaders for AlphaVantage market data"
 license = "MIT"
 repository = "https://github.com/dbrowne/alphavantage.git"
@@ -10,11 +10,8 @@ repository = "https://github.com/dbrowne/alphavantage.git"
 
 [dependencies]
 av-core = {path = "../av-core", version = "0.1.0"}
-
 av-client = { path = "../av-client", version = "0.1.0" }
 av-models = { path = "../av-models", version = "0.1.0" }
-av-database = { path = "../av-database", version = "0.1.0" }
-
 # External dependencies
 tokio = { version = "1.35", features = ["full"] }
 futures = "0.3"

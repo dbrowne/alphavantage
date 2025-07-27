@@ -3,47 +3,41 @@
 //! Data loading functionality for AlphaVantage market data.
 //!
 //! This crate provides loaders for various data types including:
-//! - Securities (symbols) from CSV files via API lookup
+//! - Securities (symbols) from CSV files via API lookup  
 //! - Company overviews and fundamentals
 //! - Intraday and daily price data
 //! - News articles with sentiment analysis
 //! - Market movers (top gainers/losers)
+//!
+//! The loaders fetch data from the AlphaVantage API and return it
+//! for further processing. Database operations should be handled
+//! by the consuming application.
 
+pub mod batch_processor;
+pub mod csv_processor;
 pub mod error;
 pub mod loader;
-pub mod security_loader;
-pub mod csv_processor;
-pub mod batch_processor;
 pub mod process_tracker;
+pub mod security_loader;
 
 // Re-export commonly used types
+pub use batch_processor::{BatchConfig, BatchProcessor};
 pub use error::{LoaderError, LoaderResult};
 pub use loader::{DataLoader, LoaderConfig, LoaderContext};
-pub use batch_processor::{BatchConfig, BatchProcessor};
-pub use process_tracker::{ProcessTracker, ProcessState};
+pub use process_tracker::{ProcessState, ProcessTracker};
 
-// Common types used across loaders
-#[derive(Debug, Clone)]
-pub struct SymbolInfo {
-    pub sid: i64,
-    pub symbol: String,
-}
-
-// Re-export loaders
-pub use security_loader::{SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput};
-pub use overview_loader::{OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput};
-pub use price_loader::{
-    IntradayPriceLoader, SummaryPriceLoader,
-    IntradayLoaderInput, SummaryLoaderInput, PriceLoaderOutput,
-    OutputSize, TimeSeriesInterval
+// Re-export loaders with their data types
+pub use security_loader::{
+  SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput,
 };
-pub use news_loader::{NewsLoader, NewsLoaderInput, NewsLoaderOutput};
-pub use topstats_loader::{TopStatsLoader, TopStatsLoaderInput, TopStatsLoaderOutput, MoverType};
+
+// Add similar exports for other loaders when they're updated
 
 // Prelude for convenient imports
 pub mod prelude {
-    pub use crate::{
-        DataLoader, LoaderConfig, LoaderContext, LoaderError, LoaderResult,
-        BatchConfig, BatchProcessor, ProcessTracker, ProcessState,
-    };
+  pub use crate::{
+    BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
+    LoaderResult, ProcessState, ProcessTracker,
+  };
 }
+
