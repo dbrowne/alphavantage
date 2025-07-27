@@ -338,15 +338,14 @@ async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
-/// Synchronous save function with field validation
+// Change the function signature to be synchronous (remove async)
 fn save_symbols_to_db(
   conn: &mut PgConnection,
   securities: &[av_loaders::SecurityData],
   sid_generator: &mut SidGenerator,
-) -> Result<usize> {
+) -> Result<usize> {  // No longer async
   use av_database_postgres::schema::symbols;
   use av_database_postgres::models::security::NewSymbol;
-  use diesel::Connection;
 
   let progress = ProgressBar::new(securities.len() as u64);
   progress.set_style(
@@ -357,215 +356,187 @@ fn save_symbols_to_db(
   );
   progress.set_message("Saving symbols to database");
 
-  info!("Starting database transaction for {} symbols", securities.len());
+  let mut saved_count = 0;
+  let mut updated_count = 0;
+  let mut failed_count = 0;
+  let mut symbol_map = HashMap::new();
 
-  // Use a transaction for all operations
-  let result = conn.transaction::<_, diesel::result::Error, _>(|conn| {
-    let mut saved_count = 0;
-    let mut updated_count = 0;
-    let mut skipped_count = 0;
-    let mut symbol_map = HashMap::new();
+  // Process each symbol individually
+  for security_data in securities {
+    // Only save if we got valid data from the API
+    if security_data.symbol.is_empty() || security_data.symbol == "None" {
+      continue;
+    }
 
-    for security_data in securities {
-      let mut has_issues = false;
+    // Check for duplicates within this batch
+    if symbol_map.contains_key(&security_data.symbol.to_uppercase()) {
+      debug!("Duplicate symbol {} found in batch, skipping", security_data.symbol);
+      continue;
+    }
+    symbol_map.insert(security_data.symbol.to_uppercase(), true);
 
-      // Check symbol length
-      if security_data.symbol.len() > 19 {
-        error!("PARSING ERROR: Symbol '{}' exceeds 10 characters (length: {})",
-        security_data.symbol, security_data.symbol.len());
-        error!("  Full data: {:?}", security_data);
-        has_issues = true;
+    // Log if the matched symbol differs from original query
+    if let Some(original) = &security_data.original_query {
+      if !original.eq_ignore_ascii_case(&security_data.symbol) {
+        info!("Symbol {} mapped to {} (match score: {:?})",
+              original, security_data.symbol, security_data.match_score);
       }
+    }
 
-      // Check for common parsing issues
-      if security_data.symbol.contains('\n') || security_data.symbol.contains('\r') {
-        error!("PARSING ERROR: Symbol contains newline characters: '{:?}'", security_data.symbol);
-        has_issues = true;
-      }
+    // Use the av-core mapping function for security type
+    let security_type = SecurityType::from_alpha_vantage(&security_data.stock_type);
 
-      if security_data.symbol.contains(',') {
-        error!("PARSING ERROR: Symbol contains comma: '{}'", security_data.symbol);
-        error!("  This suggests CSV parsing failure. Original query: {:?}", security_data.original_query);
-        has_issues = true;
-      }
+    if security_type == SecurityType::Other {
+      warn!(
+        "Unknown asset type '{}' for symbol {}, mapping to Other",
+        security_data.stock_type, security_data.symbol
+      );
+    }
 
-      // Check if symbol looks like it might be multiple fields concatenated
-      if security_data.symbol.contains(' ') && security_data.symbol.len() > 6 {
-        error!("PARSING ERROR: Symbol contains spaces: '{}'", security_data.symbol);
-        error!("  This might be multiple fields parsed as one");
-        has_issues = true;
-      }
+    // Parse market hours from the security data
+    let market_open = chrono::NaiveTime::parse_from_str(&security_data.market_open, "%H:%M")
+        .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("09:30:00", "%H:%M:%S").unwrap());
+    let market_close = chrono::NaiveTime::parse_from_str(&security_data.market_close, "%H:%M")
+        .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("16:00:00", "%H:%M:%S").unwrap());
 
-      // Check other fields for suspicious lengths
-      if security_data.stock_type.len() > 50 {
-        error!("PARSING ERROR: stock_type is suspiciously long: '{}' (length: {})",
-        security_data.stock_type, security_data.stock_type.len());
-        has_issues = true;
-      }
+    // Use the timezone from the security data or fall back to Exchange lookup
+    let timezone = if !security_data.timezone.is_empty() {
+      security_data.timezone.clone()
+    } else {
+      Exchange::from_str(&security_data.exchange)
+          .map(|ex| ex.timezone().to_string())
+          .unwrap_or_else(|| "US/Eastern".to_string())
+    };
 
-      if security_data.currency.len() > 3 {
-        error!("PARSING ERROR: currency '{}' is longer than 3 characters", security_data.currency);
-        has_issues = true;
-      }
+    // Normalize the region before saving
+    let normalized_region = normalize_alpha_region(&security_data.region);
 
-      // If we found issues, log the entire record for debugging
-      if has_issues {
-        error!("Full SecurityData with parsing issues:");
-        error!("  symbol: '{}'", security_data.symbol);
-        error!("  name: '{}'", security_data.name);
-        error!("  stock_type: '{}'", security_data.stock_type);
-        error!("  region: '{}'", security_data.region);
-        error!("  market_open: '{}'", security_data.market_open);
-        error!("  market_close: '{}'", security_data.market_close);
-        error!("  timezone: '{}'", security_data.timezone);
-        error!("  currency: '{}'", security_data.currency);
-        error!("  exchange: '{}'", security_data.exchange);
-        error!("  original_query: {:?}", security_data.original_query);
-        error!("  match_score: {:?}", security_data.match_score);
+    // Check if symbol already exists
+    let existing_result = symbols::table
+        .filter(symbols::symbol.eq(&security_data.symbol))
+        .select((symbols::sid, symbols::sec_type))
+        .first::<(i64, String)>(conn)
+        .optional();
 
-        skipped_count += 1;
-        continue;
-      }
+    match existing_result {
+      Ok(Some((sid_val, existing_sec_type))) => {
+        // Symbol exists, verify security type hasn't changed
+        let existing_security_type = SecurityIdentifier::decode(sid_val)
+            .map(|si| si.security_type)
+            .unwrap_or(SecurityType::Other);
 
-      // Check for duplicates within this batch
-      let symbol_upper = security_data.symbol.to_uppercase();
-      if symbol_map.contains_key(&symbol_upper) {
-        debug!("Duplicate symbol {} found in batch, skipping", security_data.symbol);
-        skipped_count += 1;
-        continue;
-      }
-      symbol_map.insert(symbol_upper.clone(), true);
-
-      // Get security type
-      let security_type = SecurityType::from_alpha_vantage(&security_data.stock_type);
-
-      // Parse market hours
-      let market_open = chrono::NaiveTime::parse_from_str(&security_data.market_open, "%H:%M")
-          .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("09:30:00", "%H:%M:%S").unwrap());
-      let market_close = chrono::NaiveTime::parse_from_str(&security_data.market_close, "%H:%M")
-          .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("16:00:00", "%H:%M:%S").unwrap());
-
-      // Get timezone - ensure it's not too long
-      let mut timezone = if !security_data.timezone.is_empty() {
-        security_data.timezone.clone()
-      } else {
-        Exchange::from_str(&security_data.exchange)
-            .map(|ex| ex.timezone().to_string())
-            .unwrap_or_else(|| "US/Eastern".to_string())
-      };
-
-      // Truncate timezone if needed (assuming 50 char limit)
-      if timezone.len() > 50 {
-        warn!("Truncating timezone '{}' to 50 chars", timezone);
-        timezone = timezone.chars().take(50).collect();
-      }
-
-      // Ensure currency is 3 chars max
-      let currency = if security_data.currency.len() > 3 {
-        warn!("Truncating currency '{}' to 3 chars", security_data.currency);
-        security_data.currency.chars().take(3).collect()
-      } else {
-        security_data.currency.clone()
-      };
-
-      // Check if symbol already exists
-      let existing: Option<(i64, String)> = symbols::table
-          .filter(symbols::symbol.eq(&security_data.symbol))
-          .select((symbols::sid, symbols::sec_type))
-          .first(conn)
-          .optional()?;
-
-      match existing {
-        Some((sid_val, _existing_sec_type)) => {
-          // Update existing symbol
-          diesel::update(symbols::table.find(sid_val))
-              .set((
-                symbols::name.eq(&security_data.name),
-                symbols::region.eq(&security_data.region),
-                symbols::currency.eq(&currency),
-                symbols::timezone.eq(&timezone),
-                symbols::m_time.eq(diesel::dsl::now),
-              ))
-              .execute(conn)?;
-
-          updated_count += 1;
-          debug!("Updated symbol {} with SID {}", security_data.symbol, sid_val);
+        if format!("{:?}", existing_security_type) != existing_sec_type {
+          warn!(
+            "Security type mismatch for {}: database has '{}', API returned '{}'",
+            security_data.symbol, existing_sec_type, security_data.stock_type
+          );
         }
-        None => {
-          // Insert new symbol
-          let new_sid = sid_generator.next_sid(security_type);
-          let now_t = Utc::now().naive_local();
 
-          // Log what we're about to insert for problematic symbols
-          if security_data.symbol == "AFSI" || saved_count < 3 {
-            info!("Inserting symbol '{}': name='{}' ({}), type='{}' ({}), region='{}' ({}), currency='{}' ({})",
-                  security_data.symbol,
-                  &security_data.name, security_data.name.len(),
-                  &format!("{:?}", security_type), format!("{:?}", security_type).len(),
-                  &security_data.region, security_data.region.len(),
-                  &currency, currency.len());
+        // Update the symbol data
+        match diesel::update(symbols::table.find(sid_val))
+            .set((
+              symbols::name.eq(&security_data.name),
+              symbols::region.eq(&normalized_region),
+              symbols::currency.eq(&security_data.currency),
+              symbols::timezone.eq(&timezone),
+              symbols::m_time.eq(chrono::Utc::now().naive_utc()),
+            ))
+            .execute(conn) {
+          Ok(updated) => {
+            if updated > 0 {
+              updated_count += 1;
+              debug!("Updated symbol {} with SID {}", security_data.symbol, sid_val);
+            }
           }
-          let normalized_region = normalize_alpha_region(&security_data.region);
-
-
-          let new_symbol = NewSymbol {
-            sid: &new_sid,
-            symbol: &security_data.symbol,
-            name: &security_data.name,
-            sec_type: &format!("{:?}", security_type),
-            region: &normalized_region,
-            market_open: &market_open,
-            market_close: &market_close,
-            timezone: &timezone,
-            currency: &currency,
-            overview: &false,
-            intraday: &false,
-            summary: &false,
-            c_time: &now_t,
-            m_time: &now_t,
-          };
-
-          match diesel::insert_into(symbols::table)
-              .values(&new_symbol)
-              .execute(conn)
-          {
-            Ok(rows) => {
-              saved_count += 1;
-              info!("Saved new symbol {} with SID {}", security_data.symbol, new_sid);
-            }
-            Err(e) => {
-              error!("Failed to insert symbol {}: {}", security_data.symbol, e);
-              error!("Field values: symbol='{}' ({}), name='{}' ({}), type='{}' ({}), region='{}' ({})",
-                    new_symbol.symbol, new_symbol.symbol.len(),
-                    new_symbol.name, new_symbol.name.len(),
-                    new_symbol.sec_type, new_symbol.sec_type.len(),
-                    new_symbol.region, new_symbol.region.len());
-              return Err(e);
-            }
+          Err(e) => {
+            error!("Failed to update symbol {}: {}", security_data.symbol, e);
+            error!("  Values - name: '{}' ({}), region: '{}' ({}), currency: '{}' ({})",
+                   security_data.name, security_data.name.len(),
+                   normalized_region, normalized_region.len(),
+                   security_data.currency, security_data.currency.len());
+            failed_count += 1;
           }
         }
       }
+      Ok(None) => {
+        // New symbol, generate SID using our in-memory generator
+        let new_sid = sid_generator.next_sid(security_type);
+        let now_t = chrono::Utc::now().naive_utc();
 
-      progress.inc(1);
+        let new_symbol = NewSymbol {
+          sid: &new_sid,
+          symbol: &security_data.symbol,
+          name: &security_data.name,
+          sec_type: &format!("{:?}", security_type),
+          region: &normalized_region,
+          market_open: &market_open,
+          market_close: &market_close,
+          timezone: &timezone,
+          currency: &security_data.currency,
+          overview: &false,
+          intraday: &false,
+          summary: &false,
+          c_time: &now_t,
+          m_time: &now_t,
+        };
+
+        // Log what we're about to insert for debugging
+        debug!("Attempting to insert symbol '{}' with:", security_data.symbol);
+        debug!("  - name: '{}' (length: {})", security_data.name, security_data.name.len());
+        debug!("  - region: '{}' (length: {})", normalized_region, normalized_region.len());
+        debug!("  - currency: '{}' (length: {})", security_data.currency, security_data.currency.len());
+        debug!("  - timezone: '{}' (length: {})", timezone, timezone.len());
+
+        match diesel::insert_into(symbols::table)
+            .values(&new_symbol)
+            .execute(conn) {
+          Ok(_) => {
+            saved_count += 1;
+            debug!("Saved new symbol {} with SID {}", security_data.symbol, new_sid);
+          }
+          Err(e) => {
+            error!("Failed to insert symbol {}: {}", security_data.symbol, e);
+            error!("Field values causing the error:");
+            error!("  - symbol: '{}' (length: {})", security_data.symbol, security_data.symbol.len());
+            error!("  - name: '{}' (length: {})", security_data.name, security_data.name.len());
+            error!("  - sec_type: '{}' (length: {})", format!("{:?}", security_type), format!("{:?}", security_type).len());
+            error!("  - region: '{}' (length: {})", normalized_region, normalized_region.len());
+            error!("  - currency: '{}' (length: {})", security_data.currency, security_data.currency.len());
+            error!("  - timezone: '{}' (length: {})", timezone, timezone.len());
+
+            // Check specific field constraints
+            if normalized_region.len() > 10 {
+              error!("  ⚠️  Region exceeds VARCHAR(10) limit!");
+            }
+            if security_data.symbol.len() > 20 {
+              error!("  ⚠️  Symbol exceeds VARCHAR(20) limit!");
+            }
+            if security_data.currency.len() > 10 {
+              error!("  ⚠️  Currency exceeds VARCHAR(10) limit!");
+            }
+
+            failed_count += 1;
+          }
+        }
+      }
+      Err(e) => {
+        error!("Failed to check existing symbol {}: {}", security_data.symbol, e);
+        failed_count += 1;
+      }
     }
 
-    progress.finish_with_message(format!("Transaction complete: {} new, {} updated, {} skipped",
-                                         saved_count, updated_count, skipped_count));
-
-    info!("Transaction complete: {} new, {} updated, {} skipped",
-          saved_count, updated_count, skipped_count);
-
-    Ok(saved_count)
-  });
-
-  match result {
-    Ok(count) => {
-      info!("Database transaction committed successfully - {} symbols saved", count);
-      Ok(count)
-    }
-    Err(e) => {
-      error!("Database transaction failed: {}", e);
-      Err(anyhow::anyhow!("Database error: {}", e))
-    }
+    progress.inc(1);
   }
+
+  progress.finish_with_message(format!(
+    "Completed: {} saved, {} updated, {} failed",
+    saved_count, updated_count, failed_count
+  ));
+
+  if failed_count > 0 {
+    warn!("Failed to save {} symbols due to database constraints", failed_count);
+  }
+
+  // Return success count even if some failed
+  Ok(saved_count + updated_count)
 }

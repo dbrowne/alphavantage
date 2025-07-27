@@ -480,7 +480,7 @@ impl SecurityType {
   /// Parse security type from string
   pub fn from_str(s: &str) -> Option<Self> {
     match s.to_uppercase().replace([' ', '-', '_'], "").as_str() {
-      "Equity" | "EQUITY" | "STOCK" => Some(SecurityType::Equity),
+      "COMMONSTOCK" | "EQUITY" | "STOCK" => Some(SecurityType::Equity),
       "PREFERREDSTOCK" | "PREFERRED" => Some(SecurityType::PreferredStock),
       "ETF" | "EXCHANGETRADEDFUND" => Some(SecurityType::ETF),
       "MUTUALFUND" | "FUND" => Some(SecurityType::MutualFund),
