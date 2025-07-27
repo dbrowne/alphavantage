@@ -48,6 +48,7 @@ enum LoadSubcommands {
   },
 }
 
+// Changed back to async
 pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
   match cmd.command {
     LoadSubcommands::Securities(args) => securities::execute(args, config).await,
