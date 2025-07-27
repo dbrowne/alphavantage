@@ -22,7 +22,7 @@ impl Config {
       env::var("NASDAQ_LISTED").unwrap_or_else(|_| "./data/nasdaq-listed_csv.csv".to_string());
 
     let nyse_csv_path =
-      env::var("OTHER_LISTED").unwrap_or_else(|_| "./data/other-listed.csv".to_string());
+      env::var("OTHER_LISTED").unwrap_or_else(|_| "./data/nyse-listed.csv".to_string());
 
     let api_config = CoreConfig {
       api_key,

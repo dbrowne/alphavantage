@@ -165,7 +165,7 @@ impl DataLoader for SecurityLoader {
 
             for symbol_match in matches {
               // Validate the symbol match data from API
-              if symbol_match.symbol.len() > 19 {
+              if symbol_match.symbol.len() > 20 {
                 error!("API PARSING ERROR: Received symbol '{}' with length {} from symbol search",
           symbol_match.symbol, symbol_match.symbol.len());
                 error!("  API Response: {:?}", symbol_match);
