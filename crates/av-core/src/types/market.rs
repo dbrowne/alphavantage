@@ -257,7 +257,7 @@ const SHIFT_6BIT: u8 = 58; // 64 - 6 = 58 bits for ID (2.88 x 10^17)
 /// Type of security
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SecurityType {
-  CommonStock,
+  Equity,
   PreferredStock,
   ETF,
   MutualFund,
@@ -301,7 +301,7 @@ impl SecurityIdentifier {
 impl std::fmt::Display for SecurityType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      SecurityType::CommonStock => write!(f, "Common Stock"),
+      SecurityType::Equity => write!(f, "Common Stock"),
       SecurityType::PreferredStock => write!(f, "Preferred Stock"),
       SecurityType::ETF => write!(f, "ETF"),
       SecurityType::MutualFund => write!(f, "Mutual Fund"),
@@ -328,9 +328,9 @@ impl std::fmt::Display for SecurityType {
 impl SecurityType {
   /// Encode with variable bit allocation based on expected universe size
   pub fn encode(st: SecurityType, id: u32) -> i64 {
-    match st {
+    let unsigned_result = match st {
       // High-volume types (4-bit prefix, 60 bits for ID)
-      SecurityType::CommonStock => (TYPE_COMMON_STOCK as i64) << SHIFT_4BIT | id as i64,
+      SecurityType::Equity => (TYPE_COMMON_STOCK as i64) << SHIFT_4BIT | id as i64,
       SecurityType::PreferredStock => (TYPE_PREFERRED as i64) << SHIFT_4BIT | id as i64,
       SecurityType::ETF => (TYPE_ETF as i64) << SHIFT_4BIT | id as i64,
       SecurityType::MutualFund => (TYPE_MUTUAL_FUND as i64) << SHIFT_4BIT | id as i64,
@@ -354,7 +354,8 @@ impl SecurityType {
       SecurityType::CD => (TYPE_CD as i64) << SHIFT_6BIT | id as i64,
       SecurityType::TreasuryBill => (TYPE_T_BILL as i64) << SHIFT_6BIT | id as i64,
       SecurityType::Other => (TYPE_OTHER as i64) << SHIFT_6BIT | id as i64,
-    }
+    };
+    unsigned_result as i64
   }
 
   /// Decode SecurityType from an encoded SID
@@ -362,7 +363,7 @@ impl SecurityType {
     // Check 4-bit types first (most common)
     let type_4bit = (sid >> SHIFT_4BIT) & 0b1111;
     match type_4bit {
-      x if x == TYPE_COMMON_STOCK as i64 => return SecurityType::CommonStock,
+      x if x == TYPE_COMMON_STOCK as i64 => return SecurityType::Equity,
       x if x == TYPE_PREFERRED as i64 => return SecurityType::PreferredStock,
       x if x == TYPE_ETF as i64 => return SecurityType::ETF,
       x if x == TYPE_MUTUAL_FUND as i64 => return SecurityType::MutualFund,
@@ -401,7 +402,7 @@ impl SecurityType {
   /// Get the bit shift for encoding based on security type
   fn get_shift(st: SecurityType) -> u8 {
     match st {
-      SecurityType::CommonStock
+      SecurityType::Equity
       | SecurityType::PreferredStock
       | SecurityType::ETF
       | SecurityType::MutualFund
@@ -424,7 +425,7 @@ impl SecurityType {
   /// Map AlphaVantage asset type string to SecurityType
   pub fn from_alpha_vantage(asset_type: &str) -> Self {
     match asset_type.to_uppercase().replace([' ', '_', '-'], "").as_str() {
-      "COMMONSTOCK" | "CS" => SecurityType::CommonStock,
+      "EQUITY" | "CS" => SecurityType::Equity,
       "PREFERREDSTOCK" | "PS" => SecurityType::PreferredStock,
       "EXCHANGETRADEDFUND" | "ETF" => SecurityType::ETF,
       "MUTUALFUND" | "MF" => SecurityType::MutualFund,
@@ -450,7 +451,7 @@ impl SecurityType {
   /// Convert SecurityType to AlphaVantage asset type string
   pub fn to_alpha_vantage(&self) -> &'static str {
     match self {
-      SecurityType::CommonStock => "Common Stock",
+      SecurityType::Equity => "Common Stock",
       SecurityType::PreferredStock => "Preferred Stock",
       SecurityType::ETF => "Exchange Traded Fund",
       SecurityType::MutualFund => "Mutual Fund",
@@ -479,7 +480,7 @@ impl SecurityType {
   /// Parse security type from string
   pub fn from_str(s: &str) -> Option<Self> {
     match s.to_uppercase().replace([' ', '-', '_'], "").as_str() {
-      "COMMONSTOCK" | "EQUITY" | "STOCK" => Some(SecurityType::CommonStock),
+      "Equity" | "EQUITY" | "STOCK" => Some(SecurityType::Equity),
       "PREFERREDSTOCK" | "PREFERRED" => Some(SecurityType::PreferredStock),
       "ETF" | "EXCHANGETRADEDFUND" => Some(SecurityType::ETF),
       "MUTUALFUND" | "FUND" => Some(SecurityType::MutualFund),
@@ -506,7 +507,7 @@ impl SecurityType {
   pub fn is_equity(&self) -> bool {
     matches!(
       self,
-      SecurityType::CommonStock
+      SecurityType::Equity
         | SecurityType::PreferredStock
         | SecurityType::ETF
         | SecurityType::REIT
@@ -535,7 +536,7 @@ impl SecurityType {
   /// Get the typical settlement period in days
   pub fn settlement_days(&self) -> u8 {
     match self {
-      SecurityType::CommonStock
+      SecurityType::Equity
       | SecurityType::PreferredStock
       | SecurityType::ETF
       | SecurityType::REIT
@@ -776,12 +777,12 @@ mod tests {
 
   #[test]
   fn test_security_type_parsing() {
-    assert_eq!(SecurityType::from_str("Common Stock"), Some(SecurityType::CommonStock));
+    assert_eq!(SecurityType::from_str("Common Stock"), Some(SecurityType::Equity));
     assert_eq!(SecurityType::from_str("ETF"), Some(SecurityType::ETF));
-    assert!(SecurityType::CommonStock.is_equity());
+    assert!(SecurityType::Equity.is_equity());
     assert!(SecurityType::Bond.is_fixed_income());
     assert!(SecurityType::Option.is_derivative());
-    assert_eq!(SecurityType::CommonStock.settlement_days(), 2);
+    assert_eq!(SecurityType::Equity.settlement_days(), 2);
   }
 
   // ===== Exchange Tests =====
@@ -811,7 +812,7 @@ mod tests {
   fn test_security_type_encode_decode_4bit() {
     // Test all 4-bit types
     let test_cases = vec![
-      (SecurityType::CommonStock, 12345),
+      (SecurityType::Equity, 12345),
       (SecurityType::PreferredStock, 67890),
       (SecurityType::ETF, 11111),
       (SecurityType::MutualFund, 99999),
@@ -887,9 +888,9 @@ mod tests {
     let max_6bit = u32::MAX >> 6; // 58 bits available for ID
 
     // Test 4-bit type with max ID that fits in u32
-    let encoded = SecurityType::encode(SecurityType::CommonStock, u32::MAX);
+    let encoded = SecurityType::encode(SecurityType::Equity, u32::MAX);
     let decoded = SecurityType::decode_type(encoded);
-    assert_eq!(decoded, SecurityType::CommonStock);
+    assert_eq!(decoded, SecurityType::Equity);
 
     let identifier = SecurityIdentifier::decode(encoded).unwrap();
     assert_eq!(identifier.raw_id, u32::MAX);
@@ -897,7 +898,7 @@ mod tests {
 
   #[test]
   fn test_security_type_get_shift() {
-    assert_eq!(SecurityType::get_shift(SecurityType::CommonStock), SHIFT_4BIT);
+    assert_eq!(SecurityType::get_shift(SecurityType::Equity), SHIFT_4BIT);
     assert_eq!(SecurityType::get_shift(SecurityType::Option), SHIFT_4BIT);
     assert_eq!(SecurityType::get_shift(SecurityType::Bond), SHIFT_5BIT);
     assert_eq!(SecurityType::get_shift(SecurityType::Cryptocurrency), SHIFT_5BIT);
@@ -908,9 +909,9 @@ mod tests {
   #[test]
   fn test_security_identifier_decode_edge_cases() {
     // Test with 0 ID
-    let encoded = SecurityType::encode(SecurityType::CommonStock, 0);
+    let encoded = SecurityType::encode(SecurityType::Equity, 0);
     let identifier = SecurityIdentifier::decode(encoded).unwrap();
-    assert_eq!(identifier.security_type, SecurityType::CommonStock);
+    assert_eq!(identifier.security_type, SecurityType::Equity);
     assert_eq!(identifier.raw_id, 0);
 
     // Test with 1 ID
@@ -927,7 +928,7 @@ mod tests {
     let mut encoded_values = std::collections::HashSet::new();
 
     let types = vec![
-      SecurityType::CommonStock,
+      SecurityType::Equity,
       SecurityType::PreferredStock,
       SecurityType::ETF,
       SecurityType::Bond,
@@ -944,9 +945,9 @@ mod tests {
   // ===== SecurityType Parsing and Utility Tests =====
   #[test]
   fn test_security_type_from_str() {
-    assert_eq!(SecurityType::from_str("Common Stock"), Some(SecurityType::CommonStock));
-    assert_eq!(SecurityType::from_str("EQUITY"), Some(SecurityType::CommonStock));
-    assert_eq!(SecurityType::from_str("stock"), Some(SecurityType::CommonStock));
+    assert_eq!(SecurityType::from_str("Common Stock"), Some(SecurityType::Equity));
+    assert_eq!(SecurityType::from_str("EQUITY"), Some(SecurityType::Equity));
+    assert_eq!(SecurityType::from_str("stock"), Some(SecurityType::Equity));
     assert_eq!(SecurityType::from_str("ETF"), Some(SecurityType::ETF));
     assert_eq!(SecurityType::from_str("Exchange Traded Fund"), Some(SecurityType::ETF));
     assert_eq!(SecurityType::from_str("CRYPTO"), Some(SecurityType::Cryptocurrency));
@@ -956,7 +957,7 @@ mod tests {
 
   #[test]
   fn test_security_type_display() {
-    assert_eq!(format!("{}", SecurityType::CommonStock), "Common Stock");
+    assert_eq!(format!("{}", SecurityType::Equity), "Common Stock");
     assert_eq!(format!("{}", SecurityType::ETF), "ETF");
     assert_eq!(format!("{}", SecurityType::Cryptocurrency), "Cryptocurrency");
   }
@@ -964,7 +965,7 @@ mod tests {
   #[test]
   fn test_security_type_categories() {
     // Test equity types
-    assert!(SecurityType::CommonStock.is_equity());
+    assert!(SecurityType::Equity.is_equity());
     assert!(SecurityType::PreferredStock.is_equity());
     assert!(SecurityType::ETF.is_equity());
     assert!(SecurityType::REIT.is_equity());
@@ -979,20 +980,20 @@ mod tests {
     assert!(SecurityType::MunicipalBond.is_fixed_income());
     assert!(SecurityType::TreasuryBill.is_fixed_income());
     assert!(SecurityType::CD.is_fixed_income());
-    assert!(!SecurityType::CommonStock.is_fixed_income());
+    assert!(!SecurityType::Equity.is_fixed_income());
     assert!(!SecurityType::Option.is_fixed_income());
 
     // Test derivative types
     assert!(SecurityType::Option.is_derivative());
     assert!(SecurityType::Future.is_derivative());
     assert!(SecurityType::Warrant.is_derivative());
-    assert!(!SecurityType::CommonStock.is_derivative());
+    assert!(!SecurityType::Equity.is_derivative());
     assert!(!SecurityType::Bond.is_derivative());
   }
 
   #[test]
   fn test_security_type_settlement_days() {
-    assert_eq!(SecurityType::CommonStock.settlement_days(), 2);
+    assert_eq!(SecurityType::Equity.settlement_days(), 2);
     assert_eq!(SecurityType::MutualFund.settlement_days(), 1);
     assert_eq!(SecurityType::Bond.settlement_days(), 1);
     assert_eq!(SecurityType::Option.settlement_days(), 1);
@@ -1145,7 +1146,7 @@ mod tests {
 
     for id in test_ids {
       for sec_type in [
-        SecurityType::CommonStock,
+        SecurityType::Equity,
         SecurityType::PreferredStock,
         SecurityType::ETF,
         SecurityType::MutualFund,

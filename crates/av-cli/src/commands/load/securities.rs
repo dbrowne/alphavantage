@@ -112,6 +112,24 @@ impl SidGenerator {
     sid
   }
 }
+/// Normalize region names to abbreviated forms.
+///
+/// Converts common region names to their standard abbreviated forms used
+/// throughout the application. Unknown regions are returned unchanged.
+pub fn normalize_alpha_region(region: &str) -> String {
+  match region {
+    "United States" => "USA",
+    "United Kingdom" => "UK",
+    "Frankfurt" => "Frank",
+    "Toronto Venture" => "TOR",
+    "India/Bombay" => "Bomb",
+    "Brazil/Sao Paolo" => "SaoP",
+    _ => region,
+  }
+      .to_string()
+}
+
+
 
 /// Main execute function
 pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
@@ -236,6 +254,8 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     0
   };
 
+
+
   // Complete process tracking
   if let Some(tracker) = &context.process_tracker {
     let state = if total_loaded == 0 {
@@ -350,7 +370,7 @@ fn save_symbols_to_db(
       let mut has_issues = false;
 
       // Check symbol length
-      if security_data.symbol.len() > 10 {
+      if security_data.symbol.len() > 19 {
         error!("PARSING ERROR: Symbol '{}' exceeds 10 characters (length: {})",
         security_data.symbol, security_data.symbol.len());
         error!("  Full data: {:?}", security_data);
@@ -485,13 +505,15 @@ fn save_symbols_to_db(
                   &security_data.region, security_data.region.len(),
                   &currency, currency.len());
           }
+          let normalized_region = normalize_alpha_region(&security_data.region);
+
 
           let new_symbol = NewSymbol {
             sid: &new_sid,
             symbol: &security_data.symbol,
             name: &security_data.name,
             sec_type: &format!("{:?}", security_type),
-            region: &security_data.region,
+            region: &normalized_region,
             market_open: &market_open,
             market_close: &market_close,
             timezone: &timezone,

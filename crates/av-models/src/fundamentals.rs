@@ -476,11 +476,11 @@ pub struct BalanceSheetReport {
     pub retained_earnings: String,
     
     /// Common stock
-    #[serde(rename = "commonStock")]
+    #[serde(rename = "Equity")]
     pub common_stock: String,
     
     /// Common stock shares outstanding
-    #[serde(rename = "commonStockSharesOutstanding")]
+    #[serde(rename = "EquitySharesOutstanding")]
     pub common_stock_shares_outstanding: String,
 }
 
