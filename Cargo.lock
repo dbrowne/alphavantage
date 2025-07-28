@@ -257,6 +257,7 @@ name = "av-database-postgres"
 version = "0.1.0"
 dependencies = [
  "bb8",
+ "bigdecimal",
  "chrono",
  "diesel",
  "diesel-async",
@@ -351,6 +352,7 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]

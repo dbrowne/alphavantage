@@ -1,6 +1,5 @@
 //! Batch processing utilities for efficient data loading
 
-use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
 use tokio::sync::Semaphore;

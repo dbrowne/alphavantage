@@ -68,7 +68,7 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
-    crypto_overviews (sid) {
+    crypto_overview_basic (sid) {
         sid -> Int8,
         #[max_length = 20]
         symbol -> Varchar,
@@ -82,6 +82,20 @@ diesel::table! {
         volume_24h -> Nullable<Int8>,
         volume_change_24h -> Nullable<Numeric>,
         current_price -> Nullable<Numeric>,
+        circulating_supply -> Nullable<Numeric>,
+        total_supply -> Nullable<Numeric>,
+        max_supply -> Nullable<Numeric>,
+        last_updated -> Nullable<Timestamptz>,
+        c_time -> Timestamptz,
+        m_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    crypto_overview_metrics (sid) {
+        sid -> Int8,
         price_change_24h -> Nullable<Numeric>,
         price_change_pct_24h -> Nullable<Numeric>,
         price_change_pct_7d -> Nullable<Numeric>,
@@ -100,10 +114,6 @@ diesel::table! {
         #[max_length = 10]
         roi_currency -> Nullable<Varchar>,
         roi_percentage -> Nullable<Numeric>,
-        circulating_supply -> Nullable<Numeric>,
-        total_supply -> Nullable<Numeric>,
-        max_supply -> Nullable<Numeric>,
-        last_updated -> Nullable<Timestamptz>,
         c_time -> Timestamptz,
         m_time -> Timestamptz,
     }
@@ -444,7 +454,8 @@ diesel::joinable!(articles -> authors (author));
 diesel::joinable!(articles -> sources (sourceid));
 diesel::joinable!(authormaps -> feeds (feedid));
 diesel::joinable!(crypto_markets -> symbols (sid));
-diesel::joinable!(crypto_overviews -> symbols (sid));
+diesel::joinable!(crypto_overview_basic -> symbols (sid));
+diesel::joinable!(crypto_overview_metrics -> symbols (sid));
 diesel::joinable!(crypto_social -> symbols (sid));
 diesel::joinable!(crypto_technical -> symbols (sid));
 diesel::joinable!(feeds -> symbols (sid));
@@ -467,7 +478,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     authormaps,
     authors,
     crypto_markets,
-    crypto_overviews,
+    crypto_overview_basic,
+    crypto_overview_metrics,
     crypto_social,
     crypto_technical,
     feeds,

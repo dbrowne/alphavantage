@@ -8,12 +8,11 @@
 //! The processor filters out test issues and handles various
 //! CSV quirks like extra whitespace and different column names.
 
-use chrono::NaiveDate;
-use csv::{Reader, StringRecord};
+use csv::Reader;
 use serde::Deserialize;
 use std::fs::File;
 use std::path::Path;
-use crate::{LoaderError, LoaderResult};
+use crate::LoaderResult;
 
 pub struct CsvProcessor;
 

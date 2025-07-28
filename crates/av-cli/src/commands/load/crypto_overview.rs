@@ -12,7 +12,10 @@ use tokio::time::sleep;
 use regex::Regex;
 use diesel::prelude::*;
 use diesel::PgConnection;
-use av_database_postgres::models::crypto::{NewCryptoOverview, NewCryptoTechnical, NewCryptoSocial};
+use av_database_postgres::models::crypto::{
+    NewCryptoOverviewBasic, NewCryptoOverviewMetrics,
+    CryptoOverviewBasic, CryptoOverviewMetrics
+};
 use bigdecimal::BigDecimal;
 use std::str::FromStr;
 
