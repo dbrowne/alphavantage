@@ -7,7 +7,7 @@ use tracing::{info, warn, error};
 
 use av_models::fundamentals::CompanyOverview;
 use crate::{
-    DataLoader, LoaderContext, LoaderResult, LoaderError,
+    DataLoader, LoaderContext, LoaderResult,
     process_tracker::ProcessState,
 };
 

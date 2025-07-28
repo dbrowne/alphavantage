@@ -61,6 +61,10 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::Overviews(args) => overviews::execute(args, config).await,
     LoadSubcommands::crypto(args) => crypto::execute(args, config).await,
     LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
+    LoadSubcommands::UpdateGithub(args) => {
+      info!("Updating GitHub data for cryptocurrencies");
+      crypto_overview::update_github_data(config, args).await
+    }
     LoadSubcommands::Intraday { symbol: _, interval: _ } => {
       todo!("Implement intraday loading")
     }

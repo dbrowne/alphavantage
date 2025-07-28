@@ -10,7 +10,7 @@ use tracing::{info, warn, debug, error};
 use av_models::time_series::SymbolSearch;
 use av_models::common::SymbolMatch;
 use crate::{
-  DataLoader, LoaderContext, LoaderResult, LoaderError,
+  DataLoader, LoaderContext, LoaderResult,
   csv_processor::CsvProcessor,
   process_tracker::ProcessState,
 };
