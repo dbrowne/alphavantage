@@ -212,9 +212,8 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
             }
             Err(e) => {
                 error!("Failed to fetch overview for {}: {}", symbol, e);
-                if !args.continue_on_error {
-                    return Err(e);
-                }
+                progress.inc(1);
+                continue; // skip the failure for now
             }
         }
 
@@ -860,6 +859,7 @@ fn get_coingecko_id(symbol: &str) -> String {
         "USDC" => "usd-coin".to_string(),
         "USDT" => "tether".to_string(),
         "BUSD" => "binance-usd".to_string(),
+        "1ST" => "firstblood".to_string(),
         _ => symbol.to_lowercase(),
     }
 }
@@ -889,6 +889,7 @@ fn get_coinpaprika_id(symbol: &str) ->String {
         "VET" => "vet-vechain".to_string(),
         "ICP" => "icp-internet-computer".to_string(),
         "FIL" => "fil-filecoin".to_string(),
+        "1ST" => "1st-firstblood".to_string(),
         _ => symbol.to_lowercase(),
     }
 }
@@ -916,6 +917,7 @@ fn get_coincap_id(symbol: &str) -> String {
         "ALGO" => "algorand".to_string(),
         "VET" => "vechain".to_string(),
         "TRX" => "tron".to_string(),
+        "1ST" => "firstblood".to_string(),
         _ => symbol.to_lowercase(),
     }
 }
