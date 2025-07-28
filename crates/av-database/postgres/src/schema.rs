@@ -38,6 +38,154 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
+    crypto_markets (id) {
+        id -> Int4,
+        sid -> Int8,
+        #[max_length = 100]
+        exchange -> Varchar,
+        #[max_length = 20]
+        base -> Varchar,
+        #[max_length = 20]
+        target -> Varchar,
+        #[max_length = 20]
+        market_type -> Nullable<Varchar>,
+        volume_24h -> Nullable<Numeric>,
+        volume_percentage -> Nullable<Numeric>,
+        bid_ask_spread_pct -> Nullable<Numeric>,
+        #[max_length = 20]
+        liquidity_score -> Nullable<Varchar>,
+        is_active -> Nullable<Bool>,
+        is_anomaly -> Nullable<Bool>,
+        is_stale -> Nullable<Bool>,
+        #[max_length = 20]
+        trust_score -> Nullable<Varchar>,
+        last_traded_at -> Nullable<Timestamptz>,
+        last_fetch_at -> Nullable<Timestamptz>,
+        c_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    crypto_overviews (sid) {
+        sid -> Int8,
+        #[max_length = 20]
+        symbol -> Varchar,
+        name -> Text,
+        #[max_length = 100]
+        slug -> Nullable<Varchar>,
+        description -> Nullable<Text>,
+        market_cap_rank -> Nullable<Int4>,
+        market_cap -> Nullable<Int8>,
+        fully_diluted_valuation -> Nullable<Int8>,
+        volume_24h -> Nullable<Int8>,
+        volume_change_24h -> Nullable<Numeric>,
+        current_price -> Nullable<Numeric>,
+        price_change_24h -> Nullable<Numeric>,
+        price_change_pct_24h -> Nullable<Numeric>,
+        price_change_pct_7d -> Nullable<Numeric>,
+        price_change_pct_14d -> Nullable<Numeric>,
+        price_change_pct_30d -> Nullable<Numeric>,
+        price_change_pct_60d -> Nullable<Numeric>,
+        price_change_pct_200d -> Nullable<Numeric>,
+        price_change_pct_1y -> Nullable<Numeric>,
+        ath -> Nullable<Numeric>,
+        ath_date -> Nullable<Timestamptz>,
+        ath_change_percentage -> Nullable<Numeric>,
+        atl -> Nullable<Numeric>,
+        atl_date -> Nullable<Timestamptz>,
+        atl_change_percentage -> Nullable<Numeric>,
+        roi_times -> Nullable<Numeric>,
+        #[max_length = 10]
+        roi_currency -> Nullable<Varchar>,
+        roi_percentage -> Nullable<Numeric>,
+        circulating_supply -> Nullable<Numeric>,
+        total_supply -> Nullable<Numeric>,
+        max_supply -> Nullable<Numeric>,
+        last_updated -> Nullable<Timestamptz>,
+        c_time -> Timestamptz,
+        m_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    crypto_social (sid) {
+        sid -> Int8,
+        website_url -> Nullable<Text>,
+        whitepaper_url -> Nullable<Text>,
+        github_url -> Nullable<Text>,
+        #[max_length = 100]
+        twitter_handle -> Nullable<Varchar>,
+        twitter_followers -> Nullable<Int4>,
+        telegram_url -> Nullable<Text>,
+        telegram_members -> Nullable<Int4>,
+        discord_url -> Nullable<Text>,
+        discord_members -> Nullable<Int4>,
+        reddit_url -> Nullable<Text>,
+        reddit_subscribers -> Nullable<Int4>,
+        facebook_url -> Nullable<Text>,
+        facebook_likes -> Nullable<Int4>,
+        coingecko_score -> Nullable<Numeric>,
+        developer_score -> Nullable<Numeric>,
+        community_score -> Nullable<Numeric>,
+        liquidity_score -> Nullable<Numeric>,
+        public_interest_score -> Nullable<Numeric>,
+        sentiment_votes_up_pct -> Nullable<Numeric>,
+        sentiment_votes_down_pct -> Nullable<Numeric>,
+        c_time -> Timestamptz,
+        m_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    crypto_technical (sid) {
+        sid -> Int8,
+        #[max_length = 100]
+        blockchain_platform -> Nullable<Varchar>,
+        #[max_length = 50]
+        token_standard -> Nullable<Varchar>,
+        #[max_length = 100]
+        consensus_mechanism -> Nullable<Varchar>,
+        #[max_length = 100]
+        hashing_algorithm -> Nullable<Varchar>,
+        block_time_minutes -> Nullable<Numeric>,
+        block_reward -> Nullable<Numeric>,
+        block_height -> Nullable<Int8>,
+        hash_rate -> Nullable<Numeric>,
+        difficulty -> Nullable<Numeric>,
+        github_forks -> Nullable<Int4>,
+        github_stars -> Nullable<Int4>,
+        github_subscribers -> Nullable<Int4>,
+        github_total_issues -> Nullable<Int4>,
+        github_closed_issues -> Nullable<Int4>,
+        github_pull_requests -> Nullable<Int4>,
+        github_contributors -> Nullable<Int4>,
+        github_commits_4_weeks -> Nullable<Int4>,
+        is_defi -> Nullable<Bool>,
+        is_stablecoin -> Nullable<Bool>,
+        is_nft_platform -> Nullable<Bool>,
+        is_exchange_token -> Nullable<Bool>,
+        is_gaming -> Nullable<Bool>,
+        is_metaverse -> Nullable<Bool>,
+        is_privacy_coin -> Nullable<Bool>,
+        is_layer2 -> Nullable<Bool>,
+        is_wrapped -> Nullable<Bool>,
+        genesis_date -> Nullable<Date>,
+        ico_price -> Nullable<Numeric>,
+        ico_date -> Nullable<Date>,
+        c_time -> Timestamptz,
+        m_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     feeds (id) {
         id -> Int4,
         sid -> Int8,
@@ -295,6 +443,10 @@ diesel::table! {
 diesel::joinable!(articles -> authors (author));
 diesel::joinable!(articles -> sources (sourceid));
 diesel::joinable!(authormaps -> feeds (feedid));
+diesel::joinable!(crypto_markets -> symbols (sid));
+diesel::joinable!(crypto_overviews -> symbols (sid));
+diesel::joinable!(crypto_social -> symbols (sid));
+diesel::joinable!(crypto_technical -> symbols (sid));
 diesel::joinable!(feeds -> symbols (sid));
 diesel::joinable!(intradayprices -> symbols (sid));
 diesel::joinable!(newsoverviews -> symbols (sid));
@@ -314,6 +466,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     articles,
     authormaps,
     authors,
+    crypto_markets,
+    crypto_overviews,
+    crypto_social,
+    crypto_technical,
     feeds,
     intradayprices,
     newsoverviews,
