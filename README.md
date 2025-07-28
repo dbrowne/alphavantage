@@ -62,6 +62,7 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
 ### Phase 2: Data Loaders
 - Company overview loader ✅
 - Crypto currency symbol loader ✅
+- Crypto Overview loader 
 - News loader with sentiment analysis
 - Price data loaders
 - Batch processing with progress tracking
