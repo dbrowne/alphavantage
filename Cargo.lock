@@ -198,6 +198,7 @@ dependencies = [
  "av-models",
  "chrono",
  "clap",
+ "csv",
  "diesel",
  "dotenvy",
  "indicatif",

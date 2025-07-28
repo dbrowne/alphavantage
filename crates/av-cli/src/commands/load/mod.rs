@@ -4,6 +4,7 @@ use crate::config::Config;
 
 pub mod securities;
 pub mod overviews;
+ pub  mod crypto;
 
 #[derive(Args)]
 pub struct LoadCommand {
@@ -18,6 +19,8 @@ enum LoadSubcommands {
 
   /// Load company overviews for existing securities
   Overviews(overviews::OverviewsArgs),
+
+  crypto(crypto::CryptoArgs),
 
   /// Load intraday price data
   Intraday {
@@ -50,6 +53,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
   match cmd.command {
     LoadSubcommands::Securities(args) => securities::execute(args, config).await,
     LoadSubcommands::Overviews(args) => overviews::execute(args, config).await,
+    LoadSubcommands::crypto(args) => crypto::execute(args, config).await,
     LoadSubcommands::Intraday { symbol: _, interval: _ } => {
       todo!("Implement intraday loading")
     }
