@@ -60,10 +60,12 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
 
 
 ### Phase 2: Data Loaders
-- Company overview loader
-- Price data loaders
+- Company overview loader ✅
 - News loader with sentiment analysis
+- Price data loaders
 - Batch processing with progress tracking
+
+
  
 ### Phase 3: API Client (In Progress)
 - Time series endpoints
@@ -71,11 +73,15 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
 - News sentiment endpoints
 - Rate limiting implementation
 
+
+
 ### Phase 4: CLI Enhancement
 - Complete command structure
 - Query capabilities
 - Analytics commands
 - Process management
+
+
 
 ### Phase 5: Production Features
 - Comprehensive error handling
@@ -106,7 +112,7 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
    cd timescale_setup
    make up
    
-   3. **setup database**
+3. **setup database**
       ```bash
       cd ../crates/av-database/postgres
       diesel setup
@@ -115,7 +121,7 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
       diesel migration run
       PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
       
-   4. **check database**
+4. **check database**
 ```
    psql (16.8 (Ubuntu 16.8-0ubuntu0.24.04.1), server 15.13)
    Type "help" for help.
@@ -145,6 +151,5 @@ public | topicrefs                  | table | ts_user
 public | topstats                   | table | ts_user
 (19 rows)
 ```
-   
 
    
