@@ -2,8 +2,6 @@
 use anyhow::Result;
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::HashMap;
-use chrono::Utc;
 use tracing::{info, warn, error, debug};
 
 use av_core::types::market::{SecurityIdentifier, SecurityType};

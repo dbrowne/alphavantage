@@ -3,7 +3,6 @@ use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::collections::HashMap;
-use chrono::Utc;
 use tracing::{info, warn, error, debug};
 
 use av_client::AlphaVantageClient;

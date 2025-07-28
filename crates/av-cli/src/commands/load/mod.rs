@@ -6,6 +6,7 @@ pub mod securities;
 pub mod overviews;
  pub  mod crypto;
 pub  mod crypto_overview;
+use tracing::info;
 
 #[derive(Args)]
 pub struct LoadCommand {
@@ -21,7 +22,7 @@ enum LoadSubcommands {
   /// Load company overviews for existing securities
   Overviews(overviews::OverviewsArgs),
 
-  crypto(crypto::CryptoArgs),
+  Crypto(crypto::CryptoArgs),
   /// Load cryptocurrency overviews (market data)
   CryptoOverview(crypto_overview::CryptoOverviewArgs),
 
@@ -59,11 +60,11 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
   match cmd.command {
     LoadSubcommands::Securities(args) => securities::execute(args, config).await,
     LoadSubcommands::Overviews(args) => overviews::execute(args, config).await,
-    LoadSubcommands::crypto(args) => crypto::execute(args, config).await,
+    LoadSubcommands::Crypto(args) => crypto::execute(args, config).await,
     LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
     LoadSubcommands::UpdateGithub(args) => {
       info!("Updating GitHub data for cryptocurrencies");
-      crypto_overview::update_github_data(config, args).await
+      crypto_overview::update_github_data( args,config).await
     }
     LoadSubcommands::Intraday { symbol: _, interval: _ } => {
       todo!("Implement intraday loading")
