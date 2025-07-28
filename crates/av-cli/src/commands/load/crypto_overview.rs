@@ -1,20 +1,21 @@
+use chrono::{DateTime, Utc};
 use anyhow::{Result, anyhow};
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
-use chrono::{Utc, NaiveDate};
+use chrono::NaiveDate;
 use tracing::{info, warn, error, debug};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
 use regex::Regex;
 use diesel::prelude::*;
 use diesel::PgConnection;
 use av_database_postgres::models::crypto::{
+    NewCryptoTechnical, NewCryptoSocial,
     NewCryptoOverviewBasic, NewCryptoOverviewMetrics,
-    CryptoOverviewBasic, CryptoOverviewMetrics
+
 };
 use bigdecimal::BigDecimal;
 use std::str::FromStr;
@@ -796,120 +797,126 @@ async fn check_github_rate_limit(
     let data: Value = response.json().await?;
 
     let core = &data["rate"];
-    let limit = core["limit"].as_i64().unwrap_or(0);
+    let _limit = core["limit"].as_i64().unwrap_or(0);
     let remaining = core["remaining"].as_i64().unwrap_or(0);
     let reset = core["reset"].as_i64().unwrap_or(0);
 
-    let reset_time = chrono::NaiveDateTime::from_timestamp_opt(reset, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-        .unwrap_or_else(|| "Unknown".to_string());
 
-    info!("GitHub API Rate Limit Status:");
-    info!("  Limit: {} requests/hour", limit);
-    info!("  Remaining: {} requests", remaining);
-    info!("  Resets at: {}", reset_time);
+
+    let reset_time = DateTime::<Utc>::from_timestamp(reset, 0)
+        .map(|dt| dt.naive_utc());
+
+    if let Some(time) = reset_time {
+        info!("  Resets at: {}", time);
+    } else {
+        info!("  Resets at: unknown");
+    }
 
     if remaining == 0 {
-        return Err(anyhow!("GitHub rate limit exceeded. Resets at {}", reset_time));
+        if let Some(time) = reset_time {
+            return Err(anyhow!("GitHub rate limit exceeded. Resets at {}", time));
+        } else {
+            return Err(anyhow!("GitHub rate limit exceeded. Reset time unknown"));
+        }
     }
 
     Ok(())
 }
 
 // Symbol to ID mapping functions
-fn get_coingecko_id(symbol: &str) -> &str {
+fn get_coingecko_id(symbol: &str) -> String {
     match symbol.to_uppercase().as_str() {
-        "BTC" => "bitcoin",
-        "ETH" => "ethereum",
-        "BNB" => "binancecoin",
-        "XRP" => "ripple",
-        "ADA" => "cardano",
-        "DOGE" => "dogecoin",
-        "SOL" => "solana",
-        "TRX" => "tron",
-        "DOT" => "polkadot",
-        "MATIC" => "matic-network",
-        "AVAX" => "avalanche-2",
-        "SHIB" => "shiba-inu",
-        "DAI" => "dai",
-        "WBTC" => "wrapped-bitcoin",
-        "LTC" => "litecoin",
-        "BCH" => "bitcoin-cash",
-        "LINK" => "chainlink",
-        "LEO" => "leo-token",
-        "UNI" => "uniswap",
-        "ATOM" => "cosmos",
-        "XLM" => "stellar",
-        "OKB" => "okb",
-        "ETC" => "ethereum-classic",
-        "XMR" => "monero",
-        "ICP" => "internet-computer",
-        "FIL" => "filecoin",
-        "HBAR" => "hedera",
-        "LDO" => "lido-dao",
-        "CRO" => "crypto-com-chain",
-        "VET" => "vechain",
-        "ALGO" => "algorand",
-        "USDC" => "usd-coin",
-        "USDT" => "tether",
-        "BUSD" => "binance-usd",
-        _ => symbol.to_lowercase().as_str(),
+        "BTC" => "bitcoin".to_string(),
+        "ETH" => "ethereum".to_string(),
+        "BNB" => "binancecoin".to_string(),
+        "XRP" => "ripple".to_string(),
+        "ADA" => "cardano".to_string(),
+        "DOGE" => "dogecoin".to_string(),
+        "SOL" => "solana".to_string(),
+        "TRX" => "tron".to_string(),
+        "DOT" => "polkadot".to_string(),
+        "MATIC" => "matic-network".to_string(),
+        "AVAX" => "avalanche-2".to_string(),
+        "SHIB" => "shiba-inu".to_string(),
+        "DAI" => "dai".to_string(),
+        "WBTC" => "wrapped-bitcoin".to_string(),
+        "LTC" => "litecoin".to_string(),
+        "BCH" => "bitcoin-cash".to_string(),
+        "LINK" => "chainlink".to_string(),
+        "LEO" => "leo-token".to_string(),
+        "UNI" => "uniswap".to_string(),
+        "ATOM" => "cosmos".to_string(),
+        "XLM" => "stellar".to_string(),
+        "OKB" => "okb".to_string(),
+        "ETC" => "ethereum-classic".to_string(),
+        "XMR" => "monero".to_string(),
+        "ICP" => "internet-computer".to_string(),
+        "FIL" => "filecoin".to_string(),
+        "HBAR" => "hedera".to_string(),
+        "LDO" => "lido-dao".to_string(),
+        "CRO" => "crypto-com-chain".to_string(),
+        "VET" => "vechain".to_string(),
+        "ALGO" => "algorand".to_string(),
+        "USDC" => "usd-coin".to_string(),
+        "USDT" => "tether".to_string(),
+        "BUSD" => "binance-usd".to_string(),
+        _ => symbol.to_lowercase(),
     }
 }
 
-fn get_coinpaprika_id(symbol: &str) -> &str {
+fn get_coinpaprika_id(symbol: &str) ->String {
     match symbol.to_uppercase().as_str() {
-        "BTC" => "btc-bitcoin",
-        "ETH" => "eth-ethereum",
-        "BNB" => "bnb-binance-coin",
-        "XRP" => "xrp-xrp",
-        "ADA" => "ada-cardano",
-        "DOGE" => "doge-dogecoin",
-        "SOL" => "sol-solana",
-        "TRX" => "trx-tron",
-        "DOT" => "dot-polkadot",
-        "MATIC" => "matic-polygon",
-        "LTC" => "ltc-litecoin",
-        "SHIB" => "shib-shiba-inu",
-        "AVAX" => "avax-avalanche",
-        "LINK" => "link-chainlink",
-        "ATOM" => "atom-cosmos",
-        "XLM" => "xlm-stellar",
-        "XMR" => "xmr-monero",
-        "ETC" => "etc-ethereum-classic",
-        "BCH" => "bch-bitcoin-cash",
-        "ALGO" => "algo-algorand",
-        "VET" => "vet-vechain",
-        "ICP" => "icp-internet-computer",
-        "FIL" => "fil-filecoin",
-        _ => symbol.to_lowercase().as_str(),
+        "BTC" => "btc-bitcoin".to_string(),
+        "ETH" => "eth-ethereum".to_string(),
+        "BNB" => "bnb-binance-coin".to_string(),
+        "XRP" => "xrp-xrp".to_string(),
+        "ADA" => "ada-cardano".to_string(),
+        "DOGE" => "doge-dogecoin".to_string(),
+        "SOL" => "sol-solana".to_string(),
+        "TRX" => "trx-tron".to_string(),
+        "DOT" => "dot-polkadot".to_string(),
+        "MATIC" => "matic-polygon".to_string(),
+        "LTC" => "ltc-litecoin".to_string(),
+        "SHIB" => "shib-shiba-inu".to_string(),
+        "AVAX" => "avax-avalanche".to_string(),
+        "LINK" => "link-chainlink".to_string(),
+        "ATOM" => "atom-cosmos".to_string(),
+        "XLM" => "xlm-stellar".to_string(),
+        "XMR" => "xmr-monero".to_string(),
+        "ETC" => "etc-ethereum-classic".to_string(),
+        "BCH" => "bch-bitcoin-cash".to_string(),
+        "ALGO" => "algo-algorand".to_string(),
+        "VET" => "vet-vechain".to_string(),
+        "ICP" => "icp-internet-computer".to_string(),
+        "FIL" => "fil-filecoin".to_string(),
+        _ => symbol.to_lowercase(),
     }
 }
 
-fn get_coincap_id(symbol: &str) -> &str {
+fn get_coincap_id(symbol: &str) -> String {
     match symbol.to_uppercase().as_str() {
-        "BTC" => "bitcoin",
-        "ETH" => "ethereum",
-        "BNB" => "binance-coin",
-        "XRP" => "xrp",
-        "ADA" => "cardano",
-        "DOGE" => "dogecoin",
-        "SOL" => "solana",
-        "DOT" => "polkadot",
-        "MATIC" => "polygon",
-        "LTC" => "litecoin",
-        "SHIB" => "shiba-inu",
-        "AVAX" => "avalanche",
-        "LINK" => "chainlink",
-        "ATOM" => "cosmos",
-        "XLM" => "stellar",
-        "XMR" => "monero",
-        "ETC" => "ethereum-classic",
-        "BCH" => "bitcoin-cash",
-        "ALGO" => "algorand",
-        "VET" => "vechain",
-        "TRX" => "tron",
-        _ => symbol.to_lowercase().as_str(),
+        "BTC" => "bitcoin".to_string(),
+        "ETH" => "ethereum".to_string(),
+        "BNB" => "binance-coin".to_string(),
+        "XRP" => "xrp".to_string(),
+        "ADA" => "cardano".to_string(),
+        "DOGE" => "dogecoin".to_string(),
+        "SOL" => "solana".to_string(),
+        "DOT" => "polkadot".to_string(),
+        "MATIC" => "polygon".to_string(),
+        "LTC" => "litecoin".to_string(),
+        "SHIB" => "shiba-inu".to_string(),
+        "AVAX" => "avalanche".to_string(),
+        "LINK" => "chainlink".to_string(),
+        "ATOM" => "cosmos".to_string(),
+        "XLM" => "stellar".to_string(),
+        "XMR" => "monero".to_string(),
+        "ETC" => "ethereum-classic".to_string(),
+        "BCH" => "bitcoin-cash".to_string(),
+        "ALGO" => "algorand".to_string(),
+        "VET" => "vechain".to_string(),
+        "TRX" => "tron".to_string(),
+        _ => symbol.to_lowercase(),
     }
 }
 
@@ -918,7 +925,8 @@ fn save_crypto_overviews_with_github_to_db(
     database_url: &str,
     overviews: Vec<(CryptoOverviewData, Option<GitHubData>)>,
 ) -> Result<usize> {
-    use av_database_postgres::schema::{crypto_overviews, crypto_technical, crypto_social, symbols};
+    use av_database_postgres::schema::{crypto_overview_basic, crypto_overview_metrics,
+                                       crypto_technical, crypto_social, symbols};
 
     let mut conn = PgConnection::establish(database_url)
         .map_err(|e| anyhow!("Failed to connect to database: {}", e))?;
@@ -950,59 +958,73 @@ fn save_crypto_overviews_with_github_to_db(
                 _ => None,
             };
 
-            // Insert into crypto_overviews
-            let new_overview = NewCryptoOverview {
-                sid: overview.sid,
-                symbol: overview.symbol.clone(),
-                name: overview.name.clone(),
-                slug: Some(overview.symbol.to_lowercase().replace(" ", "-")),
-                description: if overview.description.is_empty() {
-                    None
-                } else {
-                    Some(overview.description.clone())
-                },
-                market_cap_rank: Some(overview.rank as i32),
-                market_cap: Some(overview.market_cap),
-                fully_diluted_valuation,
-                volume_24h: Some(overview.volume_24h),
-                volume_change_24h: None,
-                current_price: current_price_bd.clone(),
-                price_change_24h: current_price_bd.clone(),
-                price_change_pct_24h: price_change_pct,
-                price_change_pct_7d: None,
-                price_change_pct_14d: None,
-                price_change_pct_30d: None,
-                price_change_pct_60d: None,
-                price_change_pct_200d: None,
-                price_change_pct_1y: None,
-                ath: ath_bd.clone(),
-                ath_date: overview.ath_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
-                ath_change_percentage: None,
-                atl: atl_bd.clone(),
-                atl_date: overview.atl_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
-                atl_change_percentage: None,
-                roi_times: None,
-                roi_currency: None,
-                roi_percentage: None,
-                circulating_supply: circulating_supply_bd,
-                total_supply: total_supply_bd,
-                max_supply: max_supply_bd,
-                last_updated: Some(now_t),
-                c_time: now_t,
-                m_time: now_t,
-            };
 
-            diesel::insert_into(crypto_overviews::table)
-                .values(&new_overview)
-                .on_conflict(crypto_overviews::sid)
-                .do_update()
-                .set(&new_overview)
-                .execute(conn)?;
 
-            // Insert or update crypto_technical
-            let technical_exists: bool = diesel::select(diesel::dsl::exists(
-                crypto_technical::table.filter(crypto_technical::sid.eq(overview.sid))
-            )).get_result(conn)?;
+
+
+        // Create the values that need to be borrowed
+        let slug = overview.symbol.to_lowercase().replace(" ", "-");
+        let market_cap_rank = overview.rank as i32;
+        let now = chrono::Utc::now();
+
+        // Create basic overview
+        let new_overview_basic = NewCryptoOverviewBasic {
+            sid: &overview.sid,
+            symbol: &overview.symbol,
+            name: &overview.name,
+            slug: Some(&slug),
+            description: Some(overview.description.as_str()),
+            market_cap_rank: Some(&market_cap_rank),
+            market_cap: Some(&overview.market_cap),
+            fully_diluted_valuation: fully_diluted_valuation.as_ref(),
+            volume_24h: Some(&overview.volume_24h),
+            volume_change_24h: None,
+            current_price: current_price_bd.as_ref(),
+            circulating_supply: circulating_supply_bd.as_ref(),
+            total_supply: total_supply_bd.as_ref(),
+            max_supply: max_supply_bd.as_ref(),
+            last_updated: Some(&now),
+        };
+
+        // Insert basic overview
+        diesel::insert_into(crypto_overview_basic::table)
+            .values(&new_overview_basic)
+            .on_conflict(crypto_overview_basic::sid)
+            .do_nothing()
+            .execute(conn)?;
+
+        // Convert dates for metrics
+        let ath_datetime = overview.ath_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+        let atl_datetime = overview.atl_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+
+        // Create metrics overview
+        let new_overview_metrics = NewCryptoOverviewMetrics {
+            sid: &overview.sid,
+            price_change_24h: current_price_bd.as_ref(),
+            price_change_pct_24h: price_change_pct.as_ref(),
+            price_change_pct_7d: None,
+            price_change_pct_14d: None,
+            price_change_pct_30d: None,
+            price_change_pct_60d: None,
+            price_change_pct_200d: None,
+            price_change_pct_1y: None,
+            ath: ath_bd.as_ref(),
+            ath_date: ath_datetime.as_ref(),
+            ath_change_percentage: None,
+            atl: atl_bd.as_ref(),
+            atl_date: atl_datetime.as_ref(),
+            atl_change_percentage: None,
+            roi_times: None,
+            roi_currency: None,
+            roi_percentage: None,
+        };
+
+        // Insert metrics overview
+        diesel::insert_into(crypto_overview_metrics::table)
+            .values(&new_overview_metrics)
+            .on_conflict(crypto_overview_metrics::sid)
+            .do_nothing()
+            .execute(conn)?;
 
             let mut new_technical = NewCryptoTechnical {
                 sid: overview.sid,
@@ -1035,8 +1057,8 @@ fn save_crypto_overviews_with_github_to_db(
                 genesis_date: None,
                 ico_price: None,
                 ico_date: None,
-                c_time: now_t,
-                m_time: now_t,
+                c_time: chrono::Utc::now(),
+                m_time: chrono::Utc::now(),
             };
 
             // Add GitHub data if available
@@ -1049,6 +1071,10 @@ fn save_crypto_overviews_with_github_to_db(
                 new_technical.github_contributors = gh.contributors;
                 new_technical.github_commits_4_weeks = gh.commits_30d;
             }
+            // Check if technical record already exists
+            let technical_exists: bool = diesel::select(diesel::dsl::exists(
+                crypto_technical::table.filter(crypto_technical::sid.eq(overview.sid))
+            )).get_result(conn)?;
 
             if technical_exists && github_data.is_some() {
                 // Update only if we have new GitHub data
@@ -1093,15 +1119,14 @@ fn save_crypto_overviews_with_github_to_db(
                 public_interest_score: None,
                 sentiment_votes_up_pct: None,
                 sentiment_votes_down_pct: None,
-                c_time: now_t,
-                m_time: now_t,
+                c_time:  chrono::Utc::now(),
+                m_time: chrono::Utc::now(),
             };
 
             diesel::insert_into(crypto_social::table)
                 .values(&new_social)
                 .on_conflict(crypto_social::sid)
-                .do_update()
-                .set(&new_social)
+                .do_nothing()  // Changed from .do_update().set()
                 .execute(conn)?;
 
             // Update symbols table to mark overview as loaded

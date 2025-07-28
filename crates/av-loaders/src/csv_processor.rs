@@ -101,6 +101,7 @@ impl CsvProcessor {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct NasdaqListedRecord {
     #[serde(rename = "Symbol")]
@@ -128,6 +129,7 @@ struct NasdaqListedRecord {
     next_shares: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OtherListedRecord {
     #[serde(rename = "ACT Symbol")]
