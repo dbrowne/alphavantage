@@ -394,19 +394,22 @@ async fn fetch_crypto_overview(
 ) -> Result<CryptoOverviewData> {
     // Try multiple sources in order of preference
 
-    // 1. Try CoinGecko first (no API key needed for basic requests)
-    if let Ok(data) = fetch_from_coingecko_free(client, sid, symbol, name).await {
-        return Ok(data);
+    // 1. Try CoinGecko first
+    match fetch_from_coingecko_free(client, sid, symbol, name).await {
+        Ok(data) => return Ok(data),
+        Err(e) => debug!("CoinGecko failed for {}: {}", symbol, e),
     }
 
-    // 2. Try CoinPaprika (no API key needed)
-    if let Ok(data) = fetch_from_coinpaprika(client, sid, symbol, name).await {
-        return Ok(data);
+    // 2. Try CoinPaprika
+    match fetch_from_coinpaprika(client, sid, symbol, name).await {
+        Ok(data) => return Ok(data),
+        Err(e) => debug!("CoinPaprika failed for {}: {}", symbol, e),
     }
 
-    // 3. Try CoinCap (no API key needed)
-    if let Ok(data) = fetch_from_coincap(client, sid, symbol, name).await {
-        return Ok(data);
+    // 3. Try CoinCap
+    match fetch_from_coincap(client, sid, symbol, name).await {
+        Ok(data) => return Ok(data),
+        Err(e) => debug!("CoinCap failed for {}: {}", symbol, e),
     }
 
     // 4. If all else fails, return error
