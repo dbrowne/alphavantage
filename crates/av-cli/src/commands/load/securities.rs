@@ -553,7 +553,7 @@ fn save_symbols_to_db(
             }
           }
         }
-        if matches!(security_type, SecurityType::Equity | SecurityType::ETF | SecurityType::PreferredStock | SecurityType::ADR | SecurityType::REIT) {
+        if security_type != SecurityType::Cryptocurrency{
           let new_equity_detail = NewEquityDetailOwned {
             sid: new_sid,
             exchange: security_data.exchange.clone(),
