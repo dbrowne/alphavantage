@@ -119,7 +119,7 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
       cd ../crates/av-database/postgres
       diesel setup
       diesel migration generate base_tables
-      cp ../base_migrations/* migrations/20*base_tables
+      cp base_migrations/* migrations/20*base_tables
       diesel migration run
       PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
       
@@ -132,26 +132,33 @@ sec_master=> \dt
 List of relations
 Schema |            Name            | Type  |  Owner  
 --------+----------------------------+-------+---------
-public | __diesel_schema_migrations | table | ts_user
-public | articles                   | table | ts_user
-public | authormaps                 | table | ts_user
-public | authors                    | table | ts_user
-public | feeds                      | table | ts_user
-public | intradayprices             | table | ts_user
-public | newsoverviews              | table | ts_user
-public | overviewexts               | table | ts_user
-public | overviews                  | table | ts_user
-public | procstates                 | table | ts_user
-public | proctypes                  | table | ts_user
-public | sources                    | table | ts_user
-public | states                     | table | ts_user
-public | summaryprices              | table | ts_user
-public | symbols                    | table | ts_user
-public | tickersentiments           | table | ts_user
-public | topicmaps                  | table | ts_user
-public | topicrefs                  | table | ts_user
-public | topstats                   | table | ts_user
-(19 rows)
+ public | __diesel_schema_migrations | table | ts_user
+ public | articles                   | table | ts_user
+ public | authormaps                 | table | ts_user
+ public | authors                    | table | ts_user
+ public | crypto_api_map             | table | ts_user
+ public | crypto_markets             | table | ts_user
+ public | crypto_overview_basic      | table | ts_user
+ public | crypto_overview_metrics    | table | ts_user
+ public | crypto_social              | table | ts_user
+ public | crypto_technical           | table | ts_user
+ public | equity_details             | table | ts_user
+ public | feeds                      | table | ts_user
+ public | intradayprices             | table | ts_user
+ public | newsoverviews              | table | ts_user
+ public | overviewexts               | table | ts_user
+ public | overviews                  | table | ts_user
+ public | procstates                 | table | ts_user
+ public | proctypes                  | table | ts_user
+ public | sources                    | table | ts_user
+ public | states                     | table | ts_user
+ public | summaryprices              | table | ts_user
+ public | symbols                    | table | ts_user
+ public | tickersentiments           | table | ts_user
+ public | topicmaps                  | table | ts_user
+ public | topicrefs                  | table | ts_user
+ public | topstats                   | table | ts_user
+(26 rows)
 ```
    
    

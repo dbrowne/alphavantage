@@ -38,6 +38,27 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
+    crypto_api_map (sid, api_source) {
+        sid -> Int8,
+        #[max_length = 50]
+        api_source -> Varchar,
+        #[max_length = 100]
+        api_id -> Varchar,
+        #[max_length = 100]
+        api_slug -> Nullable<Varchar>,
+        #[max_length = 20]
+        api_symbol -> Nullable<Varchar>,
+        rank -> Nullable<Int4>,
+        is_active -> Nullable<Bool>,
+        last_verified -> Nullable<Timestamptz>,
+        c_time -> Timestamptz,
+        m_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     crypto_markets (id) {
         id -> Int4,
         sid -> Int8,
@@ -188,6 +209,22 @@ diesel::table! {
         genesis_date -> Nullable<Date>,
         ico_price -> Nullable<Numeric>,
         ico_date -> Nullable<Date>,
+        c_time -> Timestamptz,
+        m_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    equity_details (sid) {
+        sid -> Int8,
+        #[max_length = 20]
+        exchange -> Varchar,
+        market_open -> Time,
+        market_close -> Time,
+        #[max_length = 50]
+        timezone -> Varchar,
         c_time -> Timestamptz,
         m_time -> Timestamptz,
     }
@@ -383,10 +420,6 @@ diesel::table! {
         sec_type -> Varchar,
         #[max_length = 10]
         region -> Varchar,
-        market_open -> Time,
-        market_close -> Time,
-        #[max_length = 50]
-        timezone -> Varchar,
         #[max_length = 10]
         currency -> Varchar,
         overview -> Bool,
@@ -452,12 +485,15 @@ diesel::table! {
 
 diesel::joinable!(articles -> authors (author));
 diesel::joinable!(articles -> sources (sourceid));
+diesel::joinable!(authormaps -> authors (authorid));
 diesel::joinable!(authormaps -> feeds (feedid));
+diesel::joinable!(crypto_api_map -> symbols (sid));
 diesel::joinable!(crypto_markets -> symbols (sid));
 diesel::joinable!(crypto_overview_basic -> symbols (sid));
 diesel::joinable!(crypto_overview_metrics -> symbols (sid));
 diesel::joinable!(crypto_social -> symbols (sid));
 diesel::joinable!(crypto_technical -> symbols (sid));
+diesel::joinable!(equity_details -> symbols (sid));
 diesel::joinable!(feeds -> symbols (sid));
 diesel::joinable!(intradayprices -> symbols (sid));
 diesel::joinable!(newsoverviews -> symbols (sid));
@@ -477,11 +513,13 @@ diesel::allow_tables_to_appear_in_same_query!(
     articles,
     authormaps,
     authors,
+    crypto_api_map,
     crypto_markets,
     crypto_overview_basic,
     crypto_overview_metrics,
     crypto_social,
     crypto_technical,
+    equity_details,
     feeds,
     intradayprices,
     newsoverviews,
