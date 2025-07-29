@@ -209,9 +209,6 @@ fn save_cryptos_to_db(
                         .set((
                             symbols::name.eq(&crypto.name),
                             symbols::region.eq(&region),
-                            symbols::market_open.eq(&market_open),
-                            symbols::market_close.eq(&market_close),
-                            symbols::timezone.eq(&timezone),
                             symbols::currency.eq(&currency),
                             symbols::m_time.eq(&now_t),
                         ))
@@ -249,9 +246,6 @@ fn save_cryptos_to_db(
                     name: &crypto.name,
                     sec_type: &format!("{:?}", security_type),
                     region: &region,
-                    market_open: &market_open,
-                    market_close: &market_close,
-                    timezone: &timezone,
                     currency: &currency,
                     overview: &false,
                     intraday: &false,
