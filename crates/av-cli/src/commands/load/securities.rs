@@ -368,8 +368,8 @@ fn save_symbols_to_db(
   securities: &[av_loaders::SecurityData],
   sid_generator: &mut SidGenerator,
 ) -> Result<usize> {
-  use av_database_postgres::schema::symbols;
-  use av_database_postgres::models::security::NewSymbol;
+  use av_database_postgres::schema::{symbols,equity_details};
+  use av_database_postgres::models::security::{NewSymbol,NewEquityDetailOwned};
   use diesel::result::DatabaseErrorKind;
 
   let progress = ProgressBar::new(securities.len() as u64);
@@ -460,9 +460,6 @@ fn save_symbols_to_db(
               .set((
                 symbols::name.eq(&security_data.name),
                 symbols::currency.eq(&security_data.currency),
-                symbols::timezone.eq(&timezone),
-                symbols::market_open.eq(&market_open),
-                symbols::market_close.eq(&market_close),
                 symbols::m_time.eq(chrono::Utc::now().naive_utc()),
               ))
               .execute(conn) {
@@ -508,9 +505,6 @@ fn save_symbols_to_db(
           name: &truncated_name,
           sec_type: &format!("{:?}", security_type),
           region: &normalized_region,
-          market_open: &market_open,
-          market_close: &market_close,
-          timezone: &timezone,
           currency: &security_data.currency,
           overview: &false,
           intraday: &false,
@@ -556,6 +550,29 @@ fn save_symbols_to_db(
             } else {
               error!("Failed to insert symbol {}: {}", security_data.symbol, e);
               failed_count += 1;
+            }
+          }
+        }
+        if matches!(security_type, SecurityType::Equity | SecurityType::ETF | SecurityType::PreferredStock | SecurityType::ADR | SecurityType::REIT) {
+          let new_equity_detail = NewEquityDetailOwned {
+            sid: new_sid,
+            exchange: security_data.exchange.clone(),
+            market_open,
+            market_close,
+            timezone: timezone.clone(),
+            c_time: now_t,
+            m_time: now_t,
+          };
+
+          match diesel::insert_into(equity_details::table)
+              .values(&new_equity_detail)
+              .execute(conn) {
+            Ok(_) => {
+              debug!("Created equity details for {} (SID {})", security_data.symbol, new_sid);
+            }
+            Err(e) => {
+              error!("Failed to create equity details for {}: {}", security_data.symbol, e);
+              // Optionally handle this error - maybe roll back the symbol insert?
             }
           }
         }
