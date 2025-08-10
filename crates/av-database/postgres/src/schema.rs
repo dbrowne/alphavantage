@@ -3,6 +3,74 @@
 diesel::table! {
     use diesel::sql_types::*;
 
+    article_media (id) {
+        id -> Int4,
+        articleid -> Nullable<Text>,
+        soso_url -> Nullable<Text>,
+        original_url -> Nullable<Text>,
+        short_url -> Nullable<Text>,
+        #[max_length = 20]
+        media_type -> Nullable<Varchar>,
+        media_order -> Nullable<Int4>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    article_quotes (id) {
+        id -> Int4,
+        articleid -> Nullable<Text>,
+        original_url -> Nullable<Text>,
+        #[max_length = 255]
+        author -> Nullable<Varchar>,
+        author_avatar_url -> Nullable<Text>,
+        #[max_length = 255]
+        nick_name -> Nullable<Varchar>,
+        impression_count -> Nullable<Int8>,
+        like_count -> Nullable<Int4>,
+        reply_count -> Nullable<Int4>,
+        retweet_count -> Nullable<Int4>,
+        twitter_created_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    article_symbols (articleid, sid) {
+        articleid -> Text,
+        sid -> Int8,
+        full_name -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    article_tags (articleid, tag) {
+        articleid -> Text,
+        #[max_length = 100]
+        tag -> Varchar,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    article_translations (id) {
+        id -> Int4,
+        articleid -> Nullable<Text>,
+        #[max_length = 10]
+        language -> Varchar,
+        title -> Text,
+        content -> Text,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     articles (hashid) {
         hashid -> Text,
         sourceid -> Int4,
@@ -13,6 +81,13 @@ diesel::table! {
         banner -> Text,
         author -> Int4,
         ct -> Timestamp,
+        source_link -> Nullable<Text>,
+        release_time -> Nullable<Int8>,
+        author_description -> Nullable<Text>,
+        author_avatar_url -> Nullable<Text>,
+        feature_image -> Nullable<Text>,
+        #[max_length = 255]
+        author_nick_name -> Nullable<Varchar>,
     }
 }
 
@@ -83,6 +158,25 @@ diesel::table! {
         last_traded_at -> Nullable<Timestamptz>,
         last_fetch_at -> Nullable<Timestamptz>,
         c_time -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
+    crypto_metadata (sid) {
+        sid -> Int8,
+        #[max_length = 50]
+        source -> Varchar,
+        source_id -> Text,
+        market_cap_rank -> Nullable<Int4>,
+        #[max_length = 10]
+        base_currency -> Nullable<Varchar>,
+        #[max_length = 10]
+        quote_currency -> Nullable<Varchar>,
+        is_active -> Bool,
+        additional_data -> Nullable<Jsonb>,
+        last_updated -> Timestamptz,
     }
 }
 
@@ -483,12 +577,19 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(article_media -> articles (articleid));
+diesel::joinable!(article_quotes -> articles (articleid));
+diesel::joinable!(article_symbols -> articles (articleid));
+diesel::joinable!(article_symbols -> symbols (sid));
+diesel::joinable!(article_tags -> articles (articleid));
+diesel::joinable!(article_translations -> articles (articleid));
 diesel::joinable!(articles -> authors (author));
 diesel::joinable!(articles -> sources (sourceid));
 diesel::joinable!(authormaps -> authors (authorid));
 diesel::joinable!(authormaps -> feeds (feedid));
 diesel::joinable!(crypto_api_map -> symbols (sid));
 diesel::joinable!(crypto_markets -> symbols (sid));
+diesel::joinable!(crypto_metadata -> symbols (sid));
 diesel::joinable!(crypto_overview_basic -> symbols (sid));
 diesel::joinable!(crypto_overview_metrics -> symbols (sid));
 diesel::joinable!(crypto_social -> symbols (sid));
@@ -510,11 +611,17 @@ diesel::joinable!(topicmaps -> topicrefs (topicid));
 diesel::joinable!(topstats -> symbols (sid));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    article_media,
+    article_quotes,
+    article_symbols,
+    article_tags,
+    article_translations,
     articles,
     authormaps,
     authors,
     crypto_api_map,
     crypto_markets,
+    crypto_metadata,
     crypto_overview_basic,
     crypto_overview_metrics,
     crypto_social,
