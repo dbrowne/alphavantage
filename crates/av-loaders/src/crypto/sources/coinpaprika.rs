@@ -10,7 +10,7 @@ use tracing::{debug, info};
 pub struct CoinPaprikaProvider;
 
 #[derive(Debug, Deserialize)]
-struct CoinPaprikaResponse {
+struct CoinPaprikaCoin {
   id: String,
   name: String,
   symbol: String,
@@ -34,22 +34,23 @@ impl CryptoDataProvider for CoinPaprikaProvider {
 
     if !response.status().is_success() {
       return Err(CryptoLoaderError::InvalidResponse {
-        source: "CoinPaprika".to_string(),
+        api_source: "CoinPaprika".to_string(),
         message: format!("HTTP {}", response.status()),
       });
     }
 
-    let coins: Vec<CoinPaprikaResponse> = response.json().await?;
+    let coins: Vec<CoinPaprikaCoin> = response.json().await?;
+
     debug!("CoinPaprika returned {} coins", coins.len());
 
-    let symbols = coins
+    let symbols: Vec<CryptoSymbol> = coins
       .into_iter()
-      .filter(|coin| coin.is_active) // Only active coins
+      .filter(|coin| coin.is_active)
       .map(|coin| CryptoSymbol {
         symbol: coin.symbol.to_uppercase(),
         name: coin.name,
         base_currency: None,
-        quote_currency: None,
+        quote_currency: Some("USD".to_string()),
         market_cap_rank: coin.rank,
         source: CryptoDataSource::CoinPaprika,
         source_id: coin.id,
@@ -68,7 +69,7 @@ impl CryptoDataProvider for CoinPaprikaProvider {
   }
 
   fn rate_limit_delay(&self) -> u64 {
-    100 // 10 requests per second
+    500
   }
 
   fn requires_api_key(&self) -> bool {

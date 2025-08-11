@@ -12,6 +12,7 @@ repository = "https://github.com/dbrowne/alphavantage.git"
 av-core = {path = "../av-core", version = "0.1.0"}
 av-client = { path = "../av-client", version = "0.1.0" }
 av-models = { path = "../av-models", version = "0.1.0" }
+av-database-postgres = { path = "../av-database/postgres", version = "0.1.0"}
 # External dependencies
 tokio = { workspace = true}
 futures = { workspace = true}
@@ -27,6 +28,7 @@ rayon = {workspace = true}
 anyhow = {workspace = true}
 clap = {workspace = true}
 diesel = {workspace = true}
+reqwest = {workspace = true}
 
 [dev-dependencies]
 tokio-test = "0.4"

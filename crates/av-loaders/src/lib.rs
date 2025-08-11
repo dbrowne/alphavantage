@@ -16,12 +16,13 @@
 //! by the consuming application.
 
 pub mod batch_processor;
+pub mod crypto;
 pub mod csv_processor;
 pub mod error;
 pub mod loader;
+pub mod overview_loader;
 pub mod process_tracker;
 pub mod security_loader;
-pub mod overview_loader;
 
 // Re-export commonly used types
 pub use batch_processor::{BatchConfig, BatchProcessor};
@@ -31,19 +32,22 @@ pub use process_tracker::{ProcessState, ProcessTracker};
 
 // Re-export loaders with their data types
 pub use security_loader::{
-    SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode
+  SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode,
 };
 
 pub use overview_loader::{
-    OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput, OverviewData, SymbolInfo
+  OverviewData, OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput, SymbolInfo,
 };
 
-// Add similar exports for other loaders when they're updated
-
-// Prelude for convenient imports
+pub use crypto::{
+  CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError, CryptoLoaderResult, CryptoSymbol,
+  CryptoSymbolLoader, SourceResult,
+  database::{CryptoDbInput, CryptoDbLoader, CryptoDbOutput, SourceResultSummary},
+};
 pub mod prelude {
-    pub use crate::{
-        BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
-        LoaderResult, ProcessState, ProcessTracker,
-    };
+  pub use crate::{
+    BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
+    LoaderResult, ProcessState, ProcessTracker,
+  };
 }
+
