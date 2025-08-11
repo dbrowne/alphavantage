@@ -5,7 +5,7 @@ use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct SosoValueProvider {
   pub api_key: Option<String>,
@@ -17,27 +17,26 @@ impl SosoValueProvider {
   }
 }
 
+// FIXED: Response structure based on actual API response
 #[derive(Debug, Deserialize)]
 struct SosoValueResponse {
   code: i32,
-  message: String,
-  data: Option<SosoValueData>,
+  msg: Option<String>,
+  #[serde(rename = "traceId")]
+  trace_id: Option<String>,
+  tid: Option<String>, // Additional field in actual response
+  data: Option<Vec<SosoValueCrypto>>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SosoValueData {
-  list: Vec<SosoValueCrypto>,
-}
-
+// FIXED: Crypto structure based on actual API response
 #[derive(Debug, Deserialize)]
 struct SosoValueCrypto {
-  symbol: String,
-  name: String,
-  #[serde(rename = "marketCap")]
-  market_cap: Option<f64>,
-  rank: Option<u32>,
-  #[serde(rename = "isActive")]
-  is_active: Option<bool>,
+  #[serde(rename = "currencyId")]
+  currency_id: i64, // This is the ID field (was "id" in docs, actually "currencyId")
+  #[serde(rename = "currencyName")]
+  currency_name: String, // This is the symbol (was "name" in docs, actually "currencyName")
+  #[serde(rename = "fullName")]
+  full_name: String, // This matches the docs
   #[serde(flatten)]
   extra: HashMap<String, serde_json::Value>,
 }
@@ -47,18 +46,21 @@ impl CryptoDataProvider for SosoValueProvider {
   async fn fetch_symbols(&self, client: &Client) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from SosoValue");
 
-    // SosoValue API endpoint - may need adjustment based on actual API
-    let url = "https://api.sosovalue.com/api/v1/crypto/coins";
+    // FIXED: Use the correct endpoint from documentation
+    let url = "https://openapi.sosovalue.com/openapi/v1/data/default/coin/list";
 
-    let mut request = client.get(url);
+    // FIXED: Use POST method as specified in documentation
+    let mut request = client.post(url).header("Content-Type", "application/json");
 
-    // Add API key if available
+    // FIXED: Use the correct header name from documentation
     if let Some(ref key) = self.api_key {
-      request = request.header("Authorization", format!("Bearer {}", key));
+      request = request.header("x-soso-api-key", key);
     }
 
-    // Add user agent as some APIs require it
-    request = request.header("User-Agent", "AlphaVantage-Rust-Client/1.0");
+    // FIXED: Add the required empty JSON body from documentation
+    request = request.json(&serde_json::json!({}));
+
+    debug!("SosoValue request: POST {} with headers", url);
 
     let response = request.send().await?;
 
@@ -78,12 +80,39 @@ impl CryptoDataProvider for SosoValueProvider {
       });
     }
 
-    let api_response: SosoValueResponse = response.json().await?;
+    // DEBUG: Get the raw response text first to see what we're actually receiving
+    let response_text = response.text().await?;
+    debug!("SosoValue raw response: {}", response_text);
+
+    // Try to parse the response text as JSON to see the structure
+    let response_value: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
+      error!("Failed to parse SosoValue response as JSON: {}", e);
+      error!("Raw response was: {}", response_text);
+      CryptoLoaderError::InvalidResponse {
+        api_source: "SosoValue".to_string(),
+        message: format!("Invalid JSON response: {}", e),
+      }
+    })?;
+
+    debug!("SosoValue parsed JSON: {:#}", response_value);
+
+    // Now try to deserialize into our expected structure
+    let api_response: SosoValueResponse =
+      serde_json::from_value(response_value.clone()).map_err(|e| {
+        error!("Failed to deserialize SosoValue response: {}", e);
+        error!("Expected structure: SosoValueResponse with code, msg, traceId, data fields");
+        error!("Actual JSON: {:#}", response_value);
+        CryptoLoaderError::InvalidResponse {
+          api_source: "SosoValue".to_string(),
+          message: format!("Response structure mismatch: {}", e),
+        }
+      })?;
 
     if api_response.code != 0 {
+      let error_msg = api_response.msg.unwrap_or_else(|| "Unknown error".to_string());
       return Err(CryptoLoaderError::InvalidResponse {
         api_source: "SosoValue".to_string(),
-        message: format!("API Error: {}", api_response.message),
+        message: format!("API Error: {}", error_msg),
       });
     }
 
@@ -92,27 +121,26 @@ impl CryptoDataProvider for SosoValueProvider {
       message: "No data field in response".to_string(),
     })?;
 
-    debug!("SosoValue returned {} cryptocurrencies", data.list.len());
+    debug!("SosoValue returned {} cryptocurrencies", data.len());
 
     let symbols: Vec<CryptoSymbol> = data
-      .list
       .into_iter()
-      .filter(|crypto| crypto.is_active.unwrap_or(true)) // Filter active only
       .map(|crypto| CryptoSymbol {
-        symbol: crypto.symbol.to_uppercase(),
-        name: crypto.name,
+        // Based on actual response: currencyName is the symbol, fullName is the name
+        symbol: crypto.currency_name.to_uppercase(),
+        name: crypto.full_name,
         base_currency: None,
         quote_currency: Some("USD".to_string()),
-        market_cap_rank: crypto.rank,
+        market_cap_rank: None, // Not provided in the response
         source: CryptoDataSource::SosoValue,
-        source_id: crypto.symbol.clone(),
-        is_active: crypto.is_active.unwrap_or(true),
+        source_id: crypto.currency_id.to_string(), // Use currencyId as source_id
+        is_active: true,                           // Assume all returned symbols are active
         created_at: Utc::now(),
         additional_data: crypto.extra,
       })
       .collect();
 
-    info!("Successfully processed {} active symbols from SosoValue", symbols.len());
+    info!("Successfully processed {} symbols from SosoValue", symbols.len());
     Ok(symbols)
   }
 
@@ -121,10 +149,10 @@ impl CryptoDataProvider for SosoValueProvider {
   }
 
   fn rate_limit_delay(&self) -> u64 {
-    500 // Conservative rate limiting for unknown API
+    500 // Conservative rate limiting
   }
 
   fn requires_api_key(&self) -> bool {
-    true // Assuming SosoValue requires API key
+    true // SosoValue requires API key
   }
 }

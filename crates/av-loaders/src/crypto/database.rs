@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-  DataLoader, LoaderContext, LoaderError, LoaderResult,
+  DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState,
   batch_processor::{BatchConfig, BatchProcessor, BatchResult},
 };
 
@@ -100,14 +100,17 @@ impl CryptoDbLoader {
     Self { crypto_loader, batch_processor }
   }
 
-  /// Load symbols from a specific source
+  /// Load symbols from a specific source using the provided crypto loader
+  /// FIXED: Now accepts a crypto_loader parameter instead of using self.crypto_loader
   async fn load_from_source(
     &self,
+    crypto_loader: &CryptoSymbolLoader, // FIXED: Added parameter
     source: CryptoDataSource,
   ) -> LoaderResult<(Vec<CryptoSymbol>, SourceResultSummary)> {
     let _start = std::time::Instant::now();
 
-    match self.crypto_loader.load_from_source(source).await {
+    // FIXED: Use the provided crypto_loader instead of self.crypto_loader
+    match crypto_loader.load_from_source(source).await {
       Ok(symbols) => {
         let result = SourceResultSummary {
           symbols_fetched: symbols.len(),
@@ -202,13 +205,16 @@ impl DataLoader for CryptoDbLoader {
     let mut all_symbols = Vec::new();
     let mut source_results = HashMap::new();
     let mut total_errors = 0;
+    let mut symbols_fetched_count = 0; // Track original fetched count
 
     // Load symbols from specified sources or all configured sources
     if let Some(sources) = input.sources {
       // Load from specific sources
       for source in sources {
-        let (symbols, result) = self.load_from_source(source).await?;
+        // FIXED: Pass the configured crypto_loader to load_from_source
+        let (symbols, result) = self.load_from_source(&crypto_loader, source).await?;
 
+        symbols_fetched_count += symbols.len(); // Track fetched count
         if !result.errors.is_empty() {
           total_errors += result.errors.len();
         }
@@ -236,9 +242,7 @@ impl DataLoader for CryptoDbLoader {
 
           // Note: We can't get the actual symbols from CryptoLoaderResult
           // This would need to be refactored in the future
-          warn!(
-            "Using load_all_symbols - actual symbol data not available for database operations"
-          );
+          warn!("Cannot return symbols from load_all_symbols - using summary only");
         }
         Err(e) => {
           error!("Failed to load from all sources: {}", e);
@@ -247,54 +251,54 @@ impl DataLoader for CryptoDbLoader {
       }
     }
 
-    // Process symbols for database storage
-    let (symbols_processed, all_symbols_len) = if !all_symbols.is_empty() {
-      let symbols_len = all_symbols.len();
-      let process_result = self.process_symbols(all_symbols).await?;
+    // Process symbols for database insertion if we have any
+    let processed_symbols = if !all_symbols.is_empty() {
+      match self.process_symbols(all_symbols).await {
+        Ok(batch_result) => {
+          info!(
+            "Symbol processing completed: {} processed, {} failed",
+            batch_result.success.len(),
+            batch_result.failures.len()
+          );
 
-      let process_errors = process_result.failure_count();
-      if process_errors > 0 {
-        total_errors += process_errors;
+          total_errors += batch_result.failures.len();
+          batch_result.success
+        }
+        Err(e) => {
+          error!("Failed to process symbols: {}", e);
+          total_errors += 1;
+          Vec::new()
+        }
       }
-
-      debug!(
-        "Processed {} symbols successfully, {} errors",
-        process_result.success_count(),
-        process_errors
-      );
-
-      (process_result.success_count(), symbols_len)
     } else {
-      (0, 0)
+      Vec::new()
     };
 
-    let final_state = if total_errors > 0 {
-      crate::ProcessState::CompletedWithErrors
-    } else {
-      crate::ProcessState::Success
-    };
+    let processing_time = start_time.elapsed().as_millis() as u64;
 
     if let Some(tracker) = &context.process_tracker {
+      let state =
+        if total_errors > 0 { ProcessState::CompletedWithErrors } else { ProcessState::Success };
       tracker
-        .complete(final_state)
+        .complete(state)
         .await
         .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
     }
 
-    let processing_time = start_time.elapsed().as_millis() as u64;
-
     info!(
       "Crypto database loader completed in {}ms: {} processed, {} errors",
-      processing_time, symbols_processed, total_errors
+      processing_time,
+      processed_symbols.len(),
+      total_errors
     );
 
     Ok(CryptoDbOutput {
-      symbols_fetched: all_symbols_len,
-      symbols_processed,
+      symbols_fetched: symbols_fetched_count,
+      symbols_processed: processed_symbols.len(),
       errors: total_errors,
-      skipped: 0, // This would be calculated based on deduplication logic
+      skipped: 0,
       processing_time_ms: processing_time,
-      symbols: Vec::new(), // We can't return actual symbols since they were moved
+      symbols: processed_symbols,
       source_results,
     })
   }
@@ -307,20 +311,18 @@ impl DataLoader for CryptoDbLoader {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::crypto::{CryptoDataSource, CryptoLoaderConfig, CryptoSymbol};
   use chrono::Utc;
   use std::collections::HashMap;
 
-  // Helper function to create test symbols
   fn create_test_symbol(symbol: &str, name: &str, source: CryptoDataSource) -> CryptoSymbol {
     CryptoSymbol {
       symbol: symbol.to_string(),
       name: name.to_string(),
-      base_currency: Some(symbol.to_string()),
-      quote_currency: Some("USD".to_string()),
-      market_cap_rank: Some(1),
       source,
       source_id: format!("{}-{}", name.to_lowercase().replace(' ', "-"), symbol.to_lowercase()),
+      market_cap_rank: Some(1),
+      base_currency: None,
+      quote_currency: Some("USD".to_string()),
       is_active: true,
       created_at: Utc::now(),
       additional_data: HashMap::new(),
