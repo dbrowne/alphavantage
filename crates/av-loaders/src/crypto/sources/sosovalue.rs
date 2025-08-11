@@ -73,7 +73,7 @@ impl CryptoDataProvider for SosoValueProvider {
     if !response.status().is_success() {
       warn!("SosoValue API returned status: {}", response.status());
       return Err(CryptoLoaderError::InvalidResponse {
-        source: "SosoValue".to_string(),
+        api_source: "SosoValue".to_string(),
         message: format!("HTTP {}", response.status()),
       });
     }
@@ -82,19 +82,19 @@ impl CryptoDataProvider for SosoValueProvider {
 
     if api_response.code != 0 {
       return Err(CryptoLoaderError::InvalidResponse {
-        source: "SosoValue".to_string(),
+        api_source: "SosoValue".to_string(),
         message: format!("API Error: {}", api_response.message),
       });
     }
 
     let data = api_response.data.ok_or_else(|| CryptoLoaderError::InvalidResponse {
-      source: "SosoValue".to_string(),
+      api_source: "SosoValue".to_string(),
       message: "No data field in response".to_string(),
     })?;
 
     debug!("SosoValue returned {} cryptocurrencies", data.list.len());
 
-    let symbols = data
+    let symbols: Vec<CryptoSymbol> = data
       .list
       .into_iter()
       .filter(|crypto| crypto.is_active.unwrap_or(true)) // Filter active only

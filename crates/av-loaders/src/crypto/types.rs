@@ -16,7 +16,7 @@ pub struct CryptoSymbol {
   pub additional_data: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum CryptoDataSource {
   CoinGecko,
   CoinPaprika,

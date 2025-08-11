@@ -6,9 +6,6 @@ pub mod types;
 pub use loader::CryptoSymbolLoader;
 pub use types::*;
 
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -21,10 +18,11 @@ pub enum CryptoLoaderError {
   RateLimitExceeded(String),
   #[error("API key missing for source: {0}")]
   ApiKeyMissing(String),
-  #[error("Invalid response format from {source}: {message}")]
-  InvalidResponse { source: String, message: String },
+  #[error("Invalid response format from {api_source}: {message}")]
+  InvalidResponse { api_source: String, message: String },
   #[error("Source not available: {0}")]
   SourceUnavailable(String),
 }
+
 #[cfg(test)]
 mod tests;

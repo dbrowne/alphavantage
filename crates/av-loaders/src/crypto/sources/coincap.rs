@@ -46,7 +46,7 @@ impl CryptoDataProvider for CoinCapProvider {
 
       if !response.status().is_success() {
         return Err(CryptoLoaderError::InvalidResponse {
-          source: "CoinCap".to_string(),
+          api_source: "CoinCap".to_string(),
           message: format!("HTTP {}", response.status()),
         });
       }
