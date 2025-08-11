@@ -1,3 +1,4 @@
+pub mod database;
 pub mod loader;
 pub mod sources;
 pub mod types;
@@ -25,3 +26,5 @@ pub enum CryptoLoaderError {
   #[error("Source not available: {0}")]
   SourceUnavailable(String),
 }
+#[cfg(test)]
+mod tests;

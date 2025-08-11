@@ -101,11 +101,7 @@ impl NewsOverview {
     conn: &mut diesel_async::AsyncPgConnection,
     hashid: &str,
   ) -> Result<Option<Self>, diesel::result::Error> {
-    newsoverviews::table
-      .filter(newsoverviews::hashid.eq(hashid))
-      .first(conn)
-      .await
-      .optional()
+    newsoverviews::table.filter(newsoverviews::hashid.eq(hashid)).first(conn).await.optional()
   }
 
   pub async fn get_recent_by_symbol(
@@ -233,11 +229,8 @@ impl<'a> NewFeed<'a> {
     let mut all_ids = Vec::new();
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let ids: Vec<i32> = insert_into(feeds::table)
-        .values(chunk)
-        .returning(feeds::id)
-        .get_results(conn)
-        .await?;
+      let ids: Vec<i32> =
+        insert_into(feeds::table).values(chunk).returning(feeds::id).get_results(conn).await?;
       all_ids.extend(ids);
     }
 
@@ -267,11 +260,8 @@ impl NewFeedOwned {
     let mut all_ids = Vec::new();
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let ids: Vec<i32> = insert_into(feeds::table)
-        .values(chunk)
-        .returning(feeds::id)
-        .get_results(conn)
-        .await?;
+      let ids: Vec<i32> =
+        insert_into(feeds::table).values(chunk).returning(feeds::id).get_results(conn).await?;
       all_ids.extend(ids);
     }
 
@@ -293,6 +283,12 @@ pub struct Article {
   pub banner: String,
   pub author: i32,
   pub ct: NaiveDateTime,
+  pub source_link: Option<String>,
+  pub release_time: Option<i64>,
+  pub author_description: Option<String>,
+  pub author_avatar_url: Option<String>,
+  pub feature_image: Option<String>,
+  pub author_nick_name: Option<String>,
 }
 
 #[derive(Insertable, Debug)]
@@ -307,6 +303,12 @@ pub struct NewArticle<'a> {
   pub banner: &'a str,
   pub author: &'a i32,
   pub ct: &'a NaiveDateTime,
+  pub source_link: Option<&'a str>,
+  pub release_time: Option<&'a i64>,
+  pub author_description: Option<&'a str>,
+  pub author_avatar_url: Option<&'a str>,
+  pub feature_image: Option<&'a str>,
+  pub author_nick_name: Option<&'a str>,
 }
 
 #[derive(Insertable, Debug, Clone)]
@@ -321,6 +323,12 @@ pub struct NewArticleOwned {
   pub banner: String,
   pub author: i32,
   pub ct: NaiveDateTime,
+  pub source_link: Option<String>,
+  pub release_time: Option<i64>,
+  pub author_description: Option<String>,
+  pub author_avatar_url: Option<String>,
+  pub feature_image: Option<String>,
+  pub author_nick_name: Option<String>,
 }
 
 impl Article {
@@ -460,10 +468,7 @@ impl Source {
 
     // Create new
     insert_into(sources::table)
-      .values(NewSource {
-        source_name: name,
-        domain,
-      })
+      .values(NewSource { source_name: name, domain })
       .returning(sources::id)
       .get_result(conn)
       .await
@@ -513,10 +518,7 @@ impl<'a> NewTickerSentiment<'a> {
     let mut total_inserted = 0;
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let inserted = insert_into(tickersentiments::table)
-        .values(chunk)
-        .execute(conn)
-        .await?;
+      let inserted = insert_into(tickersentiments::table).values(chunk).execute(conn).await?;
       total_inserted += inserted;
     }
 
@@ -645,10 +647,7 @@ impl<'a> NewTopicMap<'a> {
     let mut total_inserted = 0;
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let inserted = insert_into(topicmaps::table)
-        .values(chunk)
-        .execute(conn)
-        .await?;
+      let inserted = insert_into(topicmaps::table).values(chunk).execute(conn).await?;
       total_inserted += inserted;
     }
 
@@ -750,10 +749,7 @@ pub async fn process_news_batch(
       Box::pin(async move {
         for news in news_data {
           // Check if news overview exists
-          if NewsOverview::find_by_hashid(conn, &news.hash_id)
-            .await?
-            .is_some()
-          {
+          if NewsOverview::find_by_hashid(conn, &news.hash_id).await?.is_some() {
             continue; // Skip if already processed
           }
 
@@ -780,10 +776,7 @@ pub async fn process_news_batch(
             let author_id = Author::find_or_create(conn, &item.author_name).await?;
 
             // Create article if not exists
-            if Article::find_by_hashid(conn, &item.article_hash)
-              .await?
-              .is_none()
-            {
+            if Article::find_by_hashid(conn, &item.article_hash).await?.is_none() {
               insert_into(articles::table)
                 .values(NewArticle {
                   hashid: &item.article_hash,
@@ -795,6 +788,17 @@ pub async fn process_news_batch(
                   banner: &item.banner_url,
                   author: &author_id,
                   ct: &item.published_time,
+                  // Map available data to new fields intelligently
+                  source_link: item.source_link.as_deref(),
+                  release_time: item.release_time.as_ref(),
+                  author_description: item.author_description.as_deref(),
+                  author_avatar_url: item.author_avatar_url.as_deref(),
+                  feature_image: item.feature_image.as_deref().or(if !item.banner_url.is_empty() {
+                    Some(&item.banner_url)
+                  } else {
+                    None
+                  }),
+                  author_nick_name: item.author_nick_name.as_deref(),
                 })
                 .execute(conn)
                 .await?;
@@ -881,6 +885,13 @@ pub struct NewsItem {
   pub overall_sentiment_label: String,
   pub ticker_sentiments: Vec<TickerSentimentData>,
   pub topics: Vec<TopicData>,
+  // New fields that could be populated from API data
+  pub source_link: Option<String>, // Could be the source domain or original URL
+  pub release_time: Option<i64>,   // Could be timestamp of published_time
+  pub author_description: Option<String>, // Could be extracted from author data
+  pub author_avatar_url: Option<String>, // From API if available
+  pub feature_image: Option<String>, // Could use banner_url
+  pub author_nick_name: Option<String>, // Could be derived from author_name
 }
 
 #[derive(Debug)]
