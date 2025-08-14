@@ -1,18 +1,16 @@
 use super::sources::{
   CryptoDataProvider, coincap::CoinCapProvider, coingecko::CoinGeckoProvider,
-  coinpaprika::CoinPaprikaProvider, sosovalue::SosoValueProvider,
+  coinmarketcap::CoinMarketCapProvider, coinpaprika::CoinPaprikaProvider,
+  sosovalue::SosoValueProvider,
 };
 use super::{
   CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError, CryptoLoaderResult, CryptoSymbol,
   SourceResult,
 };
-use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 pub struct CryptoSymbolLoader {
@@ -35,6 +33,14 @@ impl CryptoSymbolLoader {
     // Initialize providers based on config
     for source in &config.sources {
       match source {
+        CryptoDataSource::CoinMarketCap => {
+          if let Ok(api_key) = std::env::var("CMC_API_KEY") {
+            providers.insert(
+              CryptoDataSource::CoinMarketCap,
+              Box::new(CoinMarketCapProvider::new(api_key)),
+            );
+          }
+        }
         CryptoDataSource::CoinGecko => {
           providers.insert(
             CryptoDataSource::CoinGecko,
@@ -179,9 +185,10 @@ impl CryptoSymbolLoader {
     // Define source priority (higher number = higher priority)
     let source_priority = |source: &CryptoDataSource| -> u8 {
       match source {
+       CryptoDataSource::CoinMarketCap =>2,
         CryptoDataSource::CoinGecko => 4,
         CryptoDataSource::CoinPaprika => 3,
-        CryptoDataSource::CoinCap => 2,
+        CryptoDataSource::CoinCap => 5,
         CryptoDataSource::SosoValue => 1,
       }
     };

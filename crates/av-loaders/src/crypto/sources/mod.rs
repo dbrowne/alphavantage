@@ -1,5 +1,6 @@
 pub mod coincap;
 pub mod coingecko;
+pub mod coinmarketcap;
 pub mod coinpaprika;
 pub mod sosovalue;
 

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
+use tracing::{ error, info, warn};
 
 use crate::{
   DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState,
@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-  CryptoDataSource, CryptoLoaderConfig, CryptoLoaderResult, CryptoSymbol, CryptoSymbolLoader,
+  CryptoDataSource, CryptoLoaderConfig,  CryptoSymbol, CryptoSymbolLoader,
 };
 
 /// Input for the crypto database integration loader

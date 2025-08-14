@@ -313,7 +313,7 @@ async fn save_crypto_symbols_to_db(
   continue_on_error: bool,
 ) -> Result<(usize, usize, usize)> {
   use av_database_postgres::{
-    models::security::{NewSymbolOwned, Symbol},
+    models::security::{NewSymbolOwned },
     schema::symbols,
   };
   use diesel::PgConnection;

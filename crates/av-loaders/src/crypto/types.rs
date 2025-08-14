@@ -18,6 +18,7 @@ pub struct CryptoSymbol {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum CryptoDataSource {
+  CoinMarketCap,
   CoinGecko,
   CoinPaprika,
   CoinCap,
@@ -27,6 +28,7 @@ pub enum CryptoDataSource {
 impl std::fmt::Display for CryptoDataSource {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
+      CryptoDataSource::CoinMarketCap => write!(f, "coinmarketcap"),
       CryptoDataSource::CoinGecko => write!(f, "coingecko"),
       CryptoDataSource::CoinPaprika => write!(f, "coinpaprika"),
       CryptoDataSource::CoinCap => write!(f, "coincap"),
@@ -59,6 +61,7 @@ impl Default for CryptoLoaderConfig {
         CryptoDataSource::CoinPaprika,
         CryptoDataSource::CoinCap,
         CryptoDataSource::SosoValue,
+        CryptoDataSource::CoinMarketCap,
       ],
       batch_size: 250,
     }
