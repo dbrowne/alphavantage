@@ -184,3 +184,63 @@ impl CryptoDataProvider for CoinMarketCapProvider {
     true
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use tokio_test;
+
+  #[tokio::test]
+  async fn test_coinmarketcap_provider_creation() {
+    let provider = CoinMarketCapProvider::new("test_key".to_string());
+    assert_eq!(provider.source_name(), "CoinMarketCap");
+    assert!(provider.requires_api_key());
+  }
+
+  #[tokio::test]
+  async fn test_coinmarketcap_response_parsing() {
+    let json_response = r#"{
+            "status": {
+                "timestamp": "2025-08-14T10:00:00.000Z",
+                "error_code": 0,
+                "error_message": null,
+                "elapsed": 10,
+                "credit_count": 1,
+                "notice": null
+            },
+            "data": [
+                {
+                    "id": 1,
+                    "name": "Bitcoin",
+                    "symbol": "BTC",
+                    "slug": "bitcoin",
+                    "num_market_pairs": 500,
+                    "date_added": "2013-04-28T00:00:00.000Z",
+                    "tags": ["mineable"],
+                    "max_supply": 21000000,
+                    "circulating_supply": 19000000,
+                    "total_supply": 19000000,
+                    "is_active": 1,
+                    "platform": null,
+                    "cmc_rank": 1,
+                    "is_fiat": 0,
+                    "last_updated": "2025-08-14T10:00:00.000Z",
+                    "quote": {
+                        "USD": {
+                            "price": 45000,
+                            "volume_24h": 20000000000,
+                            "percent_change_24h": 2.5,
+                            "market_cap": 855000000000,
+                            "last_updated": "2025-08-14T10:00:00.000Z"
+                        }
+                    }
+                }
+            ]
+        }"#;
+
+    let response: CmcResponse = serde_json::from_str(json_response).unwrap();
+    assert_eq!(response.status.error_code, 0);
+    assert_eq!(response.data.len(), 1);
+    assert_eq!(response.data[0].symbol, "BTC");
+  }
+}
