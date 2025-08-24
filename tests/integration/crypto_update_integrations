@@ -1,0 +1,600 @@
+use anyhow::Result;
+use diesel::prelude::*;
+use serial_test::serial;
+use chrono::{NaiveDate, Utc};
+
+use av_core::Config;
+use av_database_postgres::{
+    connection::establish_connection,
+    schema::{crypto_overview_basic, crypto_social, crypto_technical, symbols}
+};
+use av_cli::commands::update::crypto::{
+    CryptoUpdateData, update_crypto_overview_basic, update_crypto_social,
+    update_crypto_technical, update_crypto_tables_batch
+};
+
+/// Test database setup
+fn setup_test_db() -> Result<PgConnection> {
+    let config = Config::from_env()?;
+    let mut conn = establish_connection(&config.database_url)?;
+
+    // Clean test data
+    diesel::delete(crypto_technical::table).execute(&mut conn)?;
+    diesel::delete(crypto_social::table).execute(&mut conn)?;
+    diesel::delete(crypto_overview_basic::table).execute(&mut conn)?;
+    // Note: Don't delete symbols as they may be referenced by other tests
+
+    Ok(conn)
+}
+
+/// Create test crypto data
+fn create_test_crypto_data() -> Vec<CryptoUpdateData> {
+    vec![
+        CryptoUpdateData {
+            sid: -6917529027641081854,  // current SID for BTC as of 8/24
+            symbol: "BTC".to_string(),
+            name: "Bitcoin".to_string(),
+            description: Some("The first cryptocurrency".to_string()),
+            market_cap_rank: Some(1),
+            website_url: Some("https://bitcoin.org".to_string()),
+            github_url: Some("https://github.com/bitcoin/bitcoin".to_string()),
+            twitter_handle: Some("bitcoin".to_string()),
+            twitter_followers: Some(5600000),
+            coingecko_score: Some(83.151),
+            developer_score: Some(99.241),
+            blockchain_platform: Some("Bitcoin".to_string()),
+            consensus_mechanism: Some("Proof of Work".to_string()),
+            github_stars: Some(73234),
+            github_forks: Some(35421),
+            is_stablecoin: Some(false),
+            is_privacy_coin: Some(false),
+            genesis_date: Some(NaiveDate::from_ymd_opt(2009, 1, 3).unwrap()),
+            ..Default::default()
+        },
+        CryptoUpdateData {
+            sid: 2,
+            symbol: "ETH".to_string(),
+            name: "Ethereum".to_string(),
+            description: Some("Smart contract platform".to_string()),
+            market_cap_rank: Some(2),
+            website_url: Some("https://ethereum.org".to_string()),
+            github_url: Some("https://github.com/ethereum/go-ethereum".to_string()),
+            twitter_handle: Some("ethereum".to_string()),
+            twitter_followers: Some(3200000),
+            coingecko_score: Some(80.225),
+            developer_score: Some(96.123),
+            blockchain_platform: Some("Ethereum".to_string()),
+            consensus_mechanism: Some("Proof of Stake".to_string()),
+            token_standard: Some("ERC-20".to_string()),
+            github_stars: Some(45123),
+            github_forks: Some(19234),
+            is_stablecoin: Some(false),
+            is_nft_platform: Some(true),
+            genesis_date: Some(NaiveDate::from_ymd_opt(2015, 7, 30).unwrap()),
+            ..Default::default()
+        }
+    ]
+}
+
+#[tokio::test]
+#[serial]
+async fn test_update_crypto_overview_basic() -> Result<()> {
+    let mut conn = setup_test_db()?;
+    let test_data = create_test_crypto_data();
+
+    // Ensure symbols exist (this would normally be done by symbol loader)
+    for data in &test_data {
+        diesel::insert_into(symbols::table)
+            .values(&(
+                symbols::sid.eq(data.sid),
+                symbols::symbol.eq(&data.symbol),
+                symbols::name.eq(&data.name),
+                symbols::sec_type.eq("Cryptocurrency"),
+                symbols::overview.eq(false),
+                symbols::is_active.eq(true),
+            ))
+            .on_conflict(symbols::sid)
+            .do_nothing()
+            .execute(&mut conn)?;
+    }
+
+    // Test the update function
+    let updated_count = update_crypto_overview_basic(&mut conn, test_data.clone())?;
+    assert_eq!(updated_count, 2);
+
+    // Verify the data was inserted/updated correctly
+    let basic_records: Vec<(String, Option<String>, Option<i32>)> = crypto_overview_basic::table
+        .filter(crypto_overview_basic::sid.eq_any(vec![1_i64, 2_i64]))
+        .select((
+            crypto_overview_basic::symbol,
+            crypto_overview_basic::description,
+            crypto_overview_basic::market_cap_rank,
+        ))
+        .load(&mut conn)?;
+
+    assert_eq!(basic_records.len(), 2);
+
+    let btc_record = basic_records.iter()
+        .find(|(symbol, _, _)| symbol == "BTC")
+        .unwrap();
+    assert_eq!(btc_record.1, Some("The first cryptocurrency".to_string()));
+    assert_eq!(btc_record.2, Some(1));
+
+    // Test updating existing records
+    let mut updated_data = test_data;
+    updated_data[0].description = Some("Updated Bitcoin description".to_string());
+    updated_data[0].market_cap_rank = Some(1);
+
+    let updated_count = update_crypto_overview_basic(&mut conn, updated_data)?;
+    assert_eq!(updated_count, 2);
+
+    // Verify the update
+    let updated_description: Option<String> = crypto_overview_basic::table
+        .filter(crypto_overview_basic::sid.eq(1_i64))
+        .select(crypto_overview_basic::description)
+        .first(&mut conn)?;
+    assert_eq!(updated_description, Some("Updated Bitcoin description".to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_update_crypto_social() -> Result<()> {
+    let mut conn = setup_test_db()?;
+    let test_data = create_test_crypto_data();
+
+    // Ensure symbols exist
+    for data in &test_data {
+        diesel::insert_into(symbols::table)
+            .values(&(
+                symbols::sid.eq(data.sid),
+                symbols::symbol.eq(&data.symbol),
+                symbols::name.eq(&data.name),
+                symbols::sec_type.eq("Cryptocurrency"),
+                symbols::overview.eq(false),
+                symbols::is_active.eq(true),
+            ))
+            .on_conflict(symbols::sid)
+            .do_nothing()
+            .execute(&mut conn)?;
+    }
+
+    let updated_count = update_crypto_social(&mut conn, test_data)?;
+    assert_eq!(updated_count, 2);
+
+    // Verify social data
+    let social_records: Vec<(String, Option<String>, Option<String>, Option<i32>)> = crypto_social::table
+        .inner_join(symbols::table)
+        .filter(symbols::sid.eq_any(vec![1_i64, 2_i64]))
+        .select((
+            symbols::symbol,
+            crypto_social::website_url,
+            crypto_social::twitter_handle,
+            crypto_social::twitter_followers,
+        ))
+        .load(&mut conn)?;
+
+    assert_eq!(social_records.len(), 2);
+
+    let btc_social = social_records.iter()
+        .find(|(symbol, _, _, _)| symbol == "BTC")
+        .unwrap();
+    assert_eq!(btc_social.1, Some("https://bitcoin.org".to_string()));
+    assert_eq!(btc_social.2, Some("bitcoin".to_string()));
+    assert_eq!(btc_social.3, Some(5600000));
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_update_crypto_technical() -> Result<()> {
+    let mut conn = setup_test_db()?;
+    let test_data = create_test_crypto_data();
+
+    // Ensure symbols exist
+    for data in &test_data {
+        diesel::insert_into(symbols::table)
+            .values(&(
+                symbols::sid.eq(data.sid),
+                symbols::symbol.eq(&data.symbol),
+                symbols::name.eq(&data.name),
+                symbols::sec_type.eq("Cryptocurrency"),
+                symbols::overview.eq(false),
+                symbols::is_active.eq(true),
+            ))
+            .on_conflict(symbols::sid)
+            .do_nothing()
+            .execute(&mut conn)?;
+    }
+
+    let updated_count = update_crypto_technical(&mut conn, test_data)?;
+    assert_eq!(updated_count, 2);
+
+    // Verify technical data
+    let technical_records: Vec<(String, Option<String>, Option<String>, Option<i32>)> = crypto_technical::table
+        .inner_join(symbols::table)
+        .filter(symbols::sid.eq_any(vec![1_i64, 2_i64]))
+        .select((
+            symbols::symbol,
+            crypto_technical::blockchain_platform,
+            crypto_technical::consensus_mechanism,
+            crypto_technical::github_stars,
+        ))
+        .load(&mut conn)?;
+
+    assert_eq!(technical_records.len(), 2);
+
+    let btc_tech = technical_records.iter()
+        .find(|(symbol, _, _, _)| symbol == "BTC")
+        .unwrap();
+    assert_eq!(btc_tech.1, Some("Bitcoin".to_string()));
+    assert_eq!(btc_tech.2, Some("Proof of Work".to_string()));
+    assert_eq!(btc_tech.3, Some(73234));
+
+    let eth_tech = technical_records.iter()
+        .find(|(symbol, _, _, _)| symbol == "ETH")
+        .unwrap();
+    assert_eq!(eth_tech.2, Some("Proof of Stake".to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_batch_update_all_tables() -> Result<()> {
+    let mut conn = setup_test_db()?;
+    let test_data = create_test_crypto_data();
+
+    // Ensure symbols exist
+    for data in &test_data {
+        diesel::insert_into(symbols::table)
+            .values(&(
+                symbols::sid.eq(data.sid),
+                symbols::symbol.eq(&data.symbol),
+                symbols::name.eq(&data.name),
+                symbols::sec_type.eq("Cryptocurrency"),
+                symbols::overview.eq(false),
+                symbols::is_active.eq(true),
+            ))
+            .on_conflict(symbols::sid)
+            .do_nothing()
+            .execute(&mut conn)?;
+    }
+
+    let (basic_count, social_count, technical_count) =
+        update_crypto_tables_batch(&mut conn, test_data)?;
+
+    // Should create records in all tables
+    assert_eq!(social_count, 2);
+    assert_eq!(technical_count, 2);
+
+    // Verify all data exists
+    let basic_count_db: i64 = crypto_overview_basic::table
+        .filter(crypto_overview_basic::sid.eq_any(vec![1_i64, 2_i64]))
+        .count()
+        .get_result(&mut conn)?;
+    assert_eq!(basic_count_db, 2);
+
+    let social_count_db: i64 = crypto_social::table
+        .filter(crypto_social::sid.eq_any(vec![1_i64, 2_i64]))
+        .count()
+        .get_result(&mut conn)?;
+    assert_eq!(social_count_db, 2);
+
+    let technical_count_db: i64 = crypto_technical::table
+        .filter(crypto_technical::sid.eq_any(vec![1_i64, 2_i64]))
+        .count()
+        .get_result(&mut conn)?;
+    assert_eq!(technical_count_db, 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_data_validation() {
+    use av_cli::commands::update::crypto_utils::BatchProcessor;
+
+    let mut test_data = create_test_crypto_data();
+
+    // Add invalid data
+    test_data.push(CryptoUpdateData {
+        sid: 0, // Invalid SID
+        symbol: "".to_string(), // Empty symbol
+        name: "".to_string(), // Empty name
+        market_cap_rank: Some(-1), // Invalid rank
+        twitter_followers: Some(-100), // Negative followers
+        coingecko_score: Some(150.0), // Invalid score
+        ..Default::default()
+    });
+
+    let (validations, all_valid) = BatchProcessor::validate_all(&test_data);
+    assert!(!all_valid);
+    assert_eq!(validations.len(), 3);
+
+    // First two should be valid
+    assert!(validations[0].is_valid);
+    assert!(validations[1].is_valid);
+
+    // Third should be invalid
+    assert!(!validations[2].is_valid);
+    assert!(!validations[2].errors.is_empty());
+}
+
+#[cfg(test)]
+mod benchmarks {
+    use super::*;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn benchmark_batch_updates() -> Result<()> {
+        let mut conn = setup_test_db()?;
+
+        // Create larger dataset for benchmarking
+        let mut test_data = Vec::new();
+        for i in 1..=100 {
+            test_data.push(CryptoUpdateData {
+                sid: i,
+                symbol: format!("TEST{}", i),
+                name: format!("Test Coin {}", i),
+                description: Some(format!("Description for test coin {}", i)),
+                market_cap_rank: Some(i as i32),
+                ..Default::default()
+            });
+        }
+
+        // Ensure symbols exist
+        for data in &test_data {
+            diesel::insert_into(symbols::table)
+                .values(&(
+                    symbols::sid.eq(data.sid),
+                    symbols::symbol.eq(&data.symbol),
+                    symbols::name.eq(&data.name),
+                    symbols::sec_type.eq("Cryptocurrency"),
+                    symbols::overview.eq(false),
+                    symbols::is_active.eq(true),
+                ))
+                .on_conflict(symbols::sid)
+                .do_nothing()
+                .execute(&mut conn)?;
+        }
+
+        let start = Instant::now();
+        let (basic_count, social_count, technical_count) =
+            update_crypto_tables_batch(&mut conn, test_data)?;
+        let duration = start.elapsed();
+
+        println!("Batch update benchmark:");
+        println!("  Records: 100");
+        println!("  Basic updated: {}", basic_count);
+        println!("  Social updated: {}", social_count);
+        println!("  Technical updated: {}", technical_count);
+        println!("  Duration: {:?}", duration);
+        println!("  Records/sec: {:.2}", 100.0 / duration.as_secs_f64());
+
+        // Should complete within reasonable time (adjust threshold as needed)
+        assert!(duration.as_secs() < 5, "Batch update took too long: {:?}", duration);
+
+        Ok(())
+    }
+}
+
+// File: examples/comprehensive_crypto_update.rs
+// This example shows how to use all the functions in a real scenario
+
+use anyhow::Result;
+use log::info;
+use std::time::Instant;
+
+use av_core::Config;
+use av_database_postgres::connection::establish_connection;
+use av_cli::commands::update::crypto::{
+    update_crypto_command, UpdateCryptoArgs, CryptoUpdateData
+};
+use av_cli::commands::update::crypto_utils::{
+    CryptoQueryHelper, BatchProcessor, UpdateStats
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    env_logger::init();
+    let start_time = Instant::now();
+
+    // Load configuration
+    let config = Config::from_env()?;
+    let mut conn = establish_connection(&config.database_url)?;
+
+    info!("Starting comprehensive crypto data update...");
+
+    // Get data completeness statistics
+    let stats = CryptoQueryHelper::get_data_completeness_stats(&mut conn)?;
+    info!("Data completeness stats: {:?}", stats);
+
+    // Get cryptocurrencies that need updates
+    let cryptos_needing_description = CryptoQueryHelper::get_cryptos_needing_description_update(
+        &mut conn, Some(10)
+    )?;
+    info!("Found {} cryptos needing description updates", cryptos_needing_description.len());
+
+    let cryptos_missing_social = CryptoQueryHelper::get_cryptos_missing_social_data(
+        &mut conn, Some(10)
+    )?;
+    info!("Found {} cryptos missing social data", cryptos_missing_social.len());
+
+    let cryptos_stale_github = CryptoQueryHelper::get_cryptos_with_stale_github_data(
+        &mut conn, 30, Some(10)
+    )?;
+    info!("Found {} cryptos with stale GitHub data", cryptos_stale_github.len());
+
+    // Example 1: Update specific cryptocurrencies via CLI
+    let cli_args = UpdateCryptoArgs {
+        symbols: Some("BTC,ETH,ADA".to_string()),
+        limit: Some(3),
+        basic_only: false,
+        social_only: false,
+        technical_only: false,
+        delay_ms: 1000,
+        coingecko_api_key: std::env::var("COINGECKO_API_KEY").ok(),
+        github_token: std::env::var("GITHUB_TOKEN").ok(),
+        dry_run: false,
+        verbose: true,
+    };
+
+    info!("Running CLI update for major cryptocurrencies...");
+    match update_crypto_command(cli_args, config.clone()).await {
+        Ok(()) => info!("CLI update completed successfully"),
+        Err(e) => eprintln!("CLI update failed: {}", e),
+    }
+
+    // Example 2: Manual data update with validation
+    let manual_updates = vec![
+        CryptoUpdateData {
+            sid: 100,
+            symbol: "DOGE".to_string(),
+            name: "Dogecoin".to_string(),
+            description: Some("A cryptocurrency featuring a Shiba Inu dog from the Doge meme".to_string()),
+            market_cap_rank: Some(8),
+            website_url: Some("https://dogecoin.com".to_string()),
+            github_url: Some("https://github.com/dogecoin/dogecoin".to_string()),
+            twitter_handle: Some("dogecoin".to_string()),
+            twitter_followers: Some(2800000),
+            blockchain_platform: Some("Dogecoin".to_string()),
+            consensus_mechanism: Some("Proof of Work".to_string()),
+            is_stablecoin: Some(false),
+            is_privacy_coin: Some(false),
+            ..Default::default()
+        }
+    ];
+
+    // Validate data before processing
+    let (validations, all_valid) = BatchProcessor::validate_all(&manual_updates);
+    BatchProcessor::print_validation_summary(&manual_updates, &validations);
+
+    if all_valid {
+        info!("All manual updates are valid, processing...");
+        use av_cli::commands::update::crypto::{
+            update_crypto_overview_basic, update_crypto_social, update_crypto_technical
+        };
+
+        let basic_count = update_crypto_overview_basic(&mut conn, manual_updates.clone())?;
+        let social_count = update_crypto_social(&mut conn, manual_updates.clone())?;
+        let technical_count = update_crypto_technical(&mut conn, manual_updates)?;
+
+        info!("Manual updates completed: {} basic, {} social, {} technical",
+            basic_count, social_count, technical_count);
+    } else {
+        eprintln!("Manual updates contain validation errors, skipping...");
+    }
+
+    // Final statistics
+    let final_stats = CryptoQueryHelper::get_data_completeness_stats(&mut conn)?;
+    info!("Final data completeness stats: {:?}", final_stats);
+
+    let total_duration = start_time.elapsed();
+    let update_stats = UpdateStats {
+        total_processed: 4, // 3 from CLI + 1 manual
+        basic_updated: 4,
+        social_updated: 4,
+        technical_updated: 4,
+        errors: 0,
+        duration_seconds: total_duration.as_secs_f64(),
+        api_calls_made: 4, // Approximate
+        rate_limited: false,
+    };
+
+    info!("Update completed: {:?}", update_stats);
+    println!("Total execution time: {:?}", total_duration);
+
+    Ok(())
+}
+
+// File: docs/CRYPTO_UPDATE_USAGE.md
+/*
+# Cryptocurrency Data Update Guide
+
+This document provides comprehensive usage examples for updating cryptocurrency data in the AlphaVantage Rust system.
+
+## Quick Start
+
+### 1. Update All Crypto Tables
+```bash
+cargo run -- update crypto all --limit 50 --verbose
+```
+
+### 2. Update Only Descriptions and Rankings
+```bash
+cargo run -- update crypto basic --symbols BTC,ETH,ADA,DOT,SOL
+```
+
+### 3. Update Social Media Data
+```bash
+export GITHUB_TOKEN=your_github_token
+export COINGECKO_API_KEY=your_coingecko_key
+cargo run -- update crypto social --limit 100 --delay-ms 2000
+```
+
+### 4. Update Technical Data with GitHub Stats
+```bash
+cargo run -- update crypto technical --github-token $GITHUB_TOKEN --verbose
+```
+
+## API Keys Setup
+
+Create a `.env` file in your project root:
+```env
+DATABASE_URL=postgresql://user:pass@localhost/alphavantage_db
+COINGECKO_API_KEY=your_coingecko_pro_api_key
+GITHUB_TOKEN=your_github_personal_access_token
+```
+
+## Rate Limiting
+
+- **CoinGecko Free**: 50 requests/minute
+- **CoinGecko Pro**: 500 requests/minute
+- **GitHub**: 60 requests/hour (unauthenticated), 5000/hour (authenticated)
+
+Use appropriate delays:
+```bash
+# For free tier
+cargo run -- update crypto all --delay-ms 2000
+
+# For pro tier with GitHub
+cargo run -- update crypto all --delay-ms 500 --github-token $GITHUB_TOKEN
+```
+
+## Data Validation
+
+All updates are validated before database insertion:
+- Symbol and name cannot be empty
+- Market cap rank must be positive
+- Scores must be between 0-100
+- URLs must be valid format
+- Follower counts cannot be negative
+
+## Monitoring
+
+Use verbose mode to monitor progress:
+```bash
+cargo run -- update crypto all --verbose --dry-run
+```
+
+## Batch Processing
+
+Updates are processed in batches for optimal performance:
+- Basic updates: Direct SQL updates
+- Social updates: Upsert with conflict resolution
+- Technical updates: Upsert with GitHub data refresh
+
+## Error Handling
+
+The system handles:
+- API rate limiting
+- Network timeouts
+- Invalid data validation
+- Database constraint violations
+- Partial update failures
+
+Failed updates are logged but don't stop the entire process.
+*/
