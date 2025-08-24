@@ -129,15 +129,21 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
    Type "help" for help.
 
 sec_master=> \dt
-List of relations
-Schema |            Name            | Type  |  Owner  
+                   List of relations
+ Schema |            Name            | Type  |  Owner
 --------+----------------------------+-------+---------
  public | __diesel_schema_migrations | table | ts_user
+ public | article_media              | table | ts_user
+ public | article_quotes             | table | ts_user
+ public | article_symbols            | table | ts_user
+ public | article_tags               | table | ts_user
+ public | article_translations       | table | ts_user
  public | articles                   | table | ts_user
  public | authormaps                 | table | ts_user
  public | authors                    | table | ts_user
  public | crypto_api_map             | table | ts_user
  public | crypto_markets             | table | ts_user
+ public | crypto_metadata            | table | ts_user
  public | crypto_overview_basic      | table | ts_user
  public | crypto_overview_metrics    | table | ts_user
  public | crypto_social              | table | ts_user
@@ -158,7 +164,24 @@ Schema |            Name            | Type  |  Owner
  public | topicmaps                  | table | ts_user
  public | topicrefs                  | table | ts_user
  public | topstats                   | table | ts_user
-(26 rows)
+(32 rows)
 ```
-   
-   
+5. **Schemaspy documentation**
+```bash
+   rm -rf db_relations/*;
+   java -jar ~/local/bin/schemaspy-6.2.4.jar \
+    -t pgsql11 \
+    -dp ~/local/bin/postgresql-42.7.7.jar \
+    -db sec_master \
+    -host localhost \
+    -port 6433 \
+    -u ts_user \
+    -p dev_pw \
+    -o db_relations;
+   ```
+
+```bash
+     google-chrome db_relations/index.html 
+```
+ ### DB Schema
+![plot](db_schema.png)
