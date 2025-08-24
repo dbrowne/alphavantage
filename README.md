@@ -32,6 +32,7 @@ This project aims to provide a complete solution for fetching, storing, and anal
 │   │   └── postgres/         # PostgreSQL/TimescaleDB implementation
 │   ├── av-loaders/           # Data loading functionality (in development)
 │   └── av-cli/               # Command-line interface (in development)
+├── tests                     # integration tests
 ├── timescale_setup/          # TimescaleDB Docker setup
 ├── migrations/               # Database migrations
 └── data/                     # CSV data files
@@ -121,8 +122,8 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
       diesel migration generate base_tables
       cp base_migrations/* migrations/20*base_tables
       diesel migration run
-      PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
-      
+`      PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
+`      
 4. **check database**
 ```
    psql (16.8 (Ubuntu 16.8-0ubuntu0.24.04.1), server 15.13)
