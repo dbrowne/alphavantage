@@ -4,9 +4,9 @@ pub mod security;
 pub  mod crypto;
 pub use crypto::{
     CryptoOverviewBasic, CryptoOverviewMetrics, CryptoOverviewFull,
-    NewCryptoOverviewBasic, NewCryptoOverviewMetrics,
+    NewCryptoOverviewBasic, NewCryptoOverviewMetrics,CryptoApiMap,
     CryptoTechnical, NewCryptoTechnical,
-    CryptoSocial, NewCryptoSocial,
+    CryptoSocial, NewCryptoSocial,NewCryptoApiMap
 };
 // Re-export commonly used types
 pub use news::{Article, Feed, NewsOverview, TickerSentiment};
