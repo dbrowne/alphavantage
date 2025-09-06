@@ -16,7 +16,7 @@ use tracing::{info, warn, error};
 
 use crate::config::Config;
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Debug)]
 pub struct OverviewsArgs {
     /// Symbols to load (comma-separated)
     #[arg(short, long, value_delimiter = ',')]

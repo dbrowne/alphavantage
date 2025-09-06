@@ -18,7 +18,7 @@ use diesel::PgConnection;
 
 use crate::config::Config;
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct SecuritiesArgs {
   /// Path to NASDAQ CSV file
   #[arg(long, env = "NASDAQ_LISTED")]

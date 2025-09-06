@@ -23,7 +23,9 @@ struct SosoValueResponse {
   code: i32,
   msg: Option<String>,
   #[serde(rename = "traceId")]
+  #[allow(dead_code)]
   trace_id: Option<String>,
+  #[allow(dead_code)]
   tid: Option<String>, // Additional field in actual response
   data: Option<Vec<SosoValueCrypto>>,
 }

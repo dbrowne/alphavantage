@@ -1,4 +1,3 @@
-use std::ops::Deref;
 use anyhow::{Result, anyhow};
 use av_database_postgres::models::crypto::{
   NewCryptoOverviewBasic, NewCryptoOverviewMetrics, NewCryptoSocial, NewCryptoTechnical,
@@ -12,7 +11,6 @@ use diesel::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use reqwest;
-use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
@@ -22,7 +20,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct CryptoOverviewArgs {
   /// Specific symbols to load (comma-separated)
   #[arg(short, long, value_delimiter = ',')]
@@ -61,7 +59,7 @@ pub struct CryptoOverviewArgs {
   pub cmc_api_key: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateGitHubArgs {
   /// Specific symbols to update
   #[arg(short, long, value_delimiter = ',')]

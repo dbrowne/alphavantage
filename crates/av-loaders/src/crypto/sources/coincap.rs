@@ -21,6 +21,7 @@ struct CoinCapAsset {
   symbol: String,
   name: String,
   #[serde(rename = "marketCapUsd")]
+  #[allow(dead_code)]
   market_cap_usd: Option<String>,
   #[serde(flatten)]
   extra: HashMap<String, serde_json::Value>,
