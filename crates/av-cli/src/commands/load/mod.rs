@@ -4,17 +4,17 @@ use crate::config::Config;
 
 pub mod securities;
 pub mod overviews;
- pub  mod crypto;
-pub  mod crypto_overview;
+pub mod crypto;
+pub mod crypto_overview;
 use tracing::info;
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct LoadCommand {
   #[command(subcommand)]
   command: LoadSubcommands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum LoadSubcommands {
   /// Load securities from CSV files and fetch data from AlphaVantage
   Securities(securities::SecuritiesArgs),
@@ -23,6 +23,7 @@ enum LoadSubcommands {
   Overviews(overviews::OverviewsArgs),
 
   Crypto(crypto::CryptoArgs),
+
   /// Load cryptocurrency overviews (market data)
   CryptoOverview(crypto_overview::CryptoOverviewArgs),
 
@@ -55,7 +56,6 @@ enum LoadSubcommands {
   },
 }
 
-// Changed back to async
 pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
   match cmd.command {
     LoadSubcommands::Securities(args) => securities::execute(args, config).await,
@@ -64,7 +64,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
     LoadSubcommands::UpdateGithub(args) => {
       info!("Updating GitHub data for cryptocurrencies");
-      crypto_overview::update_github_data( args,config).await
+      crypto_overview::update_github_data(args, config).await
     }
     LoadSubcommands::Intraday { symbol: _, interval: _ } => {
       todo!("Implement intraday loading")

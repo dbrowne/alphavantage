@@ -2,8 +2,8 @@ use anyhow::Result;
 use clap::Subcommand;
 use av_core::Config;
 
-mod crypto_update_functions;
-mod crypto_update_cli;
+use crate::commands::update::crypto_update_functions;
+use crate::commands::update::crypto_update_cli;
 
 pub use crypto_update_functions::*;
 pub use crypto_update_cli::*;

@@ -2,13 +2,13 @@ use clap::{Args, Subcommand};
 use anyhow::Result;
 use crate::config::Config;
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct QueryCommand {
   #[command(subcommand)]
   command: QuerySubcommands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum QuerySubcommands {
   /// Query symbol information
   Symbol {

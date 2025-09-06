@@ -6,14 +6,13 @@ use tracing::{debug, error, info, warn};
 
 use av_client::AlphaVantageClient;
 use av_core::{
-  Config as CoreConfig,
   types::market::{SecurityIdentifier, SecurityType},
 };
 use av_loaders::{
   DataLoader, LoaderConfig, LoaderContext, ProcessTracker,
   crypto::{
     CryptoDataSource, CryptoLoaderConfig, CryptoSymbol, CryptoSymbolLoader,
-    database::{CryptoDbInput, CryptoDbLoader, CryptoDbOutput},
+    database::{CryptoDbInput, CryptoDbLoader},
   },
 };
 use diesel::prelude::*;
