@@ -3,6 +3,13 @@ pub mod loader;
 pub mod sources;
 pub mod types;
 
+
+pub mod markets_loader;
+pub use markets_loader::{
+  CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader, CryptoMarketsOutput,
+  CryptoMarketData, CryptoSymbolForMarkets, MarketsSourceResult,
+};
+
 pub use loader::CryptoSymbolLoader;
 pub use types::*;
 
