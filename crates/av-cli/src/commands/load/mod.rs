@@ -6,6 +6,8 @@ pub mod securities;
 pub mod overviews;
 pub mod crypto;
 pub mod crypto_overview;
+mod crypto_markets;
+
 use tracing::info;
 
 #[derive(Args, Debug)]
@@ -54,6 +56,8 @@ enum LoadSubcommands {
     #[arg(short, long, default_value = "50")]
     limit: usize,
   },
+  /// Load cryptocurrency market data from exchanges
+  CryptoMarkets(crypto_markets::CryptoMarketsArgs),
 }
 
 pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
@@ -62,6 +66,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::Overviews(args) => overviews::execute(args, config).await,
     LoadSubcommands::Crypto(args) => crypto::execute(args, config).await,
     LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
+    LoadSubcommands::CryptoMarkets(args) => crypto_markets::execute(args, config).await,
     LoadSubcommands::UpdateGithub(args) => {
       info!("Updating GitHub data for cryptocurrencies");
       crypto_overview::update_github_data(args, config).await
