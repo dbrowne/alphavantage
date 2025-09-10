@@ -42,10 +42,12 @@ impl CryptoSymbolLoader {
           }
         }
         CryptoDataSource::CoinGecko => {
-          providers.insert(
-            CryptoDataSource::CoinGecko,
-            Box::new(CoinGeckoProvider::new(None)), // TODO: Get from env
-          );
+          if let Ok(api_key) = std::env::var("COINGECKO_API_KEY") {
+            providers.insert(
+              CryptoDataSource::CoinGecko,
+              Box::new(CoinGeckoProvider::new(Some(api_key))),  // TODO: Make API consistent
+            );
+          }
         }
         CryptoDataSource::CoinPaprika => {
           providers.insert(CryptoDataSource::CoinPaprika, Box::new(CoinPaprikaProvider));
@@ -54,10 +56,12 @@ impl CryptoSymbolLoader {
           providers.insert(CryptoDataSource::CoinCap, Box::new(CoinCapProvider));
         }
         CryptoDataSource::SosoValue => {
+          if let Ok(api_key) = std::env::var("SOSOVALUE_API_KEY") {
           providers.insert(
             CryptoDataSource::SosoValue,
-            Box::new(SosoValueProvider::new(None)), // TODO: Get from env
+            Box::new(SosoValueProvider::new(Some(api_key))), // TODO: make api consistend
           );
+        }
         }
       }
     }

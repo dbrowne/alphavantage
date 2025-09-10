@@ -29,6 +29,18 @@ pub enum CryptoLoaderError {
   InvalidResponse { api_source: String, message: String },
   #[error("Source not available: {0}")]
   SourceUnavailable(String),
+  #[error("Internal Server error: {0}")]
+  InternalServerError(String),
+  #[error("Service Unavailable: {0}")]
+  ServiceUnavailable(String),
+  #[error("Access denied: {0}]")]
+  AccessDenied(String),
+  #[error("Access Endpoint: {0}")]
+  CoinGeckoEndpoint(String),
+  #[error("Missing API key: {0}")]
+  MissingAPIKey(String),
+  #[error("Invalid API key: {0}")]
+  InvalidAPIKey(String)
 }
 
 #[cfg(test)]
