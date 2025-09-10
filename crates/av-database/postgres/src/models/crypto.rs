@@ -498,7 +498,7 @@ pub async fn discover_coingecko_id(
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let mut url = "https://pro-api.coingecko.com/api/v3/coins/list".to_string();
     if let Some(key) = api_key {
-        url = format!("{}?x_cg_demo_api_key={}", url, key);
+        url = format!("{}?x_cg_pro_api_key={}", url, key);
     }
 
     let response = client.get(&url).send().await?;

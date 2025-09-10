@@ -211,7 +211,7 @@ impl CryptoMarketsLoader {
 
         // Add API key if available
         if let Some(ref api_key) = self.config.coingecko_api_key {
-            url = format!("{}?x_cg_demo_api_key={}", url, api_key);
+            url = format!("{}?x_cg_pro_api_key={}", url, api_key);
         }
 
         debug!("Fetching CoinGecko tickers: {}", url);
