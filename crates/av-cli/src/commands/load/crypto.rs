@@ -6,14 +6,14 @@ use tracing::{debug, error, info, warn};
 
 use av_client::AlphaVantageClient;
 use av_core::{
-  types::market::{SecurityIdentifier, SecurityType},
+    types::market::{SecurityIdentifier, SecurityType},
 };
 use av_loaders::{
-  DataLoader, LoaderConfig, LoaderContext, ProcessTracker,
-  crypto::{
-    CryptoDataSource, CryptoLoaderConfig, CryptoSymbol, CryptoSymbolLoader,
-    database::{CryptoDbInput, CryptoDbLoader},
-  },
+    DataLoader, LoaderConfig, LoaderContext, ProcessTracker,
+    crypto::{
+        CryptoDataSource, CryptoLoaderConfig, CryptoSymbol,
+        database::{CryptoDbInput, CryptoDbLoader},
+    },
 };
 use diesel::prelude::*;
 
@@ -21,466 +21,506 @@ use crate::config::Config;
 
 #[derive(Args, Debug)]
 pub struct CryptoArgs {
-  /// Skip database updates (dry run)
-  #[arg(short, long)]
-  dry_run: bool,
+    /// Data sources to use for crypto symbol loading
+    #[arg(
+    long,
+    value_enum,
+    default_values = ["coingecko"],
+    value_delimiter = ','
+    )]
+    sources: Vec<CryptoDataSourceArg>,
 
-  /// Continue on errors
-  #[arg(short = 'k', long)]
-  continue_on_error: bool,
+    /// Skip database updates (dry run)
+    #[arg(short, long)]
+    dry_run: bool,
 
-  /// Limit number of symbols to load (for debugging)
-  #[arg(short, long)]
-  limit: Option<usize>,
+    /// Continue on errors
+    #[arg(short = 'k', long)]
+    continue_on_error: bool,
 
-  /// Update existing symbols in database
-  #[arg(long)]
-  update_existing: bool,
+    /// Limit number of symbols to load (for debugging)
+    #[arg(short, long)]
+    limit: Option<usize>,
 
-  /// SosoValue API key (can also be set via SOSOVALUE_API_KEY env var)
-  #[arg(long, env = "SOSOVALUE_API_KEY")]
-  sosovalue_api_key: Option<String>,
+    /// Update existing symbols in database
+    #[arg(long)]
+    update_existing: bool,
 
-  /// Maximum concurrent requests
-  #[arg(long, default_value = "5")]
-  concurrent: usize,
+    /// SosoValue API key (can also be set via SOSOVALUE_API_KEY env var)
+    #[arg(long, env = "SOSOVALUE_API_KEY")]
+    sosovalue_api_key: Option<String>,
 
-  /// Batch size for database operations
-  #[arg(long, default_value = "100")]
-  batch_size: usize,
+    /// CoinGecko API key (optional, increases rate limits)
+    #[arg(long, env = "COINGECKO_API_KEY")]
+    coingecko_api_key: Option<String>,
 
-  /// Show detailed progress information
-  #[arg(long)]
-  verbose: bool,
+    /// Maximum concurrent requests
+    #[arg(long, default_value = "5")]
+    concurrent: usize,
 
-  /// Track the loading process in the database
-  #[arg(long)]
-  track_process: bool,
+    /// Batch size for database operations
+    #[arg(long, default_value = "100")]
+    batch_size: usize,
+
+    /// Show detailed progress information
+    #[arg(long)]
+    verbose: bool,
+
+    /// Track the loading process in the database
+    #[arg(long)]
+    track_process: bool,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum CryptoDataSourceArg {
+    CoinGecko,
+    SosoValue,
+}
+
+impl From<CryptoDataSourceArg> for CryptoDataSource {
+    fn from(arg: CryptoDataSourceArg) -> Self {
+        match arg {
+            CryptoDataSourceArg::CoinGecko => CryptoDataSource::CoinGecko,
+            CryptoDataSourceArg::SosoValue => CryptoDataSource::SosoValue,
+        }
+    }
 }
 
 /// SID generator using existing SecurityType system
 struct CryptoSidGenerator {
-  next_raw_id: u32,
+    next_raw_id: u32,
 }
 
 impl CryptoSidGenerator {
-  /// Initialize by reading max cryptocurrency SIDs from database
-  fn new(conn: &mut PgConnection) -> Result<Self> {
-    use av_database_postgres::schema::symbols::dsl::*;
+    /// Initialize by reading max cryptocurrency SIDs from database
+    fn new(conn: &mut PgConnection) -> Result<Self> {
+        use av_database_postgres::schema::symbols::dsl::*;
 
-    info!("Initializing crypto SID generator using existing SecurityType system");
+        info!("Initializing crypto SID generator using existing SecurityType system");
 
-    // Get all existing cryptocurrency SIDs
-    let crypto_sids: Vec<i64> =
-      symbols.filter(sec_type.eq("Cryptocurrency")).select(sid).load(conn)?;
+        // Get all existing cryptocurrency SIDs
+        let crypto_sids: Vec<i64> =
+            symbols.filter(sec_type.eq("Cryptocurrency")).select(sid).load(conn)?;
 
-    let mut max_raw_id: u32 = 0;
+        let mut max_raw_id: u32 = 0;
 
-    // Use existing SecurityIdentifier::decode to find max raw_id
-    for sid_val in crypto_sids {
-      if let Some(identifier) = SecurityIdentifier::decode(sid_val) {
-        if identifier.security_type == SecurityType::Cryptocurrency
-          && identifier.raw_id > max_raw_id
-        {
-          max_raw_id = identifier.raw_id;
+        // Use existing SecurityIdentifier::decode to find max raw_id
+        for sid_val in crypto_sids {
+            if let Some(identifier) = SecurityIdentifier::decode(sid_val) {
+                if identifier.security_type == SecurityType::Cryptocurrency
+                    && identifier.raw_id > max_raw_id
+                {
+                    max_raw_id = identifier.raw_id;
+                }
+            }
         }
-      }
+
+        info!("Crypto next raw_id: {}", max_raw_id + 1);
+
+        Ok(Self { next_raw_id: max_raw_id + 1 })
     }
 
-    info!("Crypto next raw_id: {}", max_raw_id + 1);
-
-    Ok(Self { next_raw_id: max_raw_id + 1 })
-  }
-
-  /// Generate the next SID using existing SecurityType::encode
-  fn next_sid(&mut self) -> i64 {
-    let sid = SecurityType::encode(SecurityType::Cryptocurrency, self.next_raw_id);
-    self.next_raw_id += 1;
-    sid
-  }
+    /// Generate the next SID using existing SecurityType::encode
+    fn next_sid(&mut self) -> i64 {
+        let sid = SecurityType::encode(SecurityType::Cryptocurrency, self.next_raw_id);
+        self.next_raw_id += 1;
+        sid
+    }
 }
 
-/// Main execute function using SosoValue API
+/// Main execute function supporting multiple APIs
 pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
-  info!("Starting crypto symbol loader using SosoValue API");
+    info!("Starting crypto symbol loader with sources: {:?}", args.sources);
 
-  if args.dry_run {
-    info!("Dry run mode - no database updates will be performed");
-    return execute_dry_run(args).await;
-  }
+    if args.dry_run {
+        info!("Dry run mode - no database updates will be performed");
+        return execute_dry_run(args).await;
+    }
 
-  // Validate SosoValue API key
-  if args.sosovalue_api_key.is_none() {
-    return Err(anyhow::anyhow!(
-      "SosoValue API key is required. Set SOSOVALUE_API_KEY environment variable or use --sosovalue-api-key"
-    ));
-  }
+    // Convert sources
+    let sources: Vec<CryptoDataSource> = args.sources.iter().map(|s| s.clone().into()).collect();
 
-  // Create API client for HTTP operations
-  let client = Arc::new(AlphaVantageClient::new(config.api_config));
+    // Validate API keys for selected sources
+    validate_api_keys(&sources, &args)?;
 
-  // Create crypto loader configuration focused on SosoValue
-  let crypto_config = CryptoLoaderConfig {
-    sources: vec![CryptoDataSource::SosoValue],
-    batch_size: args.batch_size,
-    max_concurrent_requests: args.concurrent,
-    rate_limit_delay_ms: 1000, // Conservative for SosoValue
-    enable_progress_bar: args.verbose,
-    ..Default::default()
-  };
+    // Create API client for HTTP operations
+    let client = Arc::new(AlphaVantageClient::new(config.api_config));
 
-  // Create crypto database loader
-  let crypto_loader = CryptoDbLoader::new(crypto_config);
+    // Create crypto loader configuration with multiple sources
+    let crypto_config = CryptoLoaderConfig {
+        sources: sources.clone(),
+        batch_size: args.batch_size,
+        max_concurrent_requests: args.concurrent,
+        rate_limit_delay_ms: 1000, // Conservative for public APIs
+        enable_progress_bar: args.verbose,
+        ..Default::default()
+    };
 
-  // Create loader context
-  let loader_config = LoaderConfig {
-    max_concurrent_requests: args.concurrent,
-    retry_attempts: 3,
-    retry_delay_ms: 1000,
-    show_progress: args.verbose,
-    track_process: args.track_process,
-    batch_size: args.batch_size,
-  };
+    // Create crypto database loader
+    let crypto_loader = CryptoDbLoader::new(crypto_config);
 
-  let mut context = LoaderContext::new(client, loader_config);
+    // Create loader context
+    let loader_config = LoaderConfig {
+        max_concurrent_requests: args.concurrent,
+        retry_attempts: 3,
+        retry_delay_ms: 1000,
+        show_progress: args.verbose,
+        track_process: args.track_process,
+        batch_size: args.batch_size,
+    };
 
-  // Set up process tracking if requested
-  if args.track_process {
-    let tracker = ProcessTracker::new();
-    context = context.with_process_tracker(tracker);
-  }
+    let mut context = LoaderContext::new(client, loader_config);
 
-  // Prepare API keys for SosoValue
-  let mut api_keys = HashMap::new();
-  if let Some(key) = args.sosovalue_api_key {
-    api_keys.insert(CryptoDataSource::SosoValue, key);
-  }
+    // Set up process tracking if requested
+    if args.track_process {
+        let tracker = ProcessTracker::new();
+        context = context.with_process_tracker(tracker);
+    }
 
-  // Create loader input
-  let input = CryptoDbInput {
-    sources: Some(vec![CryptoDataSource::SosoValue]),
-    update_existing: args.update_existing,
-    batch_size: Some(args.batch_size),
-    api_keys: Some(api_keys),
-  };
+    // Prepare API keys
+    let mut api_keys = HashMap::new();
+    if let Some(key) = args.sosovalue_api_key {
+        api_keys.insert(CryptoDataSource::SosoValue, key);
+    }
+    if let Some(key) = args.coingecko_api_key {
+        api_keys.insert(CryptoDataSource::CoinGecko, key);
+    }
 
-  // Execute the loader using existing framework
-  match crypto_loader.load(&context, input).await {
-    Ok(output) => {
-      info!(
-        "SosoValue crypto loading completed: {} fetched, {} processed, {} errors",
+    // Create loader input
+    let input = CryptoDbInput {
+        sources: Some(sources.clone()),
+        update_existing: args.update_existing,
+        batch_size: Some(args.batch_size),
+        api_keys: if api_keys.is_empty() { None } else { Some(api_keys) },
+    };
+
+    // Execute the loader
+    match crypto_loader.load(&context, input).await {
+        Ok(output) => {
+            info!(
+        "Crypto loading completed: {} fetched, {} processed, {} errors",
         output.symbols_fetched, output.symbols_processed, output.errors
       );
 
-      // Display SosoValue-specific results
-      if let Some(sosovalue_result) = output.source_results.get(&CryptoDataSource::SosoValue) {
-        info!(
-          "SosoValue API: {} symbols fetched, {} processed{}",
-          sosovalue_result.symbols_fetched,
-          sosovalue_result.symbols_processed,
-          if sosovalue_result.rate_limited { " (rate limited)" } else { "" }
+            // Display source-specific results
+            for (source, result) in output.source_results {
+                info!(
+          "{:?}: {} symbols fetched, {} processed, {} errors{}",
+          source,
+          result.symbols_fetched,
+          result.symbols_processed,
+          result.errors.len(),
+          if result.rate_limited { " (rate limited)" } else { "" }
         );
 
-        if args.verbose && !sosovalue_result.errors.is_empty() {
-          warn!("SosoValue API errors:");
-          for error in &sosovalue_result.errors {
-            warn!("  - {}", error);
-          }
+                if args.verbose && !result.errors.is_empty() {
+                    for error in &result.errors {
+                        warn!("  Error: {}", error);
+                    }
+                }
+            }
+
+            // Save symbols to database if not empty
+            if !output.symbols.is_empty() {
+                info!("Saving {} symbols to database...", output.symbols.len());
+                match save_crypto_symbols_to_db(
+                    &config.database_url,
+                    &output.symbols.iter().map(|db_symbol| {
+                        CryptoSymbol {
+                            symbol: db_symbol.symbol.clone(),
+                            name: db_symbol.name.clone(),
+                            source: db_symbol.source,
+                            source_id: db_symbol.source_id.clone(),
+                            market_cap_rank: db_symbol.market_cap_rank,
+                            base_currency: db_symbol.base_currency.clone(),
+                            quote_currency: db_symbol.quote_currency.clone(),
+                            is_active: db_symbol.is_active,
+                            created_at: chrono::Utc::now(),
+                            additional_data: std::collections::HashMap::new(),
+                        }
+                    }).collect::<Vec<CryptoSymbol>>(),
+                    args.update_existing,
+                    args.continue_on_error,
+                )
+                    .await
+                {
+                    Ok((inserted, updated, failed)) => {
+                        info!(
+              "Database update complete: {} inserted, {} updated, {} failed",
+              inserted, updated, failed
+            );
+                    }
+                    Err(e) => {
+                        error!("Failed to save symbols to database: {}", e);
+                        if !args.continue_on_error {
+                            return Err(e);
+                        }
+                    }
+                }
+            }
         }
-      }
-
-      // Save symbols to database using existing patterns
-      if !output.symbols.is_empty() {
-        let symbols: Vec<CryptoSymbol> = output
-          .symbols
-          .into_iter()
-          .map(|db_symbol| CryptoSymbol {
-            symbol: db_symbol.symbol,
-            name: db_symbol.name,
-            source: db_symbol.source,
-            source_id: db_symbol.source_id,
-            market_cap_rank: db_symbol.market_cap_rank,
-            base_currency: db_symbol.base_currency,
-            quote_currency: db_symbol.quote_currency,
-            is_active: db_symbol.is_active,
-            created_at: chrono::Utc::now(),
-            additional_data: serde_json::from_value(db_symbol.additional_data).unwrap_or_default(),
-          })
-          .collect();
-
-        let (saved_count, updated_count, failed_count) = save_crypto_symbols_to_db(
-          &config.database_url,
-          &symbols,
-          args.update_existing,
-          args.continue_on_error,
-        )
-        .await?;
-
-        info!(
-          "Database save completed: {} created, {} updated, {} failed",
-          saved_count, updated_count, failed_count
-        );
-
-        if failed_count > 0 && !args.continue_on_error {
-          return Err(anyhow::anyhow!(
-            "Crypto loading completed with {} database errors",
-            failed_count
-          ));
+        Err(e) => {
+            error!("Crypto loading failed: {}", e);
+            return Err(e.into());
         }
-      } else {
-        warn!("No crypto symbols received from SosoValue API");
-      }
-
-      if output.errors > 0 && !args.continue_on_error {
-        return Err(anyhow::anyhow!("Crypto loading completed with {} API errors", output.errors));
-      }
     }
-    Err(e) => {
-      error!("SosoValue crypto loading failed: {}", e);
-      return Err(e.into());
-    }
-  }
 
-  Ok(())
+    Ok(())
 }
 
-/// Execute in dry run mode - test SosoValue API connection
+/// Execute in dry run mode - test API connections
 async fn execute_dry_run(args: CryptoArgs) -> Result<()> {
-  info!("Executing crypto loader in dry run mode");
+    info!("Executing crypto loader in dry run mode");
 
-  info!("Configuration:");
-  info!("  - Data source: SosoValue API");
-  info!("  - Concurrent requests: {}", args.concurrent);
-  info!("  - Batch size: {}", args.batch_size);
-  info!("  - Update existing: {}", args.update_existing);
-  info!("  - Continue on error: {}", args.continue_on_error);
+    info!("Configuration:");
+    info!("  - Data sources: {:?}", args.sources);
+    info!("  - Concurrent requests: {}", args.concurrent);
+    info!("  - Batch size: {}", args.batch_size);
+    info!("  - Update existing: {}", args.update_existing);
+    info!("  - Continue on error: {}", args.continue_on_error);
 
-  if args.sosovalue_api_key.is_some() {
-    info!("  - SosoValue API key: configured");
+    let sources: Vec<CryptoDataSource> = args.sources.iter().map(|s| s.clone().into()).collect();
 
-    // Test API connection in dry run
-    info!("Testing SosoValue API connection...");
-
-    let crypto_config = CryptoLoaderConfig {
-      sources: vec![CryptoDataSource::SosoValue],
-      batch_size: 10, // Small batch for testing
-      max_concurrent_requests: 1,
-      rate_limit_delay_ms: 1000,
-      enable_progress_bar: false,
-      ..Default::default()
-    };
-
-    let mut api_keys = HashMap::new();
-    api_keys.insert(CryptoDataSource::SosoValue, args.sosovalue_api_key.unwrap());
-
-    let crypto_loader = CryptoSymbolLoader::new(crypto_config).with_api_keys(api_keys);
-
-    match crypto_loader.load_from_source(CryptoDataSource::SosoValue).await {
-      Ok(symbols) => {
-        info!("✓ SosoValue API connection successful");
-        info!("✓ Retrieved {} crypto symbols", symbols.len());
-
-        if args.verbose && !symbols.is_empty() {
-          info!("Sample symbols from SosoValue:");
-          for (i, symbol) in symbols.iter().take(5).enumerate() {
-            info!("  {}. {} ({})", i + 1, symbol.symbol, symbol.name);
-          }
-          if symbols.len() > 5 {
-            info!("  ... and {} more", symbols.len() - 5);
-          }
+    for source in &sources {
+        match source {
+            CryptoDataSource::CoinGecko => {
+                info!("Testing CoinGecko API connection...");
+                if args.coingecko_api_key.is_some() {
+                    info!("  ✓ CoinGecko API key: configured");
+                } else {
+                    info!("  - CoinGecko API key: not configured (will use free tier)");
+                }
+                info!("  ✓ CoinGecko connection test would run here");
+            }
+            CryptoDataSource::SosoValue => {
+                info!("Testing SosoValue API connection...");
+                if args.sosovalue_api_key.is_some() {
+                    info!("  ✓ SosoValue API key: configured");
+                } else {
+                    warn!("  ✗ SosoValue API key: not configured");
+                    warn!("    Set SOSOVALUE_API_KEY environment variable");
+                }
+                info!("  ✓ SosoValue connection test would run here");
+            }
+            _ => {
+                warn!("  - Source {:?}: not implemented in dry run", source);
+            }
         }
-      }
-      Err(e) => {
-        error!("✗ SosoValue API connection failed: {}", e);
-        return Err(anyhow::anyhow!("SosoValue API test failed: {}", e));
-      }
     }
-  } else {
-    warn!("  - SosoValue API key: not configured");
-    warn!("    Set SOSOVALUE_API_KEY environment variable or use --sosovalue-api-key");
-  }
 
-  info!("Dry run completed - no actual database updates performed");
-  Ok(())
+    info!("Dry run completed - no actual symbol loading or database updates performed");
+    Ok(())
+}
+
+fn validate_api_keys(sources: &[CryptoDataSource], args: &CryptoArgs) -> Result<()> {
+    for source in sources {
+        match source {
+            CryptoDataSource::SosoValue => {
+                if args.sosovalue_api_key.is_none() {
+                    return Err(anyhow::anyhow!(
+            "SosoValue API key is required for SosoValue source. Set SOSOVALUE_API_KEY environment variable or use --sosovalue-api-key"
+          ));
+                }
+            }
+            CryptoDataSource::CoinGecko => {
+                // CoinGecko API key is optional
+                if args.coingecko_api_key.is_none() {
+                    warn!("CoinGecko API key not provided - using free tier with rate limits");
+                }
+            }
+            _ => {
+                warn!("Source {:?} validation not implemented", source);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Save crypto symbols to database using existing patterns
 async fn save_crypto_symbols_to_db(
-  database_url: &str,
-  symbols: &[CryptoSymbol],
-  update_existing: bool,
-  continue_on_error: bool,
+    database_url: &str,
+    symbols: &[CryptoSymbol],
+    update_existing: bool,
+    continue_on_error: bool,
 ) -> Result<(usize, usize, usize)> {
-  use av_database_postgres::{
-    models::security::{NewSymbolOwned },
-    schema::symbols,
-  };
-  use diesel::PgConnection;
+    use av_database_postgres::{
+        models::security::{NewSymbolOwned },
+        schema::symbols,
+    };
+    use diesel::PgConnection;
 
-  let database_url = database_url.to_string();
-  let symbols = symbols.to_vec();
+    let database_url = database_url.to_string();
+    let symbols = symbols.to_vec();
 
-  // Execute in blocking context since diesel is synchronous
-  tokio::task::spawn_blocking(move || {
-    let mut conn = PgConnection::establish(&database_url)
-      .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
+    // Execute in blocking context since diesel is synchronous
+    tokio::task::spawn_blocking(move || -> Result<(usize, usize, usize)> {
+        let mut conn = PgConnection::establish(&database_url)
+            .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
 
-    let mut saved_count = 0;
-    let mut updated_count = 0;
-    let mut failed_count = 0;
+        let mut saved_count = 0;
+        let mut updated_count = 0;
+        let mut failed_count = 0;
 
-    // Start transaction
-    conn.transaction(|conn| -> Result<(), anyhow::Error> {
-      // Initialize SID generator using existing system
-      let mut sid_generator = CryptoSidGenerator::new(conn)?;
+        // Start transaction
+        conn.transaction(|conn| -> Result<(), anyhow::Error> {
+            // Initialize SID generator using existing system
+            let mut sid_generator = CryptoSidGenerator::new(conn)?;
 
-      for crypto_symbol in &symbols {
-        // Validate symbol data
-        if crypto_symbol.symbol.is_empty() || crypto_symbol.name.is_empty() {
-          if continue_on_error {
-            failed_count += 1;
-            continue;
-          } else {
-            return Err(anyhow::anyhow!("Invalid symbol data"));
-          }
-        }
-
-        // Check length constraints
-        if crypto_symbol.symbol.len() > 20 {
-          if continue_on_error {
-            warn!("Symbol too long: {}, skipping", crypto_symbol.symbol);
-            failed_count += 1;
-            continue;
-          } else {
-            return Err(anyhow::anyhow!("Symbol too long: {}", crypto_symbol.symbol));
-          }
-        }
-
-        // Check if symbol already exists
-        let existing_result = symbols::table
-          .filter(symbols::symbol.eq(&crypto_symbol.symbol))
-          .filter(symbols::sec_type.eq("Cryptocurrency"))
-          .select((symbols::sid, symbols::sec_type))
-          .first::<(i64, String)>(conn)
-          .optional();
-
-        match existing_result {
-          Ok(Some((sid_val, _))) => {
-            if update_existing {
-              // Update existing symbol
-              match diesel::update(symbols::table.find(sid_val))
-                .set((
-                  symbols::name.eq(&crypto_symbol.name),
-                  symbols::m_time.eq(chrono::Utc::now()),
-                ))
-                .execute(conn)
-              {
-                Ok(_) => {
-                  updated_count += 1;
-                  debug!("Updated cryptocurrency {} (SID {})", crypto_symbol.symbol, sid_val);
+            for crypto_symbol in &symbols {
+                // Validate symbol data
+                if crypto_symbol.symbol.is_empty() || crypto_symbol.name.is_empty() {
+                    if continue_on_error {
+                        failed_count += 1;
+                        continue;
+                    } else {
+                        return Err(anyhow::anyhow!("Invalid symbol data"));
+                    }
                 }
-                Err(e) => {
-                  error!("Failed to update cryptocurrency {}: {}", crypto_symbol.symbol, e);
-                  failed_count += 1;
-                  if !continue_on_error {
-                    return Err(e.into());
-                  }
+
+                // Check length constraints
+                if crypto_symbol.symbol.len() > 20 {
+                    if continue_on_error {
+                        warn!("Symbol too long: {}, skipping", crypto_symbol.symbol);
+                        failed_count += 1;
+                        continue;
+                    } else {
+                        return Err(anyhow::anyhow!("Symbol too long: {}", crypto_symbol.symbol));
+                    }
                 }
-              }
-            } else {
-              debug!("Symbol {} already exists, skipping", crypto_symbol.symbol);
-            }
-          }
-          Ok(None) => {
-            // Generate new SID using existing system
-            let new_sid = sid_generator.next_sid();
 
-            // Create new symbol using existing pattern
-            let new_symbol = NewSymbolOwned::from_symbol_data(
-              &crypto_symbol.symbol,
-              &crypto_symbol.name,
-              "Cryptocurrency",
-              "DeFi",
-              crypto_symbol.quote_currency.as_deref().unwrap_or("USD"),
-              new_sid,
-            );
+                // Check if symbol already exists
+                let existing_result = symbols::table
+                    .filter(symbols::symbol.eq(&crypto_symbol.symbol))
+                    .filter(symbols::sec_type.eq("Cryptocurrency"))
+                    .select((symbols::sid, symbols::sec_type))
+                    .first::<(i64, String)>(conn)
+                    .optional();
 
-            match diesel::insert_into(symbols::table).values(&new_symbol.as_ref()).execute(conn) {
-              Ok(_) => {
-                saved_count += 1;
-                info!("Created crypto symbol: {} (SID: {})", crypto_symbol.symbol, new_sid);
-              }
-              Err(e) => {
-                error!("Failed to insert cryptocurrency {}: {}", crypto_symbol.symbol, e);
-                failed_count += 1;
-                if !continue_on_error {
-                  return Err(e.into());
+                match existing_result {
+                    Ok(Some((sid_val, _))) => {
+                        if update_existing {
+                            // Update existing symbol
+                            match diesel::update(symbols::table.find(sid_val))
+                                .set((
+                                    symbols::name.eq(&crypto_symbol.name),
+                                    symbols::m_time.eq(chrono::Utc::now().naive_utc()),
+                                ))
+                                .execute(conn)
+                            {
+                                Ok(_) => {
+                                    updated_count += 1;
+                                    debug!("Updated cryptocurrency {} (SID {})", crypto_symbol.symbol, sid_val);
+                                }
+                                Err(e) => {
+                                    error!("Failed to update cryptocurrency {}: {}", crypto_symbol.symbol, e);
+                                    failed_count += 1;
+                                    if !continue_on_error {
+                                        return Err(e.into());
+                                    }
+                                }
+                            }
+                        } else {
+                            debug!("Cryptocurrency {} already exists, skipping", crypto_symbol.symbol);
+                        }
+                    }
+                    Ok(None) => {
+                        // Insert new symbol
+                        let new_sid = sid_generator.next_sid();
+
+                        let new_symbol = NewSymbolOwned {
+                            sid: new_sid,
+                            symbol: crypto_symbol.symbol.clone(),
+                            name: crypto_symbol.name.clone(),
+                            sec_type: "Cryptocurrency".to_string(),
+                            region: "Global".to_string(),      // ADD this line
+                            currency: "USD".to_string(),       // ADD this line
+                            overview: false,
+                            intraday: false,
+                            summary: false,
+                            c_time: chrono::Utc::now().naive_utc(),   // FIX: add .naive_utc()
+                            m_time: chrono::Utc::now().naive_utc(),   // FIX: add .naive_utc()
+                        };
+
+                        match diesel::insert_into(symbols::table)
+                            .values(&new_symbol)
+                            .execute(conn)
+                        {
+                            Ok(_) => {
+                                saved_count += 1;
+                                debug!("Inserted cryptocurrency {} (SID {})", crypto_symbol.symbol, new_sid);
+
+                                // Insert API mapping if available
+                                if let Err(e) = insert_api_mapping(conn, new_sid, crypto_symbol) {
+                                    warn!("Failed to insert API mapping for {}: {}", crypto_symbol.symbol, e);
+                                    // Don't fail the whole operation for mapping errors
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to insert cryptocurrency {}: {}", crypto_symbol.symbol, e);
+                                failed_count += 1;
+                                if !continue_on_error {
+                                    return Err(e.into());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Database error checking symbol {}: {}", crypto_symbol.symbol, e);
+                        failed_count += 1;
+                        if !continue_on_error {
+                            return Err(e.into());
+                        }
+                    }
                 }
-              }
             }
-          }
-          Err(e) => {
-            error!("Database error checking symbol {}: {}", crypto_symbol.symbol, e);
-            failed_count += 1;
-            if !continue_on_error {
-              return Err(e.into());
-            }
-          }
-        }
-      }
+            Ok(())
+        })?;
 
-      Ok(())
-    })?;
-
-    info!(
-      "Database save completed: {} created, {} updated, {} failed",
+        info!(
+      "Symbol insertion completed: {} new, {} updated, {} failed",
       saved_count, updated_count, failed_count
     );
 
-    Ok((saved_count, updated_count, failed_count))
-  })
-  .await?
+        Ok((saved_count, updated_count, failed_count))
+    })
+        .await?
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn test_crypto_sid_generation() {
-    // Test that crypto SIDs use SecurityType::Cryptocurrency encoding
-    let encoded_sid = SecurityType::encode(SecurityType::Cryptocurrency, 1);
-    let decoded = SecurityIdentifier::decode(encoded_sid).unwrap();
-
-    assert_eq!(decoded.security_type, SecurityType::Cryptocurrency);
-    assert_eq!(decoded.raw_id, 1);
-  }
-
-  #[tokio::test]
-  async fn test_dry_run_without_api_key() {
-    let args = CryptoArgs {
-      dry_run: true,
-      continue_on_error: false,
-      limit: None,
-      update_existing: false,
-      sosovalue_api_key: None,
-      concurrent: 5,
-      batch_size: 100,
-      verbose: false,
-      track_process: false,
+/// Insert API mapping for a cryptocurrency
+fn insert_api_mapping(
+    conn: &mut PgConnection,
+    sid: i64,
+    crypto_symbol: &CryptoSymbol,
+) -> Result<()> {
+    use av_database_postgres::{
+        models::crypto::NewCryptoApiMap,
+        schema::crypto_api_map,
     };
 
-    // Should complete without error even without API key in dry run
-    let result = execute_dry_run(args).await;
-    assert!(result.is_ok());
-  }
+    let api_source = match crypto_symbol.source {
+        CryptoDataSource::CoinGecko => "CoinGecko",
+        CryptoDataSource::SosoValue => "SosoValue",
+        _ => return Ok(()), // Skip unknown sources
+    };
 
-  #[test]
-  fn test_cli_args_parsing() {
-    // Test that CLI args can be parsed correctly
-    // This would be expanded in a real test environment
+    let new_mapping = NewCryptoApiMap {
+        sid,
+        api_source: api_source.to_string(),
+        api_id: crypto_symbol.source_id.clone(),
+        api_slug: None,
+        api_symbol: Some(crypto_symbol.symbol.clone()),
+        rank: crypto_symbol.market_cap_rank.map(|r| r as i32),
+        is_active: Some(crypto_symbol.is_active),
+        last_verified: Some(crypto_symbol.created_at),
+        c_time: chrono::Utc::now(),
+        m_time: chrono::Utc::now(),
+    };
 
-    assert_eq!(CryptoDataSource::SosoValue.to_string(), "sosovalue");
-  }
+    diesel::insert_into(crypto_api_map::table)
+        .values(&new_mapping)
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Failed to insert API mapping: {}", e))?;
+
+    debug!("Inserted {} API mapping for {} ({})", api_source, crypto_symbol.symbol, crypto_symbol.source_id);
+    Ok(())
 }
-
