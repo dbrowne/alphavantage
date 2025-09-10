@@ -462,7 +462,7 @@ async fn fetch_from_coingecko_free(
   let coin_id = get_coingecko_id(symbol);
 
   let url = format!(
-    "https://api.coingecko.com/api/v3/coins/{}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false",
+    "https://pro-api.coingecko.com/api/v3/coins/{}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false",
     coin_id
   );
 

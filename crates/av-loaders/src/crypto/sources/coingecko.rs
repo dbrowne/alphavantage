@@ -38,14 +38,14 @@ impl CryptoDataProvider for CoinGeckoProvider {
                 "CoinGecko API key is required. Get your free key at https://www.coingecko.com/en/api/pricing".to_string()
             ))?;
 
-        let url = "https://api.coingecko.com/api/v3/coins/list";
+        let url = "https://pro-api.coingecko.com/api/v3/coins/list";
 
         debug!("Requesting CoinGecko coins list with authentication");
 
         let response = client
             .get(url)
-            .query(&[("x_cg_demo_api_key", api_key)])
             .header("accept", "application/json")
+            .header("x_cg_demo_api_key", api_key)
             .send()
             .await?;
 
