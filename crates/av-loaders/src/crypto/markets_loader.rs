@@ -207,7 +207,7 @@ impl CryptoMarketsLoader {
         coingecko_id: &str,
         sid: i64,
     ) -> Result<Vec<CryptoMarketData>, CryptoLoaderError> {
-        let mut url = format!("https://api.coingecko.com/api/v3/coins/{}/tickers", coingecko_id);
+        let mut url = format!("https://pro-api.coingecko.com/api/v3/coins/{}/tickers", coingecko_id);
 
         // Add API key if available
         if let Some(ref api_key) = self.config.coingecko_api_key {
