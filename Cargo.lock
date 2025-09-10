@@ -282,6 +282,7 @@ dependencies = [
  "av-core",
  "av-database-postgres",
  "av-models",
+ "bigdecimal",
  "chrono",
  "clap",
  "csv",
