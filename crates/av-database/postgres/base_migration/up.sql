@@ -712,3 +712,93 @@ COMMENT ON TABLE topstats IS 'Top gainers/losers - TimescaleDB hypertable with 1
 COMMENT ON TABLE newsoverviews IS 'News overview data - TimescaleDB hypertable with 1-month chunks';
 COMMENT ON TABLE crypto_api_map IS 'Maps cryptocurrencies to various API providers';
 COMMENT ON VIEW crypto_overviews IS 'Compatibility view combining crypto_overview_basic and crypto_overview_metrics';
+
+CREATE TABLE article_translations (
+                                      id SERIAL PRIMARY KEY,
+                                      articleid TEXT REFERENCES articles(hashid),
+                                      language VARCHAR(10) NOT NULL,
+                                      title TEXT NOT NULL,
+                                      content TEXT NOT NULL,
+                                      UNIQUE(articleid, language)
+);
+-- Media attachments
+CREATE TABLE article_media (
+                               id SERIAL PRIMARY KEY,
+                               articleid TEXT REFERENCES articles(hashid),
+                               soso_url TEXT,
+                               original_url TEXT,
+                               short_url TEXT,
+                               media_type VARCHAR(20),
+                               media_order INTEGER DEFAULT 0
+);
+-- Tags
+CREATE TABLE article_tags (
+                              articleid TEXT REFERENCES articles(hashid),
+                              tag VARCHAR(100),
+                              PRIMARY KEY (articleid, tag)
+);
+-- Multiple symbol associations
+CREATE TABLE article_symbols (
+                                 articleid TEXT REFERENCES articles(hashid),
+                                 sid BIGINT REFERENCES symbols(sid),
+                                 full_name TEXT,
+                                 PRIMARY KEY (articleid, sid)
+);
+-- Quote/Retweet information
+CREATE TABLE article_quotes (
+                                id SERIAL PRIMARY KEY,
+                                articleid TEXT REFERENCES articles(hashid),
+                                original_url TEXT,
+                                author VARCHAR(255),
+                                author_avatar_url TEXT,
+                                nick_name VARCHAR(255),
+                                impression_count BIGINT,
+                                like_count INTEGER,
+                                reply_count INTEGER,
+                                retweet_count INTEGER,
+                                twitter_created_at TIMESTAMPTZ
+);
+-- Extend articles table
+ALTER TABLE articles
+    ADD COLUMN source_link TEXT,
+ADD COLUMN release_time BIGINT,
+ADD COLUMN author_description TEXT,
+ADD COLUMN author_avatar_url TEXT,
+ADD COLUMN feature_image TEXT,
+ADD COLUMN author_nick_name VARCHAR(255);
+
+CREATE TABLE crypto_metadata (
+                                 sid BIGINT PRIMARY KEY REFERENCES symbols(sid),
+                                 source VARCHAR(50) NOT NULL,
+                                 source_id TEXT NOT NULL,
+                                 market_cap_rank INTEGER,
+                                 base_currency VARCHAR(10),
+                                 quote_currency VARCHAR(10),
+                                 is_active BOOLEAN NOT NULL DEFAULT true,
+                                 additional_data JSONB,
+                                 last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                 UNIQUE(source, source_id)
+);
+
+ALTER TABLE crypto_markets
+    ADD CONSTRAINT crypto_markets_unique_market
+        UNIQUE (sid, exchange, base, target);
+
+-- Add indexes for performance
+CREATE INDEX idx_crypto_markets_sid ON crypto_markets(sid);
+CREATE INDEX idx_crypto_markets_exchange ON crypto_markets(exchange);
+CREATE INDEX idx_crypto_markets_volume ON crypto_markets(volume_24h DESC) WHERE volume_24h IS NOT NULL;
+CREATE INDEX idx_crypto_markets_active ON crypto_markets(is_active) WHERE is_active = true;
+CREATE INDEX idx_crypto_markets_last_fetch ON crypto_markets(last_fetch_at DESC);
+
+-- Add check constraints
+ALTER TABLE crypto_markets
+    ADD CONSTRAINT crypto_markets_volume_positive
+        CHECK (volume_24h IS NULL OR volume_24h >= 0);
+
+ALTER TABLE crypto_markets
+    ADD CONSTRAINT crypto_markets_spread_valid
+        CHECK (bid_ask_spread_pct IS NULL OR (bid_ask_spread_pct >= 0 AND bid_ask_spread_pct <= 100));
+
+-- Add comment
+COMMENT ON TABLE crypto_markets IS 'Cryptocurrency market data from various exchanges';
