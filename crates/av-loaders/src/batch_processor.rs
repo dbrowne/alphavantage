@@ -74,6 +74,7 @@ impl<T> BatchResult<T> {
 }
 
 /// Batch processor for efficient data processing
+#[derive(Debug, Clone)]
 pub struct BatchProcessor {
   config: BatchConfig,
   semaphore: Arc<Semaphore>,

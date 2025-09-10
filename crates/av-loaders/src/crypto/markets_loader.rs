@@ -1,5 +1,3 @@
-
-
 use super::{CryptoDataSource, CryptoLoaderError};
 use crate::{
     DataLoader, LoaderContext, LoaderError, LoaderResult,
@@ -172,6 +170,7 @@ struct AlphaVantageExchangeRate {
 }
 
 /// Main crypto markets loader
+#[derive(Clone)]
 pub struct CryptoMarketsLoader {
     config: CryptoMarketsConfig,
     client: Client,
@@ -266,6 +265,9 @@ impl CryptoMarketsLoader {
                 .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
                 .map(|dt| dt.with_timezone(&Utc));
 
+            let bid_ask_spread_pct = ticker.bid_ask_spread_percentage
+                .and_then(|v| BigDecimal::from_str(&v.to_string()).ok());
+
             let market_data = CryptoMarketData {
                 sid,
                 exchange: ticker.market.name,
@@ -274,8 +276,7 @@ impl CryptoMarketsLoader {
                 market_type: Some("spot".to_string()),
                 volume_24h,
                 volume_percentage: None, // CoinGecko doesn't provide this directly
-                bid_ask_spread_pct: ticker.bid_ask_spread_percentage
-                    .and_then(|v| BigDecimal::from_str(&v.to_string()).ok()),
+                bid_ask_spread_pct,
                 liquidity_score: None, // Would need additional calculation
                 is_active: !ticker.is_stale.unwrap_or(false),
                 is_anomaly: ticker.is_anomaly.unwrap_or(false),
@@ -309,8 +310,6 @@ impl CryptoMarketsLoader {
             .as_ref()
             .ok_or_else(|| CryptoLoaderError::ApiKeyMissing("AlphaVantage".to_string()))?;
 
-        // AlphaVantage doesn't have a direct markets endpoint, but we can get exchange rate data
-        // This is a simplified approach - for real markets data, you'd need a different endpoint
         let url = format!(
             "https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={}&to_currency=USD&apikey={}",
             symbol, api_key
@@ -323,10 +322,6 @@ impl CryptoMarketsLoader {
             .send()
             .await?;
 
-        if response.status().as_u16() == 429 {
-            return Err(CryptoLoaderError::RateLimitExceeded("AlphaVantage".to_string()));
-        }
-
         if !response.status().is_success() {
             return Err(CryptoLoaderError::InvalidResponse {
                 api_source: "AlphaVantage".to_string(),
@@ -334,21 +329,18 @@ impl CryptoMarketsLoader {
             });
         }
 
-        let exchange_response: AlphaVantageMarketStatusResponse = response.json().await?;
-        let now = Utc::now();
+        let av_response: AlphaVantageMarketStatusResponse = response.json().await?;
 
-        if let Some(rate_data) = exchange_response.realtime_currency_exchange_rate {
-            let last_refreshed = DateTime::parse_from_str(
-                &format!("{} {}", rate_data.last_refreshed, rate_data.time_zone),
-                "%Y-%m-%d %H:%M:%S %Z"
-            ).ok()
-                .map(|dt| dt.with_timezone(&Utc));
+        if let Some(exchange_rate) = av_response.realtime_currency_exchange_rate {
+            let now = Utc::now();
 
-            // Calculate bid-ask spread if both prices available
-            let bid_ask_spread = if let (Some(bid), Some(ask)) = (&rate_data.bid_price, &rate_data.ask_price) {
-                if let (Ok(bid_val), Ok(ask_val)) = (bid.parse::<f64>(), ask.parse::<f64>()) {
+            // Calculate bid-ask spread if both prices are available
+            let bid_ask_spread_pct = if let (Some(bid_str), Some(ask_str)) =
+                (&exchange_rate.bid_price, &exchange_rate.ask_price)
+            {
+                if let (Ok(bid_val), Ok(ask_val)) = (bid_str.parse::<f64>(), ask_str.parse::<f64>()) {
                     if ask_val > 0.0 {
-                        Some(BigDecimal::from_str(&((ask_val - bid_val) / ask_val * 100.0).to_string()).ok())
+                        BigDecimal::from_str(&((ask_val - bid_val) / ask_val * 100.0).to_string()).ok()
                     } else {
                         None
                     }
@@ -357,23 +349,23 @@ impl CryptoMarketsLoader {
                 }
             } else {
                 None
-            }.flatten();
+            };
 
             let market_data = CryptoMarketData {
                 sid,
                 exchange: "AlphaVantage".to_string(),
-                base: rate_data.from_currency_code,
-                target: rate_data.to_currency_code,
+                base: exchange_rate.from_currency_code,
+                target: exchange_rate.to_currency_code,
                 market_type: Some("exchange_rate".to_string()),
-                volume_24h: None, // AlphaVantage doesn't provide volume in this endpoint
+                volume_24h: None, // AlphaVantage exchange rate doesn't provide volume
                 volume_percentage: None,
-                bid_ask_spread_pct: bid_ask_spread,
+                bid_ask_spread_pct,
                 liquidity_score: None,
                 is_active: true,
                 is_anomaly: false,
                 is_stale: false,
                 trust_score: Some("high".to_string()), // AlphaVantage is generally reliable
-                last_traded_at: last_refreshed,
+                last_traded_at: Some(now), // Use current time as last traded
                 last_fetch_at: now,
             };
 
@@ -429,7 +421,7 @@ impl CryptoMarketsLoader {
                 }
                 Err(e) => {
                     error!("Failed to fetch markets for {} from {:?}: {}", symbol.symbol, source, e);
-                    return Err(LoaderError::DataProcessingError(e.to_string()));
+                    return Err(LoaderError::BatchProcessingError(e.to_string()));
                 }
             }
         }
@@ -442,6 +434,10 @@ impl CryptoMarketsLoader {
 impl DataLoader for CryptoMarketsLoader {
     type Input = CryptoMarketsInput;
     type Output = CryptoMarketsOutput;
+
+    fn name(&self) -> &'static str {
+        "CryptoMarketsLoader"
+    }
 
     async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
         let start_time = Instant::now();
@@ -474,23 +470,24 @@ impl DataLoader for CryptoMarketsLoader {
 
         // Create processor function for batch processing
         let sources = input.sources.clone();
+        let self_clone = self.clone();
         let processor = move |symbol: CryptoSymbolForMarkets| -> futures::future::BoxFuture<
             'static,
             LoaderResult<Vec<CryptoMarketData>>,
         > {
             let sources = sources.clone();
-            let self_clone = self.clone(); // This would need Clone implementation
+            let loader = self_clone.clone();
 
             Box::pin(async move {
-                self_clone.process_symbol(symbol, &sources).await
+                loader.process_symbol(symbol, &sources).await
             })
         };
 
         // Process symbols in batches
         let batch_result = self.batch_processor.process_batches(symbols, processor).await?;
 
-        // Flatten results
-        let all_markets: Vec<CryptoMarketData> = batch_result.successful_items
+        // Flatten results from successful items
+        let all_markets: Vec<CryptoMarketData> = batch_result.success
             .into_iter()
             .flatten()
             .collect();
@@ -500,9 +497,14 @@ impl DataLoader for CryptoMarketsLoader {
         // Create source results summary (simplified)
         let mut source_results = HashMap::new();
         for source in &input.sources {
+            let error_messages: Vec<String> = batch_result.failures
+                .iter()
+                .map(|(_, e)| e.to_string())
+                .collect();
+
             source_results.insert(*source, MarketsSourceResult {
                 markets_fetched: all_markets.len(), // Simplified - in reality track per source
-                errors: batch_result.failed_items.iter().map(|e| e.to_string()).collect(),
+                errors: error_messages,
                 rate_limited: false, // Would track this during processing
                 response_time_ms: processing_time,
             });
@@ -513,7 +515,7 @@ impl DataLoader for CryptoMarketsLoader {
             markets_processed: all_markets.len(),
             markets_inserted: 0, // Would be set by database layer
             markets_updated: 0,  // Would be set by database layer
-            errors: batch_result.failed_items.len(),
+            errors: batch_result.failures.len(),
             skipped: 0,
             processing_time_ms: processing_time,
             source_results,
@@ -521,19 +523,10 @@ impl DataLoader for CryptoMarketsLoader {
         };
 
         info!(
-            "Crypto markets loading completed: {} markets fetched, {} errors in {}ms",
-            output.markets_fetched,
-            output.errors,
-            output.processing_time_ms
+            "Crypto markets loading completed: {} markets fetched, {} errors",
+            output.markets_fetched, output.errors
         );
 
         Ok(output)
-    }
-}
-
-// Implementation note: You'll need to add Clone derive or implement it manually
-impl Clone for CryptoMarketsLoader {
-    fn clone(&self) -> Self {
-        Self::new(self.config.clone())
     }
 }

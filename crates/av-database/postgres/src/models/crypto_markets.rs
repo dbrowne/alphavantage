@@ -1,3 +1,4 @@
+
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use serde::{Deserialize, Serialize};
@@ -5,6 +6,13 @@ use chrono::{DateTime, Utc};
 use bigdecimal::BigDecimal;
 
 use crate::schema::crypto_markets;
+
+// Helper struct for raw SQL queries
+#[derive(QueryableByName, Debug)]
+struct CountResult {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    count: i64,
+}
 
 /// Database model for crypto_markets table
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
@@ -174,17 +182,33 @@ impl CryptoMarket {
     /// Get market summary statistics
     pub fn get_summary(conn: &mut PgConnection) -> Result<CryptoMarketsSummary, DieselError> {
         use crate::schema::crypto_markets::dsl::*;
-        use diesel::dsl::{count, count_distinct, max};
+        use diesel::dsl::{count, max};
 
-        let (total, active, exchanges, pairs, last_update) = crypto_markets
-            .select((
-                count(id),
-                count(id.nullable()).filter(is_active.eq(Some(true))),
-                count_distinct(exchange),
-                count_distinct((base, target)),
-                max(last_fetch_at),
-            ))
-            .first::<(i64, i64, i64, i64, Option<DateTime<Utc>>)>(conn)?;
+        // Get total count
+        let total = crypto_markets
+            .select(count(id))
+            .first::<i64>(conn)?;
+
+        // Get active count - separate query to avoid unsupported count().filter() pattern
+        let active = crypto_markets
+            .filter(is_active.eq(Some(true)))
+            .select(count(id))
+            .first::<i64>(conn)?;
+
+        // Get exchange count
+        let exchanges = crypto_markets
+            .select(diesel::dsl::sql::<diesel::sql_types::BigInt>("COUNT(DISTINCT exchange)"))
+            .first::<i64>(conn)?;
+
+        // Get last update timestamp
+        let last_update = crypto_markets
+            .select(max(last_fetch_at))
+            .first::<Option<DateTime<Utc>>>(conn)?;
+
+        // Count unique trading pairs using raw SQL due to Diesel limitations with tuple count_distinct
+        let pairs = diesel::sql_query("SELECT COUNT(DISTINCT (base, target)) as count FROM crypto_markets")
+            .get_result::<CountResult>(conn)?
+            .count;
 
         Ok(CryptoMarketsSummary {
             total_markets: total,
@@ -201,10 +225,11 @@ impl CryptoMarket {
         threshold_hours: i64,
     ) -> Result<usize, DieselError> {
         use crate::schema::crypto_markets::dsl::*;
-        use diesel::dsl::now;
 
-        let threshold_time = now - diesel::dsl::sql::<diesel::sql_types::Interval>(
-            &format!("interval '{} hours'", threshold_hours)
+        // Create the threshold time using PostgreSQL-compatible interval syntax
+        // Cast to nullable timestamptz to match the column type
+        let threshold_time = diesel::dsl::sql::<diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>>(
+            &format!("(now() - interval '{} hours')::timestamptz", threshold_hours)
         );
 
         diesel::delete(
@@ -239,6 +264,136 @@ impl CryptoMarket {
         }
 
         query.load::<(Self, String, String)>(conn)
+    }
+
+    /// Get markets by exchange with active filter
+    pub fn get_by_exchange(
+        conn: &mut PgConnection,
+        exchange_name: &str,
+        active_only: bool,
+    ) -> Result<Vec<Self>, DieselError> {
+        use crate::schema::crypto_markets::dsl::*;
+
+        let mut query = crypto_markets
+            .filter(exchange.eq(exchange_name))
+            .into_boxed();
+
+        if active_only {
+            query = query.filter(is_active.eq(Some(true)));
+        }
+
+        query
+            .order(volume_24h.desc().nulls_last())
+            .load::<Self>(conn)
+    }
+
+    /// Get markets by symbol (sid) with active filter
+    pub fn get_by_symbol(
+        conn: &mut PgConnection,
+        symbol_id: i64,
+        active_only: bool,
+    ) -> Result<Vec<Self>, DieselError> {
+        use crate::schema::crypto_markets::dsl::*;
+
+        let mut query = crypto_markets
+            .filter(sid.eq(symbol_id))
+            .into_boxed();
+
+        if active_only {
+            query = query.filter(is_active.eq(Some(true)));
+        }
+
+        query
+            .order(volume_24h.desc().nulls_last())
+            .load::<Self>(conn)
+    }
+
+    /// Update market status (active/inactive/stale)
+    pub fn update_status(
+        conn: &mut PgConnection,
+        market_id: i32,
+        status_update: &UpdateCryptoMarket,
+    ) -> Result<Self, DieselError> {
+        use crate::schema::crypto_markets::dsl::*;
+
+        diesel::update(crypto_markets.find(market_id))
+            .set(status_update)
+            .returning(CryptoMarket::as_returning())
+            .get_result(conn)
+    }
+
+    /// Mark markets as stale if not updated within threshold
+    pub fn mark_stale_markets(
+        conn: &mut PgConnection,
+        threshold_hours: i64,
+    ) -> Result<usize, DieselError> {
+        use crate::schema::crypto_markets::dsl::*;
+
+        let threshold_time = diesel::dsl::sql::<diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>>(
+            &format!("(now() - interval '{} hours')::timestamptz", threshold_hours)
+        );
+
+        diesel::update(
+            crypto_markets.filter(
+                last_fetch_at.lt(threshold_time)
+                    .and(is_stale.eq(Some(false)).or(is_stale.is_null()))
+            )
+        )
+            .set(is_stale.eq(Some(true)))
+            .execute(conn)
+    }
+
+    /// Get exchange statistics
+    pub fn get_exchange_stats(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<ExchangeStats>, DieselError> {
+        use crate::schema::crypto_markets::dsl::*;
+        use diesel::dsl::{count, sum};
+
+        // Get exchange statistics using separate queries to avoid complex aggregations
+        let exchanges_data: Vec<String> = crypto_markets
+            .select(exchange)
+            .distinct()
+            .load::<String>(conn)?;
+
+        let mut stats = Vec::new();
+
+        for exch in exchanges_data {
+            let total_markets = crypto_markets
+                .filter(exchange.eq(&exch))
+                .select(count(id))
+                .first::<i64>(conn)?;
+
+            let active_markets = crypto_markets
+                .filter(exchange.eq(&exch))
+                .filter(is_active.eq(Some(true)))
+                .select(count(id))
+                .first::<i64>(conn)?;
+
+            let total_volume = crypto_markets
+                .filter(exchange.eq(&exch))
+                .filter(is_active.eq(Some(true)))
+                .select(sum(volume_24h.nullable()))
+                .first::<Option<BigDecimal>>(conn)?;
+
+            stats.push(ExchangeStats {
+                exchange: exch,
+                market_count: total_markets,
+                active_markets,
+                total_volume_24h: total_volume,
+                average_trust_score: None, // Would need separate calculation for text average
+            });
+        }
+
+        Ok(stats)
+    }
+
+    /// Upsert batch - alternative name for compatibility
+    pub fn upsert_batch(
+        conn: &mut PgConnection,
+        markets: &[NewCryptoMarket],
+    ) -> Result<usize, DieselError> {
+        Self::upsert_markets(conn, markets).map(|v| v.len())
     }
 }
 

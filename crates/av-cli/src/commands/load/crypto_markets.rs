@@ -1,30 +1,33 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use av_core::config::Config;
+use crate::config::Config;
 use av_client::AlphaVantageClient;
 use av_database_postgres::{
-    establish_connection,
     models::{
-        crypto::CryptoApiMap,
-        crypto_markets::{CryptoMarket, NewCryptoMarket},
-        security::Symbol,
+        crypto_markets::{CryptoMarket, NewCryptoMarket, CryptoMarketInput},
     },
-    schema::{crypto_api_map, crypto_markets, symbols},
+    schema::{crypto_api_map, symbols},
 };
 use av_loaders::{
     crypto::{
         markets_loader::{
             CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader, CryptoSymbolForMarkets,
+            CryptoMarketData,
         },
         CryptoDataSource,
     },
     DataLoader, LoaderConfig, LoaderContext, ProcessTracker,
 };
-use diesel::prelude::*;
+use diesel::{pg::PgConnection, prelude::*, Connection};
+
+/// Helper function to establish database connection
+fn establish_connection(database_url: &str) -> Result<PgConnection> {
+    PgConnection::establish(database_url)
+        .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))
+}
 
 #[derive(Args, Debug)]
 pub struct CryptoMarketsArgs {
@@ -90,7 +93,7 @@ pub struct CryptoMarketsArgs {
     dry_run: bool,
 }
 
-#[derive(Debug, Clone, clap::ValueEnum)]
+#[derive(Debug, clap::ValueEnum)]
 enum CryptoDataSourceArg {
     CoinGecko,
     AlphaVantage,
@@ -105,6 +108,16 @@ impl From<CryptoDataSourceArg> for CryptoDataSource {
     }
 }
 
+// Manual Clone implementation to avoid conflict with derive
+impl Clone for CryptoDataSourceArg {
+    fn clone(&self) -> Self {
+        match self {
+            CryptoDataSourceArg::CoinGecko => CryptoDataSourceArg::CoinGecko,
+            CryptoDataSourceArg::AlphaVantage => CryptoDataSourceArg::AlphaVantage,
+        }
+    }
+}
+
 pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
     info!("Starting crypto markets loader");
 
@@ -114,11 +127,11 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
     }
 
     // Validate API keys
-    let sources: Vec<CryptoDataSource> = args.sources.iter().map(|s| (*s).into()).collect();
+    let sources: Vec<CryptoDataSource> = args.sources.iter().map(|s| s.clone().into()).collect();
     validate_api_keys(&sources, &args)?;
 
-    // Create API client
-    let client = Arc::new(AlphaVantageClient::new(config.api_config));
+    // Create API client using the CLI config's api_config
+    let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
 
     // Create markets loader configuration
     let markets_config = CryptoMarketsConfig {
@@ -231,7 +244,7 @@ async fn execute_dry_run(args: CryptoMarketsArgs) -> Result<()> {
     info!("  - Fetch all exchanges: {}", args.fetch_all_exchanges);
 
     // Test API connections
-    let sources: Vec<CryptoDataSource> = args.sources.iter().map(|s| (*s).into()).collect();
+    let sources: Vec<CryptoDataSource> = args.sources.iter().map(|s| s.clone().into()).collect();
 
     for source in &sources {
         match source {
@@ -341,21 +354,44 @@ fn load_crypto_symbols_from_db(
 /// Save market data to database
 async fn save_markets_to_db(
     database_url: &str,
-    markets: &[av_loaders::crypto::markets_loader::CryptoMarketData],
+    markets: &[CryptoMarketData],
     update_existing: bool,
 ) -> Result<(usize, usize)> {
     let database_url = database_url.to_string();
     let markets = markets.to_vec();
 
-    tokio::task::spawn_blocking(move || {
-        let mut conn = establish_connection(&database_url)?;
+    tokio::task::spawn_blocking(move || -> Result<(usize, usize)> {
+        let mut conn = PgConnection::establish(&database_url)
+            .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
 
+        // Convert CryptoMarketData to CryptoMarketInput first, then to NewCryptoMarket
         let new_markets: Vec<NewCryptoMarket> = markets
             .into_iter()
-            .map(|market| market.into())
+            .map(|market| {
+                // Convert CryptoMarketData to CryptoMarketInput
+                let market_input = CryptoMarketInput {
+                    sid: market.sid,
+                    exchange: market.exchange,
+                    base: market.base,
+                    target: market.target,
+                    market_type: market.market_type,
+                    volume_24h: market.volume_24h,
+                    volume_percentage: market.volume_percentage,
+                    bid_ask_spread_pct: market.bid_ask_spread_pct,
+                    liquidity_score: market.liquidity_score,
+                    is_active: market.is_active,
+                    is_anomaly: market.is_anomaly,
+                    is_stale: market.is_stale,
+                    trust_score: market.trust_score,
+                    last_traded_at: market.last_traded_at,
+                    last_fetch_at: market.last_fetch_at,
+                };
+                // Convert CryptoMarketInput to NewCryptoMarket
+                market_input.into()
+            })
             .collect();
 
-        conn.transaction(|conn| {
+        conn.transaction(|conn| -> Result<(usize, usize), diesel::result::Error> {
             if update_existing {
                 // Use upsert for update mode
                 let count = CryptoMarket::upsert_batch(conn, &new_markets)?;
@@ -383,6 +419,7 @@ async fn save_markets_to_db(
                 Ok((inserted, 0))
             }
         })
+            .map_err(|e| anyhow::anyhow!("Database transaction failed: {}", e))
     })
         .await?
         .context("Database operation failed")
