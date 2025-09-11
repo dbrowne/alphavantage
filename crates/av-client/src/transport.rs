@@ -36,6 +36,11 @@ impl Transport {
     Self { client, api_key: config.api_key, base_url }
   }
 
+  /// Get access to the internal reqwest client for direct API calls
+  pub fn client(&self) -> &Client {
+    &self.client
+  }
+
   /// Execute a GET request to the AlphaVantage API
   ///
   /// # Arguments

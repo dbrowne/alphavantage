@@ -2,6 +2,8 @@ use crate::endpoints::{
   crypto::CryptoEndpoints, forex::ForexEndpoints, fundamentals::FundamentalsEndpoints,
   news::NewsEndpoints, time_series::TimeSeriesEndpoints,
 };
+use crate::endpoints::crypto_social::CryptoSocialEndpoints;
+
 use crate::transport::Transport;
 use av_core::{Config, Result};
 use governor::{
@@ -45,6 +47,9 @@ pub struct AlphaVantageClient {
   rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
   transport: Arc<Transport>,
 }
+
+
+
 
 impl AlphaVantageClient {
   /// Create a new AlphaVantage API client
@@ -175,6 +180,15 @@ impl AlphaVantageClient {
   /// ```
   pub fn crypto(&self) -> CryptoEndpoints {
     CryptoEndpoints::new(self.transport.clone(), self.rate_limiter.clone())
+  }
+
+
+  /// Get access to crypto social endpoints
+  ///
+  /// Returns a `CryptoSocialEndpoints` instance for accessing cryptocurrency
+  /// social media and community data.
+  pub fn crypto_social(&self) -> CryptoSocialEndpoints {
+    CryptoSocialEndpoints::new(self.transport.clone())
   }
 
   /// Get the current rate limit status

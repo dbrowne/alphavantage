@@ -11,8 +11,12 @@ pub use client::AlphaVantageClient;
 
 // Re-export endpoint modules for direct access if needed
 pub use endpoints::{
-  crypto::CryptoEndpoints, forex::ForexEndpoints, fundamentals::FundamentalsEndpoints,
-  news::NewsEndpoints, time_series::TimeSeriesEndpoints,
+  crypto::CryptoEndpoints,
+  crypto_social::CryptoSocialEndpoints,
+  forex::ForexEndpoints, 
+  fundamentals::FundamentalsEndpoints,
+  news::NewsEndpoints, 
+  time_series::TimeSeriesEndpoints,
 };
 
 #[cfg(test)]

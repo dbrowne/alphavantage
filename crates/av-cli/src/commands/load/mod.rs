@@ -7,6 +7,7 @@ pub mod overviews;
 pub mod crypto;
 pub mod crypto_overview;
 mod crypto_markets;
+pub mod crypto_social;
 
 use tracing::info;
 
@@ -14,6 +15,7 @@ use tracing::info;
 pub struct LoadCommand {
   #[command(subcommand)]
   command: LoadSubcommands,
+  CryptoSocial(crypto_social::CryptoSocialArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -67,6 +69,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::Crypto(args) => crypto::execute(args, config).await,
     LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
     LoadSubcommands::CryptoMarkets(args) => crypto_markets::execute(args, config).await,
+    LoadCommand::CryptoSocial(args) => crypto_social::execute(args, config).await,
     LoadSubcommands::UpdateGithub(args) => {
       info!("Updating GitHub data for cryptocurrencies");
       crypto_overview::update_github_data(args, config).await
