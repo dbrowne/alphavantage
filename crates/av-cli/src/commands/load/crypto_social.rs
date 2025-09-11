@@ -3,6 +3,7 @@ use clap::Args;
 use tracing::{info, warn};
 
 use av_database_postgres::{establish_connection, schema::symbols::dsl::*};
+use av_database_postgres::schema::crypto_api_map::dsl as api_map;
 use av_loaders::{
     DataLoader, LoaderConfig, LoaderContext,
     crypto::social_loader::{CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader, CryptoSymbolForSocial},
@@ -194,10 +195,13 @@ fn load_crypto_symbols_from_db(
 
     use av_database_postgres::schema::symbols::dsl::*;
 
+
     let mut query = symbols
+        .left_join(av_database_postgres::schema::crypto_api_map::table.on(
+            sid.eq(api_map::sid).and(api_map::api_source.eq("coingecko"))
+        ))
         .filter(sec_type.eq("Cryptocurrency"))
-        .select((sid, symbol, name, coingecko_id))
-        .into_boxed();
+        .select((sid, symbol, name, api_map::api_id.nullable()));
 
     // Apply symbol filter if provided
     if let Some(filter_list) = filter_symbols {

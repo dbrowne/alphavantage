@@ -1,14 +1,15 @@
-use crate::{DataLoader, LoaderConfig, LoaderContext, LoaderError, LoaderResult};
+use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult};
 use av_database_postgres::{
-    models::crypto::{CryptoSocial, NewCryptoSocial},
+    models::crypto::{NewCryptoSocial},
     schema::crypto_social,
 };
 pub use av_models::crypto_social::{CoinGeckoSocialResponse, ProcessedSocialData, GitHubRepoInfo};
 use diesel::prelude::*;
-use rust_decimal::Decimal;
+use bigdecimal::BigDecimal;
 use std::str::FromStr;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info, warn};
+use chrono::Utc;
 
 #[derive(Debug, Clone)]
 pub struct CryptoSocialConfig {
@@ -98,14 +99,14 @@ impl CryptoSocialLoader {
         debug!("Fetching CoinGecko social data for: {}", coingecko_id);
 
         let response = client.get(&url).send().await
-            .map_err(|e| format!("CoinGecko request failed: {}", e))?;
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
 
         if !response.status().is_success() {
             return Err(format!("CoinGecko API error: HTTP {}", response.status()));
         }
 
         response.json().await
-            .map_err(|e| format!("Failed to parse CoinGecko response: {}", e))
+            .map_err(|e| format!("Failed to parse response: {}", e))
     }
 
     /// Fetch GitHub repository information
@@ -114,18 +115,15 @@ impl CryptoSocialLoader {
         client: &reqwest::Client,
         repo_url: &str,
     ) -> Result<GitHubRepoInfo, String> {
-        // Extract owner/repo from GitHub URL
         let repo_path = repo_url
             .strip_prefix("https://github.com/")
             .or_else(|| repo_url.strip_prefix("http://github.com/"))
             .ok_or_else(|| "Invalid GitHub URL format".to_string())?;
 
         let api_url = format!("https://api.github.com/repos/{}", repo_path);
-
         debug!("Fetching GitHub repo info for: {}", repo_path);
 
-        let mut request = client
-            .get(&api_url)
+        let mut request = client.get(&api_url)
             .header("User-Agent", "AlphaVantage-Rust-Client/1.0")
             .header("Accept", "application/vnd.github.v3+json");
 
@@ -134,12 +132,9 @@ impl CryptoSocialLoader {
         }
 
         let response = request.send().await
-            .map_err(|e| format!("GitHub request failed: {}", e))?;
+            .map_err(|e| format!("GitHub API request failed: {}", e))?;
 
         if !response.status().is_success() {
-            if response.status() == 404 {
-                return Err("GitHub repository not found".to_string());
-            }
             return Err(format!("GitHub API error: HTTP {}", response.status()));
         }
 
@@ -147,152 +142,104 @@ impl CryptoSocialLoader {
             .map_err(|e| format!("Failed to parse GitHub response: {}", e))
     }
 
-    /// Process CoinGecko social response into database-ready format
+    /// Process social data into database-ready format
     fn process_social_data(
         &self,
         sid: i64,
-        response: &CoinGeckoSocialResponse,
-        github_info: Option<&GitHubRepoInfo>,
+        data: &CoinGeckoSocialResponse,
+        _github_info: Option<&GitHubRepoInfo>,
     ) -> ProcessedSocialData {
-        // Extract website URL (first homepage entry)
-        let website_url = response.links.homepage
-            .first()
-            .filter(|url| !url.is_empty())
-            .map(|url| url.clone());
-
-        // Extract whitepaper URL
-        let whitepaper_url = response.links.whitepaper.clone();
-
-        // Extract GitHub URL (first repo if available)
-        let github_url = response.links.github
-            .as_ref()
-            .and_then(|repos| repos.github.first())
-            .map(|url| url.clone());
-
-        // Extract Twitter handle (without @)
-        let twitter_handle = response.links.twitter_screen_name
-            .as_ref()
-            .map(|handle| handle.trim_start_matches('@').to_string());
-
-        // Extract Twitter followers from community data
-        let twitter_followers = response.community_data
-            .as_ref()
-            .and_then(|cd| cd.twitter_followers);
-
-        // Build Telegram URL from identifier
-        let telegram_url = response.links.telegram_channel_identifier
-            .as_ref()
-            .map(|id| format!("https://t.me/{}", id));
-
-        // Extract Telegram members from community data
-        let telegram_members = response.community_data
-            .as_ref()
-            .and_then(|cd| cd.telegram_channel_user_count);
-
-        // Extract Discord URL
-        let discord_url = response.links.discord.clone();
-
-        // Extract Reddit URL
-        let reddit_url = response.links.subreddit_url.clone();
-
-        // Extract Reddit subscribers from community data
-        let reddit_subscribers = response.community_data
-            .as_ref()
-            .and_then(|cd| cd.reddit_subscribers);
-
-        // Build Facebook URL from username
-        let facebook_url = response.links.facebook_username
-            .as_ref()
-            .map(|username| format!("https://facebook.com/{}", username));
-
-        // Extract Facebook likes from community data
-        let facebook_likes = response.community_data
-            .as_ref()
-            .and_then(|cd| cd.facebook_likes);
-
-        // Convert scores to Decimal
-        let coingecko_score = response.coingecko_score
-            .and_then(|s| Decimal::from_str(&s.to_string()).ok());
-        let developer_score = response.developer_score
-            .and_then(|s| Decimal::from_str(&s.to_string()).ok());
-        let community_score = response.community_score
-            .and_then(|s| Decimal::from_str(&s.to_string()).ok());
-        let liquidity_score = response.liquidity_score
-            .and_then(|s| Decimal::from_str(&s.to_string()).ok());
-        let public_interest_score = response.public_interest_score
-            .and_then(|s| Decimal::from_str(&s.to_string()).ok());
-
-        // Convert sentiment percentages to Decimal
-        let sentiment_votes_up_pct = response.sentiment_votes_up_percentage
-            .and_then(|s| Decimal::from_str(&s.to_string()).ok());
-        let sentiment_votes_down_pct = response.sentiment_votes_down_percentage
-            .and_then(|s| Decimal::from_str(&s.to_string()).ok());
-
         ProcessedSocialData {
             sid,
-            website_url,
-            whitepaper_url,
-            github_url,
-            twitter_handle,
-            twitter_followers,
-            telegram_url,
-            telegram_members,
-            discord_url,
-            discord_members: None, // Not available from CoinGecko
-            reddit_url,
-            reddit_subscribers,
-            facebook_url,
-            facebook_likes,
-            coingecko_score,
-            developer_score,
-            community_score,
-            liquidity_score,
-            public_interest_score,
-            sentiment_votes_up_pct,
-            sentiment_votes_down_pct,
+            website_url: data.links.homepage.first().cloned(),
+            whitepaper_url: data.links.whitepaper.clone(),
+            github_url: data.links.github.as_ref()
+                .and_then(|repos| repos.github.first().cloned()),
+            twitter_handle: data.links.twitter_screen_name.clone(),
+            twitter_followers: data.community_data.as_ref()
+                .and_then(|cd| cd.twitter_followers),
+            telegram_url: data.links.telegram_channel_identifier.clone(),
+            telegram_members: data.community_data.as_ref()
+                .and_then(|cd| cd.telegram_channel_user_count),
+            discord_url: data.links.discord.clone(),
+            discord_members: None, // Not available in CoinGecko API
+            reddit_url: data.links.subreddit_url.clone(),
+            reddit_subscribers: data.community_data.as_ref()
+                .and_then(|cd| cd.reddit_subscribers),
+            facebook_url: data.links.facebook_username.clone(),
+            facebook_likes: data.community_data.as_ref()
+                .and_then(|cd| cd.facebook_likes),
+            coingecko_score: data.coingecko_score.map(|s| rust_decimal::Decimal::from_f64_retain(s).unwrap_or_default()),
+            developer_score: data.developer_score.map(|s| rust_decimal::Decimal::from_f64_retain(s).unwrap_or_default()),
+            community_score: data.community_score.map(|s| rust_decimal::Decimal::from_f64_retain(s).unwrap_or_default()),
+            liquidity_score: data.liquidity_score.map(|s| rust_decimal::Decimal::from_f64_retain(s).unwrap_or_default()),
+            public_interest_score: data.public_interest_score.map(|s| rust_decimal::Decimal::from_f64_retain(s).unwrap_or_default()),
+            sentiment_votes_up_pct: data.sentiment_votes_up_percentage.map(|s| rust_decimal::Decimal::from_f64_retain(s).unwrap_or_default()),
+            sentiment_votes_down_pct: data.sentiment_votes_down_percentage.map(|s| rust_decimal::Decimal::from_f64_retain(s).unwrap_or_default()),
+        }
+    }
+
+    /// Convert ProcessedSocialData to NewCryptoSocial for database insertion
+    pub fn to_new_crypto_social(&self, data: &ProcessedSocialData) -> NewCryptoSocial {
+        let now = Utc::now();
+
+        NewCryptoSocial {
+            sid: data.sid,
+            website_url: data.website_url.clone(),
+            whitepaper_url: data.whitepaper_url.clone(),
+            github_url: data.github_url.clone(),
+            twitter_handle: data.twitter_handle.clone(),
+            twitter_followers: data.twitter_followers,
+            telegram_url: data.telegram_url.clone(),
+            telegram_members: data.telegram_members,
+            discord_url: data.discord_url.clone(),
+            discord_members: data.discord_members,
+            reddit_url: data.reddit_url.clone(),
+            reddit_subscribers: data.reddit_subscribers,
+            facebook_url: data.facebook_url.clone(),
+            facebook_likes: data.facebook_likes,
+            coingecko_score: data.coingecko_score.as_ref().map(|d| {
+                BigDecimal::from_str(&d.to_string()).unwrap_or_default()
+            }),
+            developer_score: data.developer_score.as_ref().map(|d| {
+                BigDecimal::from_str(&d.to_string()).unwrap_or_default()
+            }),
+            community_score: data.community_score.as_ref().map(|d| {
+                BigDecimal::from_str(&d.to_string()).unwrap_or_default()
+            }),
+            liquidity_score: data.liquidity_score.as_ref().map(|d| {
+                BigDecimal::from_str(&d.to_string()).unwrap_or_default()
+            }),
+            public_interest_score: data.public_interest_score.as_ref().map(|d| {
+                BigDecimal::from_str(&d.to_string()).unwrap_or_default()
+            }),
+            sentiment_votes_up_pct: data.sentiment_votes_up_pct.as_ref().map(|d| {
+                BigDecimal::from_str(&d.to_string()).unwrap_or_default()
+            }),
+            sentiment_votes_down_pct: data.sentiment_votes_down_pct.as_ref().map(|d| {
+                BigDecimal::from_str(&d.to_string()).unwrap_or_default()
+            }),
+            c_time: now,
+            m_time: now,
         }
     }
 
     /// Save social data to database
-    pub async fn save_social_data(
+    async fn save_social_data(
         &self,
         conn: &mut PgConnection,
         social_data: &[ProcessedSocialData],
-    ) -> Result<(usize, usize), LoaderError> {
+        update_existing: bool,
+    ) -> LoaderResult<(usize, usize)> {
         let mut inserted = 0;
         let mut updated = 0;
 
         for data in social_data {
-            let new_social = NewCryptoSocial {
-                sid: data.sid,
-                website_url: data.website_url.clone(),
-                whitepaper_url: data.whitepaper_url.clone(),
-                github_url: data.github_url.clone(),
-                twitter_handle: data.twitter_handle.clone(),
-                twitter_followers: data.twitter_followers,
-                telegram_url: data.telegram_url.clone(),
-                telegram_members: data.telegram_members,
-                discord_url: data.discord_url.clone(),
-                discord_members: data.discord_members,
-                reddit_url: data.reddit_url.clone(),
-                reddit_subscribers: data.reddit_subscribers,
-                facebook_url: data.facebook_url.clone(),
-                facebook_likes: data.facebook_likes,
-                coingecko_score: data.coingecko_score.clone(),
-                developer_score: data.developer_score.clone(),
-                community_score: data.community_score.clone(),
-                liquidity_score: data.liquidity_score.clone(),
-                public_interest_score: data.public_interest_score.clone(),
-                sentiment_votes_up_pct: data.sentiment_votes_up_pct.clone(),
-                sentiment_votes_down_pct: data.sentiment_votes_down_pct.clone(),
-            };
+            let new_social = self.to_new_crypto_social(data);
 
-            if self.config.update_existing {
-                // Use ON CONFLICT DO UPDATE for upsert
-                let result = diesel::insert_into(crypto_social::table)
-                    .values(&new_social)
-                    .on_conflict(crypto_social::sid)
-                    .do_update()
+            if update_existing {
+                // Try to update first, then insert if not found
+                let rows_affected = diesel::update(crypto_social::table.find(data.sid))
                     .set((
                         crypto_social::website_url.eq(&new_social.website_url),
                         crypto_social::whitepaper_url.eq(&new_social.whitepaper_url),
@@ -314,27 +261,39 @@ impl CryptoSocialLoader {
                         crypto_social::public_interest_score.eq(&new_social.public_interest_score),
                         crypto_social::sentiment_votes_up_pct.eq(&new_social.sentiment_votes_up_pct),
                         crypto_social::sentiment_votes_down_pct.eq(&new_social.sentiment_votes_down_pct),
-                        crypto_social::m_time.eq(diesel::dsl::now),
+                        crypto_social::m_time.eq(&new_social.m_time),
                     ))
-                    .execute(conn);
+                    .execute(conn)
+                    .map_err(|e| LoaderError::ApiError(e.to_string()))?;
 
-                match result {
-                    Ok(_) => updated += 1,
-                    Err(e) => {
-                        error!("Failed to upsert social data for sid {}: {}", data.sid, e);
-                        return Err(LoaderError::ApiError(e.to_string()));
+                if rows_affected > 0 {
+                    updated += 1;
+                } else {
+                    // Insert if update didn't affect any rows
+                    match diesel::insert_into(crypto_social::table)
+                        .values(&new_social)
+                        .execute(conn)
+                    {
+                        Ok(_) => inserted += 1,
+                        Err(e) => {
+                            error!("Failed to insert social data for sid {}: {}", data.sid, e);
+                            return Err(LoaderError::ApiError(e.to_string()));
+                        }
                     }
                 }
             } else {
-                // Insert only, skip on conflict
-                let result = diesel::insert_into(crypto_social::table)
+                // Insert only mode
+                match diesel::insert_into(crypto_social::table)
                     .values(&new_social)
-                    .on_conflict_do_nothing()
-                    .execute(conn);
-
-                match result {
-                    Ok(1) => inserted += 1,
-                    Ok(0) => debug!("Social data already exists for sid {}, skipping", data.sid),
+                    .execute(conn)
+                {
+                    Ok(_) => inserted += 1,
+                    Err(diesel::result::Error::DatabaseError(
+                            diesel::result::DatabaseErrorKind::UniqueViolation,
+                            _,
+                        )) => {
+                        debug!("Social data already exists for sid {}, skipping", data.sid);
+                    }
                     Err(e) => {
                         error!("Failed to insert social data for sid {}: {}", data.sid, e);
                         return Err(LoaderError::ApiError(e.to_string()));
@@ -351,7 +310,10 @@ impl CryptoSocialLoader {
 impl DataLoader for CryptoSocialLoader {
     type Input = CryptoSocialInput;
     type Output = CryptoSocialOutput;
-    type Error = LoaderError;
+
+    fn name(&self) -> &'static str {
+        "CryptoSocialLoader"
+    }
 
     async fn load(
         &self,
@@ -432,23 +394,18 @@ impl DataLoader for CryptoSocialLoader {
                         }
                     }
                 } else {
-                    debug!("No CoinGecko ID for {}, skipping social data fetch", symbol.symbol);
+                    debug!("No CoinGecko ID for symbol {}, skipping", symbol.symbol);
                 }
 
-                // Rate limiting between requests
+                // Rate limiting
                 if social_data_fetched > 0 && social_data_fetched % 10 == 0 {
                     sleep(Duration::from_millis(self.config.rate_limit_delay_ms)).await;
                 }
             }
-
-            // Longer delay between batches
-            if batch_idx < chunks.len() - 1 {
-                sleep(Duration::from_millis(self.config.rate_limit_delay_ms * 2)).await;
-            }
         }
 
-        info!("Fetched social data for {} symbols with {} errors",
-              social_data_fetched, errors.len());
+        info!("Completed social data fetching: {} fetched, {} GitHub repos, {} errors",
+              social_data_fetched, github_repos_fetched, errors.len());
 
         Ok(CryptoSocialOutput {
             social_data_fetched,
