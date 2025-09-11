@@ -1,7 +1,6 @@
 use crate::transport::Transport;
 use av_core::{Error, Result};
 use av_models::crypto_social::{CoinGeckoSocialResponse, GitHubRepoInfo};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tracing::debug;
@@ -13,8 +12,7 @@ pub struct CryptoSocialEndpoints {
 impl CryptoSocialEndpoints {
     pub fn new(transport: Arc<Transport>) -> Self {
         Self {
-            transport: transport.clone(),
-            client: transport.client().clone(),
+            transport,
         }
     }
 
@@ -35,16 +33,21 @@ impl CryptoSocialEndpoints {
 
         debug!("Fetching CoinGecko social data for: {}", coingecko_id);
 
-        let response = self.transport.get(&url).await?;
+        // Use the HTTP client directly for external API calls
+        let client = self.transport.client();
+        let response = client.get(&url)
+            .send()
+            .await
+            .map_err(|e| Error::Http(format!("CoinGecko API request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(Error::RequestFailed(format!(
+            return Err(Error::Http(format!(
                 "CoinGecko API error: HTTP {}", response.status()
             )));
         }
 
         let social_data: CoinGeckoSocialResponse = response.json().await
-            .map_err(|e| Error::ParseError(format!("Failed to parse CoinGecko response: {}", e)))?;
+            .map_err(|e| Error::Parse(format!("Failed to parse CoinGecko response: {}", e)))?;
 
         Ok(social_data)
     }
@@ -59,33 +62,38 @@ impl CryptoSocialEndpoints {
         let repo_path = repo_url
             .strip_prefix("https://github.com/")
             .or_else(|| repo_url.strip_prefix("http://github.com/"))
-            .ok_or_else(|| Error::InvalidInput("Invalid GitHub URL format".to_string()))?;
+            .ok_or_else(|| Error::Config("Invalid GitHub URL format".to_string()))?;
 
         let api_url = format!("https://api.github.com/repos/{}", repo_path);
 
         debug!("Fetching GitHub repo info for: {}", repo_path);
 
-        let mut headers = HashMap::new();
-        headers.insert("User-Agent".to_string(), "AlphaVantage-Rust-Client/1.0".to_string());
-        headers.insert("Accept".to_string(), "application/vnd.github.v3+json".to_string());
+        // Use the HTTP client directly for external API calls
+        let client = self.transport.client();
+        let mut request = client.get(&api_url);
+
+        // Add headers
+        request = request.header("User-Agent", "AlphaVantage-Rust-Client/1.0");
+        request = request.header("Accept", "application/vnd.github.v3+json");
 
         if let Some(token) = github_token {
-            headers.insert("Authorization".to_string(), format!("token {}", token));
+            request = request.header("Authorization", format!("token {}", token));
         }
 
-        let response = self.transport.get_with_headers(&api_url, headers).await?;
+        let response = request.send().await
+            .map_err(|e| Error::Http(format!("GitHub API request failed: {}", e)))?;
 
         if !response.status().is_success() {
             if response.status() == 404 {
-                return Err(Error::NotFound("GitHub repository not found".to_string()));
+                return Err(Error::Api("GitHub repository not found".to_string()));
             }
-            return Err(Error::RequestFailed(format!(
+            return Err(Error::Http(format!(
                 "GitHub API error: HTTP {}", response.status()
             )));
         }
 
         let repo_info: GitHubRepoInfo = response.json().await
-            .map_err(|e| Error::ParseError(format!("Failed to parse GitHub response: {}", e)))?;
+            .map_err(|e| Error::Parse(format!("Failed to parse GitHub response: {}", e)))?;
 
         Ok(repo_info)
     }
