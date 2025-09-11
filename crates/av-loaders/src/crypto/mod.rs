@@ -2,7 +2,8 @@ pub mod database;
 pub mod loader;
 pub mod sources;
 pub mod types;
-
+pub mod social_loader;
+pub use social_loader::*;
 
 pub mod markets_loader;
 pub use markets_loader::{

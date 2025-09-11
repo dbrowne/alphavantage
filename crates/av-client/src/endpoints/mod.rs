@@ -5,6 +5,8 @@ pub mod forex;
 pub mod fundamentals;
 pub mod news;
 pub mod time_series;
+pub mod crypto_social;
+
 use crate::transport::Transport;
 use av_core::Result;
 use std::sync::Arc;

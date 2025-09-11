@@ -292,6 +292,7 @@ dependencies = [
  "mockall",
  "rayon",
  "reqwest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "tempfile",
