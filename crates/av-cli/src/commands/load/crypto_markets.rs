@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{info, warn,error};
 use chrono::Utc;
 use bigdecimal::BigDecimal;
 
@@ -234,6 +234,7 @@ async fn save_market_data_to_db(
     let mut conn = establish_connection(database_url)?;
     let mut inserted_count = 0;
     let mut updated_count = 0;
+    let mut failed_batches = 0;
 
     info!("Processing {} market data entries", market_data.len());
 
@@ -243,104 +244,207 @@ async fn save_market_data_to_db(
     for (batch_index, batch) in market_data.chunks(BATCH_SIZE).enumerate() {
         info!("Processing batch {} with {} entries", batch_index + 1, batch.len());
 
-        let mut new_records = Vec::new();
-        // let mut update_records = Vec::new();
+        // Wrap each batch in error handling
+        match process_single_batch(&mut conn, batch, update_existing).await {
+            Ok((batch_inserted, batch_updated)) => {
+                inserted_count += batch_inserted;
+                updated_count += batch_updated;
+                if batch_inserted > 0 || batch_updated > 0 {
+                    info!("✅ Batch {}: {} inserted, {} updated",
+                         batch_index + 1, batch_inserted, batch_updated);
+                }
+            }
+            Err(e) => {
+                failed_batches += 1;
+                error!("❌ Batch {} failed: {}", batch_index + 1, e);
 
-        for market in batch {
-            // Check if record already exists
+                // Log detailed field lengths and values for the failed batch
+                error!("Failed batch contained {} entries with detailed field analysis:", batch.len());
+                for (i, market) in batch.iter().take(5).enumerate() {
+                    error!("  Entry {}: SID {}", i + 1, market.sid);
+                    error!("    exchange: '{}' (len: {})", market.exchange, market.exchange.len());
+                    error!("    base: '{}' (len: {})", market.base, market.base.len());
+                    error!("    target: '{}' (len: {})", market.target, market.target.len());
 
-            let existing_count: i64 = crypto_markets
-                .filter(sid.eq(market.sid))
-                .filter(exchange.eq(&market.exchange))
-                .filter(base.eq(&market.base))
-                .filter(target.eq(&market.target))
-                .count()
-                .get_result(&mut conn)
-                .context("Failed to check for existing market record")?;
+                    if let Some(ref mt) = market.market_type {
+                        error!("    market_type: '{}' (len: {})", mt, mt.len());
+                    }
+                    if let Some(ref ts) = market.trust_score {
+                        error!("    trust_score: '{}' (len: {})", ts, ts.len());
+                    }
+                    if let Some(ref ls) = market.liquidity_score {
+                        error!("    liquidity_score: '{}' (len: {})", ls, ls.len());
+                    }
+                    if let Some(ref lta) = market.last_traded_at {
+                        error!("    last_traded_at: '{}' (len: {})", lta, lta.len());
+                    }
 
-            let record_exists = existing_count > 0;
-
-            if record_exists {
-                if update_existing {
-                    // Update existing record
-                    let updated_rows = diesel::update(
-                        crypto_markets
-                            .filter(sid.eq(market.sid))
-                            .filter(exchange.eq(&market.exchange))
-                            .filter(base.eq(&market.base))
-                            .filter(target.eq(&market.target))
-                    )
-                        .set((
-                            market_type.eq(&market.market_type),
-                            volume_24h.eq(&market.volume_24h),
-                            volume_percentage.eq(&market.volume_percentage),
-                            bid_ask_spread_pct.eq(&market.bid_ask_spread_pct),
-                            liquidity_score.eq(&market.liquidity_score),
-                            is_active.eq(market.is_active),
-                            is_anomaly.eq(market.is_anomaly),
-                            is_stale.eq(market.is_stale),
-                            trust_score.eq(&market.trust_score),
-                            last_traded_at.eq(
-                                market.last_traded_at.as_ref()
-                                    .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
-                            ),
-                            last_fetch_at.eq(
-                                market.last_fetch_at.as_ref()
-                                    .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
-                                    .unwrap_or_else(|| Utc::now())
-                            ),
-                        ))
-                        .execute(&mut conn)
-                        .context("Failed to update market record")?;
-
-                    if updated_rows > 0 {
-                        updated_count += 1;
+                    // Check for exceptionally long fields
+                    if market.exchange.len() > 150 {
+                        error!("    ⚠️  EXCHANGE TOO LONG: '{}'", market.exchange);
+                    }
+                    if market.base.len() > 100 {
+                        error!("    ⚠️  BASE TOO LONG: '{}'", market.base);
+                    }
+                    if market.target.len() > 100 {
+                        error!("    ⚠️  TARGET TOO LONG: '{}'", market.target);
+                    }
+                    if let Some(ref ts) = market.trust_score {
+                        if ts.len() > 100 {
+                            error!("    ⚠️  TRUST_SCORE TOO LONG: '{}'", ts);
+                        }
+                    }
+                    if let Some(ref ls) = market.liquidity_score {
+                        if ls.len() > 100 {
+                            error!("    ⚠️  LIQUIDITY_SCORE TOO LONG: '{}'", ls);
+                        }
                     }
                 }
-                // Skip if not updating existing records
-            } else {
-                // Prepare new record for insertion
-                let new_record = (
-                    sid.eq(market.sid),
-                    exchange.eq(&market.exchange),
-                    base.eq(&market.base),
-                    target.eq(&market.target),
-                    market_type.eq(&market.market_type),
-                    volume_24h.eq(&market.volume_24h),
-                    volume_percentage.eq(&market.volume_percentage),
-                    bid_ask_spread_pct.eq(&market.bid_ask_spread_pct),
-                    liquidity_score.eq(&market.liquidity_score),
-                    is_active.eq(market.is_active),
-                    is_anomaly.eq(market.is_anomaly),
-                    is_stale.eq(market.is_stale),
-                    trust_score.eq(&market.trust_score),
-                    last_traded_at.eq(
-                        market.last_traded_at.as_ref()
-                            .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
-                    ),
-                    last_fetch_at.eq(
-                        market.last_fetch_at.as_ref()
-                            .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
-                            .unwrap_or_else(|| Utc::now())
-                    ),
-                );
-                new_records.push(new_record);
+
+                if batch.len() > 5 {
+                    error!("  ... and {} more entries", batch.len() - 5);
+
+                    // Also check the longest fields in the entire batch
+                    let max_exchange_len = batch.iter().map(|m| m.exchange.len()).max().unwrap_or(0);
+                    let max_base_len = batch.iter().map(|m| m.base.len()).max().unwrap_or(0);
+                    let max_target_len = batch.iter().map(|m| m.target.len()).max().unwrap_or(0);
+
+                    error!("  Batch maximums: exchange={}, base={}, target={}",
+                           max_exchange_len, max_base_len, max_target_len);
+
+                    // Find and log the entries with maximum lengths
+                    if let Some(longest_exchange) = batch.iter().max_by_key(|m| m.exchange.len()) {
+                        error!("  Longest exchange: '{}' ({})", longest_exchange.exchange, longest_exchange.exchange.len());
+                    }
+                    if let Some(longest_base) = batch.iter().max_by_key(|m| m.base.len()) {
+                        error!("  Longest base: '{}' ({})", longest_base.base, longest_base.base.len());
+                    }
+                    if let Some(longest_target) = batch.iter().max_by_key(|m| m.target.len()) {
+                        error!("  Longest target: '{}' ({})", longest_target.target, longest_target.target.len());
+                    }
+                }
+
+                // Continue processing instead of failing completely
+                warn!("⚠️  Continuing with next batch despite failure");
             }
-        }
-
-        // Batch insert new records
-        if !new_records.is_empty() {
-            let inserted_rows = diesel::insert_into(crypto_markets)
-                .values(&new_records)
-                .on_conflict_do_nothing()  // Handle any race conditions
-                .execute(&mut conn)
-                .context("Failed to insert market records")?;
-
-            inserted_count += inserted_rows;
-            info!("Inserted {} new market records in batch {}", inserted_rows, batch_index + 1);
         }
     }
 
-    info!("Database save complete: {} inserted, {} updated", inserted_count, updated_count);
+    if failed_batches > 0 {
+        warn!("⚠️  {} batches failed during processing", failed_batches);
+        warn!("Successfully processed {} entries, {} failed",
+             inserted_count + updated_count, failed_batches * BATCH_SIZE);
+    }
+
+    info!("Database save complete: {} inserted, {} updated, {} batches failed",
+         inserted_count, updated_count, failed_batches);
+
     Ok((inserted_count, updated_count))
+}
+
+/// Process a single batch with error handling
+async fn process_single_batch(
+    conn: &mut PgConnection,
+    batch: &[CryptoMarketData],
+    update_existing: bool,
+) -> Result<(usize, usize)> {
+    use crypto_markets_table::dsl::*;
+
+    let mut batch_inserted = 0;
+    let mut batch_updated = 0;
+    let mut new_records = Vec::new();
+
+    for market in batch {
+        // Check if record already exists
+        let existing_count: i64 = crypto_markets
+            .filter(sid.eq(market.sid))
+            .filter(exchange.eq(&market.exchange))
+            .filter(base.eq(&market.base))
+            .filter(target.eq(&market.target))
+            .count()
+            .get_result(conn)
+            .context("Failed to check for existing market record")?;
+
+        let record_exists = existing_count > 0;
+
+        if record_exists {
+            if update_existing {
+                // Update existing record
+                let updated_rows = diesel::update(
+                    crypto_markets
+                        .filter(sid.eq(market.sid))
+                        .filter(exchange.eq(&market.exchange))
+                        .filter(base.eq(&market.base))
+                        .filter(target.eq(&market.target))
+                )
+                    .set((
+                        market_type.eq(&market.market_type),
+                        volume_24h.eq(&market.volume_24h),
+                        volume_percentage.eq(&market.volume_percentage),
+                        bid_ask_spread_pct.eq(&market.bid_ask_spread_pct),
+                        liquidity_score.eq(&market.liquidity_score),
+                        is_active.eq(market.is_active),
+                        is_anomaly.eq(market.is_anomaly),
+                        is_stale.eq(market.is_stale),
+                        trust_score.eq(&market.trust_score),
+                        last_traded_at.eq(
+                            market.last_traded_at.as_ref()
+                                .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                        ),
+                        last_fetch_at.eq(
+                            market.last_fetch_at.as_ref()
+                                .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                                .unwrap_or_else(|| Utc::now())
+                        ),
+                    ))
+                    .execute(conn)
+                    .context("Failed to update market record")?;
+
+                if updated_rows > 0 {
+                    batch_updated += 1;
+                }
+            }
+            // Skip if not updating existing records
+        } else {
+            // Prepare new record for insertion
+            let new_record = (
+                sid.eq(market.sid),
+                exchange.eq(&market.exchange),
+                base.eq(&market.base),
+                target.eq(&market.target),
+                market_type.eq(&market.market_type),
+                volume_24h.eq(&market.volume_24h),
+                volume_percentage.eq(&market.volume_percentage),
+                bid_ask_spread_pct.eq(&market.bid_ask_spread_pct),
+                liquidity_score.eq(&market.liquidity_score),
+                is_active.eq(market.is_active),
+                is_anomaly.eq(market.is_anomaly),
+                is_stale.eq(market.is_stale),
+                trust_score.eq(&market.trust_score),
+                last_traded_at.eq(
+                    market.last_traded_at.as_ref()
+                        .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                ),
+                last_fetch_at.eq(
+                    market.last_fetch_at.as_ref()
+                        .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                        .unwrap_or_else(|| Utc::now())
+                ),
+            );
+            new_records.push(new_record);
+        }
+    }
+
+    // Batch insert new records
+    if !new_records.is_empty() {
+        let inserted_rows = diesel::insert_into(crypto_markets)
+            .values(&new_records)
+            .on_conflict_do_nothing()  // Handle any race conditions
+            .execute(conn)
+            .context("Failed to insert market records")?;
+
+        batch_inserted += inserted_rows;
+    }
+
+    Ok((batch_inserted, batch_updated))
 }
