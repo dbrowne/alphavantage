@@ -169,26 +169,40 @@ impl CryptoMarketsLoader {
         Ok(all_market_data)
     }
 
+
+
     async fn fetch_market_data_for_symbol(
         &self,
         symbol: CryptoSymbolForMarkets,
     ) -> LoaderResult<Vec<CryptoMarketData>> {
+        info!("🔍 Processing symbol: {} ({})", symbol.symbol, symbol.name);
+        info!("🔍 CoinGecko ID: {:?}", symbol.coingecko_id);
+
         let mut market_data = Vec::new();
 
-        // Try CoinGecko first if we have an ID
+        // Check if we have a CoinGecko ID
         if let Some(ref coingecko_id) = symbol.coingecko_id {
+            info!("✅ {} has CoinGecko ID: {}", symbol.symbol, coingecko_id);
+
             match self.fetch_coingecko_markets(coingecko_id, &symbol).await {
                 Ok(mut data) => {
+                    info!("✅ CoinGecko returned {} markets for {}", data.len(), symbol.symbol);
                     market_data.append(&mut data);
                 }
                 Err(e) => {
-                    warn!("CoinGecko fetch failed for {}: {}", symbol.symbol, e);
+                    error!("❌ CoinGecko fetch failed for {}: {}", symbol.symbol, e);
+                    // Don't return error, just log it and continue with empty results
                 }
             }
+        } else {
+            warn!("⚠️  {} has no CoinGecko ID - skipping", symbol.symbol);
         }
 
         // Apply filters
+        let original_count = market_data.len();
+
         if let Some(min_volume) = self.config.min_volume_threshold {
+            let before_filter = market_data.len();
             market_data.retain(|m| {
                 if let Some(ref volume) = m.volume_24h {
                     volume.to_f64().unwrap_or(0.0) >= min_volume
@@ -196,11 +210,21 @@ impl CryptoMarketsLoader {
                     false
                 }
             });
+            let after_filter = market_data.len();
+            info!("📊 Volume filter for {}: {} -> {} markets (min: ${:.0})",
+                 symbol.symbol, before_filter, after_filter, min_volume);
         }
 
         if let Some(max_markets) = self.config.max_markets_per_symbol {
-            market_data.truncate(max_markets);
+            if market_data.len() > max_markets {
+                market_data.truncate(max_markets);
+                info!("📊 Truncated {} markets to {} (max per symbol)",
+                     symbol.symbol, max_markets);
+            }
         }
+
+        info!("✅ Final result for {}: {} markets (from {} original)",
+             symbol.symbol, market_data.len(), original_count);
 
         Ok(market_data)
     }
@@ -215,46 +239,92 @@ impl CryptoMarketsLoader {
 
         // Add API key if available
         if let Some(ref api_key) = self.config.coingecko_api_key {
-            url = format!("{}?x_cg_demo_api_key={}", url, api_key);
+            // Determine the correct parameter name based on API key format
+            let auth_param = if api_key.starts_with("CG-") {
+                // Pro API key
+                url = format!("https://pro-api.coingecko.com/api/v3/coins/{}/tickers", coingecko_id);
+                "x_cg_pro_api_key"
+            } else {
+                // Demo API key
+                "x_cg_demo_api_key"
+            };
+            url = format!("{}?{}={}", url, auth_param, api_key);
+            info!("🔑 Using {} API key for {}",
+                 if api_key.starts_with("CG-") { "Pro" } else { "Demo" }, symbol.symbol);
+        } else {
+            warn!("⚠️  No CoinGecko API key provided for {} - using free tier (very limited)", symbol.symbol);
         }
+
+        info!("🌐 API URL for {}: {}", symbol.symbol, url);
 
         let mut retries = 0;
         while retries < self.config.max_retries {
+            info!("📡 Making API request for {} (attempt {}/{})",
+                 symbol.symbol, retries + 1, self.config.max_retries);
+
             match self.client.get(&url).send().await {
                 Ok(response) => {
-                    if response.status().is_success() {
-                        match response.json::<CoinGeckoTickersResponse>().await {
+                    let status = response.status();
+                    info!("📡 HTTP Status for {}: {}", symbol.symbol, status);
+
+                    if status.is_success() {
+                        let response_text = response.text().await.map_err(|e| {
+                            error!("Failed to read response body for {}: {}", symbol.symbol, e);
+                            LoaderError::IoError(format!("Failed to read response: {}", e))
+                        })?;
+
+                        info!("📄 Response length for {}: {} chars", symbol.symbol, response_text.len());
+
+                        // Log first 200 chars for debugging
+                        if response_text.len() > 200 {
+                            info!("📄 Response preview for {}: {}...", symbol.symbol, &response_text[..200]);
+                        } else if response_text.len() > 0 {
+                            info!("📄 Full response for {}: {}", symbol.symbol, response_text);
+                        }
+
+                        match serde_json::from_str::<CoinGeckoTickersResponse>(&response_text) {
                             Ok(tickers_response) => {
+                                info!("✅ Successfully parsed JSON for {}: {} tickers",
+                                     symbol.symbol, tickers_response.tickers.len());
                                 return self.parse_coingecko_markets(tickers_response, symbol);
                             }
                             Err(e) => {
+                                error!("❌ JSON parse error for {}: {}", symbol.symbol, e);
+                                error!("❌ Problematic response: {}", response_text);
                                 return Err(LoaderError::SerializationError(format!(
-                                    "Failed to parse CoinGecko response: {}", e
+                                    "Failed to parse CoinGecko response for {}: {}", symbol.symbol, e
                                 )));
                             }
                         }
-                    } else if response.status() == 429 {
-                        // Rate limited
+                    } else if status == 429 {
                         let delay = Duration::from_millis(self.config.rate_limit_delay_ms * (retries + 1) as u64);
-                        warn!("Rate limited by CoinGecko, waiting {:?}", delay);
+                        warn!("⏱️  Rate limited for {}, waiting {:?} (attempt {})",
+                             symbol.symbol, delay, retries + 1);
                         sleep(delay).await;
                         retries += 1;
                         continue;
+                    } else if status == 404 {
+                        warn!("❌ CoinGecko ID '{}' not found for {}", coingecko_id, symbol.symbol);
+                        return Ok(Vec::new()); // Return empty results for 404
                     } else {
+                        let error_text = response.text().await.unwrap_or_default();
+                        error!("❌ API error for {}: HTTP {} - {}", symbol.symbol, status, error_text);
                         return Err(LoaderError::ApiError(format!(
-                            "CoinGecko API error: {}", response.status()
+                            "CoinGecko API error for {}: HTTP {} - {}", symbol.symbol, status, error_text
                         )));
                     }
                 }
                 Err(e) => {
+                    error!("❌ Network error for {}: {}", symbol.symbol, e);
                     return Err(LoaderError::IoError(format!(
-                        "Request failed: {}", e
+                        "Request failed for {}: {}", symbol.symbol, e
                     )));
                 }
             }
         }
 
-        Err(LoaderError::ApiError("Max retries exceeded".to_string()))
+        error!("❌ Max retries exceeded for {}", symbol.symbol);
+        Err(LoaderError::ApiError(format!("Max retries exceeded for {}", symbol.symbol)))
     }
 
     fn parse_coingecko_markets(
