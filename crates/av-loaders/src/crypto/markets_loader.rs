@@ -1,10 +1,14 @@
 use crate::{
-     LoaderResult,
+    LoaderResult, LoaderError,
 };
-
+use crate::crypto::CryptoDataSource;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use bigdecimal::BigDecimal;
-
+use bigdecimal::{BigDecimal, ToPrimitive};
+use std::time::Duration;
+use tokio::time::sleep;
+use tracing::{info, warn, error};
+use indicatif::{ProgressBar, ProgressStyle};
 // Define the struct locally to match what the CLI expects
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoSymbolForMarkets {
@@ -35,6 +39,7 @@ pub struct CryptoMarketData {
     pub last_fetch_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
 pub struct CryptoMarketsConfig {
     pub coingecko_api_key: Option<String>,
     pub delay_ms: u64,
@@ -50,22 +55,29 @@ pub struct CryptoMarketsConfig {
     pub max_markets_per_symbol: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
 pub struct CryptoMarketsInput {
     pub symbols: Option<Vec<CryptoSymbolForMarkets>>,
     pub exchange_filter: Option<Vec<String>>,
     pub update_existing: bool,
-    pub sources: Vec<crate::crypto::CryptoDataSource>,
+    pub sources: Vec<CryptoDataSource>,
     pub batch_size: Option<usize>,
 }
 
 pub struct CryptoMarketsLoader {
-    #[allow(dead_code)]
     config: CryptoMarketsConfig,
+    client: Client,
 }
 
 impl CryptoMarketsLoader {
     pub fn new(config: CryptoMarketsConfig) -> Self {
-        Self { config }
+        let client = Client::builder()
+            .timeout(Duration::from_secs(config.timeout_seconds))
+            .user_agent("AlphaVantage-Rust-Client/1.0")
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self { config, client }
     }
 
     pub async fn load(
@@ -73,35 +85,238 @@ impl CryptoMarketsLoader {
         _context: &crate::LoaderContext,
         input: CryptoMarketsInput,
     ) -> LoaderResult<Vec<CryptoMarketData>> {
-        // Placeholder implementation
         let symbols = input.symbols.unwrap_or_default();
 
-        let mut results = Vec::new();
-
-        for symbol in symbols {
-            // Placeholder - implement actual API calls to fetch market data
-            let market_data = CryptoMarketData {
-                sid: symbol.sid,
-                exchange: "binance".to_string(),
-                base: symbol.symbol.clone(),
-                target: "USDT".to_string(),
-                market_type: Some("spot".to_string()),
-                volume_24h: Some(BigDecimal::from(0)),
-                volume_percentage: Some(BigDecimal::from(0)),
-                bid_ask_spread_pct: Some(BigDecimal::from(0)),
-                liquidity_score: Some("green".to_string()),
-                trust_score: Some("green".to_string()),
-                is_active: true,
-                is_anomaly: false,
-                is_stale: false,
-                last_price: Some(0.0),
-                last_traded_at: Some("2024-01-01T00:00:00Z".to_string()),
-                last_fetch_at: Some("2024-01-01T00:00:00Z".to_string()),
-            };
-
-            results.push(market_data);
+        if symbols.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(results)
+        info!("Starting market data fetch for {} symbols", symbols.len());
+
+        let mut all_market_data = Vec::new();
+
+        // Setup progress bar if enabled
+        let progress = if self.config.enable_progress_bar {
+            let pb = ProgressBar::new(symbols.len() as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+                    .expect("Invalid progress template")
+                    .progress_chars("##-"),
+            );
+            Some(pb)
+        } else {
+            None
+        };
+
+        // Process symbols in batches
+        let batch_size = input.batch_size.unwrap_or(self.config.batch_size);
+        let symbol_chunks: Vec<_> = symbols.chunks(batch_size).collect();
+
+        for (chunk_index, symbol_chunk) in symbol_chunks.iter().enumerate() {
+            info!("Processing batch {}/{}", chunk_index + 1, symbol_chunks.len());
+
+            // Execute batch tasks with concurrency control
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrent_requests));
+            let mut handles = Vec::new();
+
+            for symbol in symbol_chunk.iter() {
+                let sem = semaphore.clone();
+                let symbol_clone = symbol.clone();
+                let config = self.config.clone();
+                let client = self.client.clone();
+
+                let handle = tokio::spawn(async move {
+                    let _permit = sem.acquire().await.expect("Semaphore acquire failed");
+
+                    // Create a temporary loader for this task
+                    let temp_loader = CryptoMarketsLoader { config, client };
+                    temp_loader.fetch_market_data_for_symbol(symbol_clone).await
+                });
+                handles.push(handle);
+            }
+
+            // Collect results from the batch
+            for handle in handles {
+                match handle.await {
+                    Ok(Ok(mut market_data)) => {
+                        all_market_data.append(&mut market_data);
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Failed to fetch market data: {}", e);
+                    }
+                    Err(e) => {
+                        error!("Task join error: {}", e);
+                    }
+                }
+
+                if let Some(ref pb) = progress {
+                    pb.inc(1);
+                }
+            }
+
+            // Rate limiting between batches
+            if chunk_index < symbol_chunks.len() - 1 {
+                sleep(Duration::from_millis(self.config.rate_limit_delay_ms)).await;
+            }
+        }
+
+        if let Some(pb) = progress {
+            pb.finish_with_message("Market data fetch complete");
+        }
+
+        info!("Completed market data fetch. Retrieved {} market entries", all_market_data.len());
+        Ok(all_market_data)
     }
+
+    async fn fetch_market_data_for_symbol(
+        &self,
+        symbol: CryptoSymbolForMarkets,
+    ) -> LoaderResult<Vec<CryptoMarketData>> {
+        let mut market_data = Vec::new();
+
+        // Try CoinGecko first if we have an ID
+        if let Some(ref coingecko_id) = symbol.coingecko_id {
+            match self.fetch_coingecko_markets(coingecko_id, &symbol).await {
+                Ok(mut data) => {
+                    market_data.append(&mut data);
+                }
+                Err(e) => {
+                    warn!("CoinGecko fetch failed for {}: {}", symbol.symbol, e);
+                }
+            }
+        }
+
+        // Apply filters
+        if let Some(min_volume) = self.config.min_volume_threshold {
+            market_data.retain(|m| {
+                if let Some(ref volume) = m.volume_24h {
+                    volume.to_f64().unwrap_or(0.0) >= min_volume
+                } else {
+                    false
+                }
+            });
+        }
+
+        if let Some(max_markets) = self.config.max_markets_per_symbol {
+            market_data.truncate(max_markets);
+        }
+
+        Ok(market_data)
+    }
+
+    async fn fetch_coingecko_markets(
+        &self,
+        coingecko_id: &str,
+        symbol: &CryptoSymbolForMarkets,
+    ) -> LoaderResult<Vec<CryptoMarketData>> {
+        let base_url = "https://api.coingecko.com/api/v3";
+        let mut url = format!("{}/coins/{}/tickers", base_url, coingecko_id);
+
+        // Add API key if available
+        if let Some(ref api_key) = self.config.coingecko_api_key {
+            url = format!("{}?x_cg_demo_api_key={}", url, api_key);
+        }
+
+        let mut retries = 0;
+        while retries < self.config.max_retries {
+            match self.client.get(&url).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.json::<CoinGeckoTickersResponse>().await {
+                            Ok(tickers_response) => {
+                                return self.parse_coingecko_markets(tickers_response, symbol);
+                            }
+                            Err(e) => {
+                                return Err(LoaderError::SerializationError(format!(
+                                    "Failed to parse CoinGecko response: {}", e
+                                )));
+                            }
+                        }
+                    } else if response.status() == 429 {
+                        // Rate limited
+                        let delay = Duration::from_millis(self.config.rate_limit_delay_ms * (retries + 1) as u64);
+                        warn!("Rate limited by CoinGecko, waiting {:?}", delay);
+                        sleep(delay).await;
+                        retries += 1;
+                        continue;
+                    } else {
+                        return Err(LoaderError::ApiError(format!(
+                            "CoinGecko API error: {}", response.status()
+                        )));
+                    }
+                }
+                Err(e) => {
+                    return Err(LoaderError::IoError(format!(
+                        "Request failed: {}", e
+                    )));
+                }
+            }
+        }
+
+        Err(LoaderError::ApiError("Max retries exceeded".to_string()))
+    }
+
+    fn parse_coingecko_markets(
+        &self,
+        response: CoinGeckoTickersResponse,
+        symbol: &CryptoSymbolForMarkets,
+    ) -> LoaderResult<Vec<CryptoMarketData>> {
+        let mut markets = Vec::new();
+
+        for ticker in response.tickers {
+            let market_data = CryptoMarketData {
+                sid: symbol.sid,
+                exchange: ticker.market.name,
+                base: ticker.base,
+                target: ticker.target,
+                market_type: Some("spot".to_string()),
+                volume_24h: ticker.volume.map(|v| BigDecimal::try_from(v).unwrap_or_default()),
+                volume_percentage: None, // Not provided by CoinGecko tickers
+                bid_ask_spread_pct: ticker.bid_ask_spread_percentage.map(|s| BigDecimal::try_from(s).unwrap_or_default()),
+                liquidity_score: None,
+                trust_score: ticker.trust_score.map(|s| s.to_string()),
+                is_active: ticker.market.has_trading_incentive.unwrap_or(true),
+                is_anomaly: ticker.is_anomaly.unwrap_or(false),
+                is_stale: ticker.is_stale.unwrap_or(false),
+                last_price: ticker.last,
+                last_traded_at: ticker.last_traded_at,
+                last_fetch_at: Some(chrono::Utc::now().to_rfc3339()),
+            };
+            markets.push(market_data);
+        }
+
+        Ok(markets)
+    }
+}
+
+// CoinGecko API response structures
+#[derive(Debug, Deserialize)]
+struct CoinGeckoTickersResponse {
+    name: String,
+    tickers: Vec<CoinGeckoTicker>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoinGeckoTicker {
+    base: String,
+    target: String,
+    market: CoinGeckoMarket,
+    last: Option<f64>,
+    volume: Option<f64>,
+    trust_score: Option<String>,
+    bid_ask_spread_percentage: Option<f64>,
+    timestamp: Option<String>,
+    last_traded_at: Option<String>,
+    last_fetch_at: Option<String>,
+    is_anomaly: Option<bool>,
+    is_stale: Option<bool>,
+    trade_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoinGeckoMarket {
+    name: String,
+    identifier: String,
+    has_trading_incentive: Option<bool>,
 }

@@ -3,20 +3,21 @@ pub mod loader;
 pub mod sources;
 pub mod types;
 pub mod social_loader;
-pub use social_loader::*;
-
 pub mod markets_loader;
+
+// Re-export the main loaders and types
+pub use loader::CryptoSymbolLoader;
+pub use types::*;
+pub use social_loader::{
+    CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader,
+    ProcessedSocialData, CryptoSymbolForSocial,
+};
 pub use markets_loader::{
     CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
     CryptoMarketData, CryptoSymbolForMarkets,
 };
 
-pub use loader::CryptoSymbolLoader;
-pub use types::*;
-
 use thiserror::Error;
-
-// Remove the duplicate CryptoDataSource enum - use the one from types.rs
 
 #[derive(Error, Debug)]
 pub enum CryptoLoaderError {
@@ -36,15 +37,70 @@ pub enum CryptoLoaderError {
     InternalServerError(String),
     #[error("Service Unavailable: {0}")]
     ServiceUnavailable(String),
-    #[error("Access denied: {0}]")]
+    #[error("Access denied: {0}")]
     AccessDenied(String),
     #[error("Access Endpoint: {0}")]
     CoinGeckoEndpoint(String),
     #[error("Missing API key: {0}")]
     MissingAPIKey(String),
     #[error("Invalid API key: {0}")]
-    InvalidAPIKey(String)
+    InvalidAPIKey(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    #[error("API error: {0}")]
+    ApiError(String),
+    #[error("Parse error: {0}")]
+    ParseError(String),
 }
 
+// Implement conversion to LoaderError
+impl From<CryptoLoaderError> for crate::LoaderError {
+    fn from(err: CryptoLoaderError) -> Self {
+        match err {
+            CryptoLoaderError::RequestFailed(e) => crate::LoaderError::IoError(e.to_string()),
+            CryptoLoaderError::JsonParseFailed(e) => crate::LoaderError::SerializationError(e.to_string()),
+            CryptoLoaderError::RateLimitExceeded(_msg) => crate::LoaderError::RateLimitExceeded { retry_after: 60 },
+            CryptoLoaderError::ApiKeyMissing(msg) => crate::LoaderError::ConfigurationError(msg),
+            CryptoLoaderError::InvalidResponse { api_source, message } => {
+                crate::LoaderError::ApiError(format!("{}: {}", api_source, message))
+            }
+            CryptoLoaderError::NetworkError(msg) => crate::LoaderError::IoError(msg),
+            CryptoLoaderError::ApiError(msg) => crate::LoaderError::ApiError(msg),
+            CryptoLoaderError::ParseError(msg) => crate::LoaderError::SerializationError(msg),
+            _ => crate::LoaderError::ApiError(err.to_string()),
+        }
+    }
+}
+
+pub type CryptoLoaderResult<T> = Result<T, CryptoLoaderError>;
+
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_crypto_loader_error_conversion() {
+        let crypto_err = CryptoLoaderError::ApiKeyMissing("CoinGecko".to_string());
+        let loader_err: crate::LoaderError = crypto_err.into();
+
+        match loader_err {
+            crate::LoaderError::ConfigurationError(msg) => {
+                assert!(msg.contains("CoinGecko"));
+            }
+            _ => panic!("Unexpected error type conversion"),
+        }
+    }
+
+    #[test]
+    fn test_rate_limit_error() {
+        let crypto_err = CryptoLoaderError::RateLimitExceeded("CoinGecko".to_string());
+        let loader_err: crate::LoaderError = crypto_err.into();
+
+        match loader_err {
+            crate::LoaderError::RateLimitExceeded { retry_after } => {
+                assert_eq!(retry_after, 60);
+            }
+            _ => panic!("Unexpected error type conversion"),
+        }
+    }
+}

@@ -1,5 +1,3 @@
-// crates/av-loaders/src/lib.rs
-
 //! # av-loaders
 //!
 //! Data loading functionality for AlphaVantage market data.
@@ -10,9 +8,10 @@
 //! - Intraday and daily price data
 //! - News articles with sentiment analysis
 //! - Market movers (top gainers/losers)
+//! - Crypto markets and social data
 //!
-//! The loaders fetch data from the AlphaVantage API and return it
-//! for further processing. Database operations should be handled
+//! The loaders fetch data from various APIs (AlphaVantage, CoinGecko, etc.)
+//! and return it for further processing. Database operations should be handled
 //! by the consuming application.
 
 pub mod batch_processor;
@@ -32,23 +31,36 @@ pub use process_tracker::{ProcessState, ProcessTracker};
 
 // Re-export loaders with their data types
 pub use security_loader::{
-  SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode,
+    SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode,
 };
 
 pub use overview_loader::{
-  OverviewData, OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput, SymbolInfo,
+    OverviewData, OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput, SymbolInfo,
 };
 
+// Re-export crypto module types including markets loader
 pub use crypto::{
-  CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError, CryptoLoaderResult, CryptoSymbol,
-  CryptoSymbolLoader, SourceResult,
-  database::{CryptoDbInput, CryptoDbLoader, CryptoDbOutput, SourceResultSummary},
+    CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError, CryptoLoaderResult, CryptoSymbol,
+    CryptoSymbolLoader, SourceResult,
+    database::{CryptoDbInput, CryptoDbLoader, CryptoDbOutput, SourceResultSummary},
+    // Export markets loader types
+    markets_loader::{
+        CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
+        CryptoMarketData, CryptoSymbolForMarkets,
+    },
+    // Export social loader types
+    social_loader::{
+        CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader,
+        ProcessedSocialData, CryptoSymbolForSocial,
+    },
 };
 
 pub mod prelude {
-  pub use crate::{
-    BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
-    LoaderResult, ProcessState, ProcessTracker,
-  };
+    pub use crate::{
+        BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
+        LoaderResult, ProcessState, ProcessTracker,
+        // Include crypto types in prelude
+        CryptoDataSource, CryptoLoaderConfig, CryptoSymbolLoader,
+        CryptoMarketsLoader, CryptoSocialLoader,
+    };
 }
-

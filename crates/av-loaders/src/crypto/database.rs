@@ -101,15 +101,14 @@ impl CryptoDbLoader {
   }
 
   /// Load symbols from a specific source using the provided crypto loader
-  /// FIXED: Now accepts a crypto_loader parameter instead of using self.crypto_loader
   async fn load_from_source(
     &self,
-    crypto_loader: &CryptoSymbolLoader, // FIXED: Added parameter
+    crypto_loader: &CryptoSymbolLoader,
     source: CryptoDataSource,
   ) -> LoaderResult<(Vec<CryptoSymbol>, SourceResultSummary)> {
     let _start = std::time::Instant::now();
 
-    // FIXED: Use the provided crypto_loader instead of self.crypto_loader
+    // Use the provided crypto_loader instead of self.crypto_loader
     match crypto_loader.load_from_source(source).await {
       Ok(symbols) => {
         let result = SourceResultSummary {
@@ -191,9 +190,9 @@ impl DataLoader for CryptoDbLoader {
 
     if let Some(tracker) = &context.process_tracker {
       tracker
-        .start("crypto_db_loader")
-        .await
-        .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
+          .start("crypto_db_loader")
+          .await
+          .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
     }
 
     // Configure API keys if provided
@@ -211,7 +210,6 @@ impl DataLoader for CryptoDbLoader {
     if let Some(sources) = input.sources {
       // Load from specific sources
       for source in sources {
-        // FIXED: Pass the configured crypto_loader to load_from_source
         let (symbols, result) = self.load_from_source(&crypto_loader, source).await?;
 
         symbols_fetched_count += symbols.len(); // Track fetched count
@@ -223,13 +221,15 @@ impl DataLoader for CryptoDbLoader {
         source_results.insert(source, result);
       }
     } else {
-      // Load from all configured sources using the existing method
+      // Load from all configured sources using the corrected method
       match crypto_loader.load_all_symbols().await {
         Ok(result) => {
           info!("Loaded symbols from all sources: {} symbols", result.symbols_loaded);
 
-          // Since load_all_symbols returns CryptoLoaderResult, we need to adapt it
-          // For now, we'll work with summary data only
+          symbols_fetched_count = result.symbols_loaded;
+          all_symbols = result.symbols;
+
+          // Convert SourceResult to SourceResultSummary
           for (source, src_result) in result.source_results {
             let summary = SourceResultSummary {
               symbols_fetched: src_result.symbols_fetched,
@@ -240,9 +240,9 @@ impl DataLoader for CryptoDbLoader {
             source_results.insert(source, summary);
           }
 
-          // Note: We can't get the actual symbols from CryptoLoaderResult
-          // This would need to be refactored in the future
-          warn!("Cannot return symbols from load_all_symbols - using summary only");
+          if result.symbols_failed > 0 {
+            total_errors += result.symbols_failed;
+          }
         }
         Err(e) => {
           error!("Failed to load from all sources: {}", e);
@@ -278,11 +278,11 @@ impl DataLoader for CryptoDbLoader {
 
     if let Some(tracker) = &context.process_tracker {
       let state =
-        if total_errors > 0 { ProcessState::CompletedWithErrors } else { ProcessState::Success };
+          if total_errors > 0 { ProcessState::CompletedWithErrors } else { ProcessState::Success };
       tracker
-        .complete(state)
-        .await
-        .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
+          .complete(state)
+          .await
+          .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
     }
 
     info!(
