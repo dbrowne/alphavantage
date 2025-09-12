@@ -103,6 +103,9 @@ DROP SEQUENCE IF EXISTS article_translations_id_seq CASCADE;
 DROP SEQUENCE IF EXISTS article_media_id_seq CASCADE;
 DROP SEQUENCE IF EXISTS article_quotes_id_seq CASCADE;
 
+drop index if exists idx_api_cache_source_expires;
+drop index if exists idx_api_cache_expires;
+drop table if exists api_response_cache CASCADE;
 -- Final cleanup message
 DO $$
 BEGIN
