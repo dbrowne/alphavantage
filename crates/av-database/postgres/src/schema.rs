@@ -3,6 +3,27 @@
 diesel::table! {
     use diesel::sql_types::*;
 
+    api_response_cache (cache_key) {
+        #[max_length = 255]
+        cache_key -> Varchar,
+        #[max_length = 50]
+        api_source -> Varchar,
+        endpoint_url -> Text,
+        response_data -> Jsonb,
+        response_headers -> Nullable<Jsonb>,
+        status_code -> Int4,
+        cached_at -> Nullable<Timestamptz>,
+        expires_at -> Timestamptz,
+        #[max_length = 255]
+        etag -> Nullable<Varchar>,
+        #[max_length = 255]
+        last_modified -> Nullable<Varchar>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     article_media (id) {
         id -> Int4,
         articleid -> Nullable<Text>,
@@ -137,23 +158,23 @@ diesel::table! {
     crypto_markets (id) {
         id -> Int4,
         sid -> Int8,
-        #[max_length = 100]
+        #[max_length = 250]
         exchange -> Varchar,
-        #[max_length = 20]
+        #[max_length = 120]
         base -> Varchar,
-        #[max_length = 20]
+        #[max_length = 100]
         target -> Varchar,
         #[max_length = 20]
         market_type -> Nullable<Varchar>,
         volume_24h -> Nullable<Numeric>,
         volume_percentage -> Nullable<Numeric>,
         bid_ask_spread_pct -> Nullable<Numeric>,
-        #[max_length = 20]
+        #[max_length = 100]
         liquidity_score -> Nullable<Varchar>,
         is_active -> Nullable<Bool>,
         is_anomaly -> Nullable<Bool>,
         is_stale -> Nullable<Bool>,
-        #[max_length = 20]
+        #[max_length = 100]
         trust_score -> Nullable<Varchar>,
         last_traded_at -> Nullable<Timestamptz>,
         last_fetch_at -> Nullable<Timestamptz>,
@@ -611,6 +632,7 @@ diesel::joinable!(topicmaps -> topicrefs (topicid));
 diesel::joinable!(topstats -> symbols (sid));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    api_response_cache,
     article_media,
     article_quotes,
     article_symbols,

@@ -802,3 +802,22 @@ ALTER TABLE crypto_markets
 
 -- Add comment
 COMMENT ON TABLE crypto_markets IS 'Cryptocurrency market data from various exchanges';
+
+-- response cache table to minimize db calls. Calls cost money
+CREATE TABLE api_response_cache (
+                                    cache_key VARCHAR(255) PRIMARY KEY,
+                                    api_source VARCHAR(50) NOT NULL,
+                                    endpoint_url TEXT NOT NULL,
+                                    response_data JSONB NOT NULL,
+                                    response_headers JSONB,
+                                    status_code INTEGER NOT NULL,
+                                    cached_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                                    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                                    etag VARCHAR(255),
+                                    last_modified VARCHAR(255)
+);
+
+CREATE INDEX idx_api_cache_source_expires ON api_response_cache(api_source, expires_at);
+CREATE INDEX idx_api_cache_expires ON api_response_cache(expires_at);
+
+Comment on table api_response_cache is 'cache for API calls to minimize vendor fees'
