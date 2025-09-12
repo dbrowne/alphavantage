@@ -22,13 +22,13 @@ pub struct CryptoSymbolLoader {
 impl CryptoSymbolLoader {
   pub fn new(config: CryptoLoaderConfig) -> Self {
     let client = Client::builder()
-      .timeout(std::time::Duration::from_secs(30))
-      .user_agent("AlphaVantage-Rust-Client/1.0")
-      .build()
-      .expect("Failed to create HTTP client");
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("AlphaVantage-Rust-Client/1.0")
+        .build()
+        .expect("Failed to create HTTP client");
 
     let mut providers: HashMap<CryptoDataSource, Box<dyn CryptoDataProvider + Send + Sync>> =
-      HashMap::new();
+        HashMap::new();
 
     // Initialize providers based on config
     for source in &config.sources {
@@ -57,11 +57,11 @@ impl CryptoSymbolLoader {
         }
         CryptoDataSource::SosoValue => {
           if let Ok(api_key) = std::env::var("SOSOVALUE_API_KEY") {
-          providers.insert(
-            CryptoDataSource::SosoValue,
-            Box::new(SosoValueProvider::new(Some(api_key))), // TODO: make api consistend
-          );
-        }
+            providers.insert(
+              CryptoDataSource::SosoValue,
+              Box::new(SosoValueProvider::new(Some(api_key))), // TODO: make api consistend
+            );
+          }
         }
       }
     }
@@ -87,7 +87,7 @@ impl CryptoSymbolLoader {
     self
   }
 
-  pub async fn load_all_symbols(&self) -> Result<CryptoLoaderResult, CryptoLoaderError> {
+  pub async fn load_all_symbols(&self) -> CryptoLoaderResult<LoadAllSymbolsResult> {
     let start_time = Instant::now();
     info!("Loading symbols from {} sources", self.config.sources.len());
 
@@ -101,9 +101,9 @@ impl CryptoSymbolLoader {
       let pb = ProgressBar::new(self.config.sources.len() as u64);
       pb.set_style(
         ProgressStyle::default_bar()
-          .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-          .unwrap()
-          .progress_chars("#>-"),
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
       );
       pb.set_message("Loading crypto symbols");
       Some(pb)
@@ -173,10 +173,11 @@ impl CryptoSymbolLoader {
       final_count, total_failed, processing_time
     );
 
-    Ok(CryptoLoaderResult {
+    Ok(LoadAllSymbolsResult {
       symbols_loaded: final_count,
       symbols_failed: total_failed,
       symbols_skipped: total_loaded - final_count, // Duplicates removed
+      symbols: unique_symbols,
       source_results,
       processing_time_ms: processing_time,
     })
@@ -189,7 +190,7 @@ impl CryptoSymbolLoader {
     // Define source priority (higher number = higher priority)
     let source_priority = |source: &CryptoDataSource| -> u8 {
       match source {
-       CryptoDataSource::CoinMarketCap =>2,
+        CryptoDataSource::CoinMarketCap =>2,
         CryptoDataSource::CoinGecko => 4,
         CryptoDataSource::CoinPaprika => 3,
         CryptoDataSource::CoinCap => 5,
@@ -238,4 +239,15 @@ impl Clone for CryptoSymbolLoader {
     // Create a new loader with the same configuration
     Self::new(self.config.clone())
   }
+}
+
+// New struct to return from load_all_symbols
+#[derive(Debug)]
+pub struct LoadAllSymbolsResult {
+  pub symbols_loaded: usize,
+  pub symbols_failed: usize,
+  pub symbols_skipped: usize,
+  pub symbols: Vec<CryptoSymbol>,
+  pub source_results: HashMap<CryptoDataSource, SourceResult>,
+  pub processing_time_ms: u64,
 }

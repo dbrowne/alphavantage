@@ -2,10 +2,12 @@ use anyhow::{Context, Result};
 use clap::Args;
 use std::sync::Arc;
 use tracing::{info, warn};
+use chrono::Utc;
+use bigdecimal::BigDecimal;
 
 use crate::config::Config;
 use av_client::AlphaVantageClient;
-use av_database_postgres::schema::{crypto_api_map, symbols};
+use av_database_postgres::schema::{crypto_api_map, symbols, crypto_markets as crypto_markets_table};
 use av_loaders::{
     LoaderContext, LoaderConfig,
     crypto::{
@@ -110,8 +112,9 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
         max_markets_per_symbol: Some(args.max_markets_per_symbol),
     };
 
-    // Create client for loader context - fix the unwrap_or_default issue
-     let av_client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
+    // Create client for loader context
+    let av_client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
+
     // Create loader context - use correct field names
     let loader_context = LoaderContext {
         client: av_client,
@@ -119,7 +122,7 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
             max_concurrent_requests: args.concurrent,
             retry_attempts: 3,
             retry_delay_ms: 1000,
-            show_progress: args.verbose, // maps verbose to show_progress
+            show_progress: args.verbose,
             track_process: false,
             batch_size: args.batch_size,
         },
@@ -129,9 +132,9 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
     // Create markets loader input - include ALL required fields
     let input = CryptoMarketsInput {
         symbols: Some(crypto_symbols),
-        exchange_filter: None, // This is the actual field name
+        exchange_filter: None,
         update_existing: args.update_existing,
-        sources: vec![CryptoDataSource::CoinGecko], // Add required sources
+        sources: vec![CryptoDataSource::CoinGecko],
         batch_size: Some(args.batch_size),
     };
 
@@ -186,7 +189,7 @@ fn load_crypto_symbols_from_db(
     // Build base query
     let mut query = symbols_table
         .left_join(api_map_table.on(
-            sid.eq(crypto_api_map::sid).and(api_source.eq("coingecko"))
+            sid.eq(crypto_api_map::sid).and(api_source.eq("CoinGecko"))
         ))
         .filter(sec_type.eq("Cryptocurrency"))
         .select((sid, symbol, name, api_id.nullable()))
@@ -210,24 +213,134 @@ fn load_crypto_symbols_from_db(
         .into_iter()
         .map(|(sid_val, symbol_val, name_val, coingecko_id_val)| CryptoSymbolForMarkets {
             sid: sid_val,
-            symbol: symbol_val.clone(), // Clone to avoid move
+            symbol: symbol_val.clone(),
             name: name_val,
             coingecko_id: coingecko_id_val,
-            alphavantage_symbol: Some(symbol_val), // Now we can use the original
+            alphavantage_symbol: Some(symbol_val),
         })
         .collect();
 
     Ok(crypto_symbols)
 }
 
-/// Save market data to database (placeholder implementation)
+/// Save market data to database - ACTUAL IMPLEMENTATION (not placeholder)
 async fn save_market_data_to_db(
-    _database_url: &str,
+    database_url: &str,
     market_data: &[CryptoMarketData],
-    _update_existing: bool,
+    update_existing: bool,
 ) -> Result<(usize, usize)> {
-    // Placeholder implementation - just count the data
-    let count = market_data.len();
-    info!("Would save {} market data entries to database", count);
-    Ok((count, 0))
+    use crypto_markets_table::dsl::*;
+
+    let mut conn = establish_connection(database_url)?;
+    let mut inserted_count = 0;
+    let mut updated_count = 0;
+
+    info!("Processing {} market data entries", market_data.len());
+
+    // Process in batches to avoid overwhelming the database
+    const BATCH_SIZE: usize = 100;
+
+    for (batch_index, batch) in market_data.chunks(BATCH_SIZE).enumerate() {
+        info!("Processing batch {} with {} entries", batch_index + 1, batch.len());
+
+        let mut new_records = Vec::new();
+        // let mut update_records = Vec::new();
+
+        for market in batch {
+            // Check if record already exists
+
+            let existing_count: i64 = crypto_markets
+                .filter(sid.eq(market.sid))
+                .filter(exchange.eq(&market.exchange))
+                .filter(base.eq(&market.base))
+                .filter(target.eq(&market.target))
+                .count()
+                .get_result(&mut conn)
+                .context("Failed to check for existing market record")?;
+
+            let record_exists = existing_count > 0;
+
+            if record_exists {
+                if update_existing {
+                    // Update existing record
+                    let updated_rows = diesel::update(
+                        crypto_markets
+                            .filter(sid.eq(market.sid))
+                            .filter(exchange.eq(&market.exchange))
+                            .filter(base.eq(&market.base))
+                            .filter(target.eq(&market.target))
+                    )
+                        .set((
+                            market_type.eq(&market.market_type),
+                            volume_24h.eq(&market.volume_24h),
+                            volume_percentage.eq(&market.volume_percentage),
+                            bid_ask_spread_pct.eq(&market.bid_ask_spread_pct),
+                            liquidity_score.eq(&market.liquidity_score),
+                            is_active.eq(market.is_active),
+                            is_anomaly.eq(market.is_anomaly),
+                            is_stale.eq(market.is_stale),
+                            trust_score.eq(&market.trust_score),
+                            last_traded_at.eq(
+                                market.last_traded_at.as_ref()
+                                    .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                            ),
+                            last_fetch_at.eq(
+                                market.last_fetch_at.as_ref()
+                                    .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                                    .unwrap_or_else(|| Utc::now())
+                            ),
+                        ))
+                        .execute(&mut conn)
+                        .context("Failed to update market record")?;
+
+                    if updated_rows > 0 {
+                        updated_count += 1;
+                    }
+                }
+                // Skip if not updating existing records
+            } else {
+                // Prepare new record for insertion
+                let new_record = (
+                    sid.eq(market.sid),
+                    exchange.eq(&market.exchange),
+                    base.eq(&market.base),
+                    target.eq(&market.target),
+                    market_type.eq(&market.market_type),
+                    volume_24h.eq(&market.volume_24h),
+                    volume_percentage.eq(&market.volume_percentage),
+                    bid_ask_spread_pct.eq(&market.bid_ask_spread_pct),
+                    liquidity_score.eq(&market.liquidity_score),
+                    is_active.eq(market.is_active),
+                    is_anomaly.eq(market.is_anomaly),
+                    is_stale.eq(market.is_stale),
+                    trust_score.eq(&market.trust_score),
+                    last_traded_at.eq(
+                        market.last_traded_at.as_ref()
+                            .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                    ),
+                    last_fetch_at.eq(
+                        market.last_fetch_at.as_ref()
+                            .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+                            .unwrap_or_else(|| Utc::now())
+                    ),
+                );
+                new_records.push(new_record);
+            }
+        }
+
+        // Batch insert new records
+        if !new_records.is_empty() {
+            let inserted_rows = diesel::insert_into(crypto_markets)
+                .values(&new_records)
+                .on_conflict_do_nothing()  // Handle any race conditions
+                .execute(&mut conn)
+                .context("Failed to insert market records")?;
+
+            inserted_count += inserted_rows;
+            info!("Inserted {} new market records in batch {}", inserted_rows, batch_index + 1);
+        }
+    }
+
+    info!("Database save complete: {} inserted, {} updated", inserted_count, updated_count);
+    Ok((inserted_count, updated_count))
 }

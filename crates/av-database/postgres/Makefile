@@ -33,7 +33,7 @@ db-down:
 	@$(MAKE) -C $(TIMESCALE_DIR) down
 
 db-shell:
-	@$(MAKE) -C $(TIMESCALE_DIR) psql
+	@cd $(TIMESCALE_DIR) && PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
 
 migrate:
 	@echo "Running Diesel migrations..."
