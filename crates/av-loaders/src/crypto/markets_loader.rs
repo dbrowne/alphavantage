@@ -10,6 +10,8 @@ use tokio::time::sleep;
 use tracing::{info, warn, error};
 use indicatif::{ProgressBar, ProgressStyle};
 // Define the struct locally to match what the CLI expects
+
+const MAX_TTL:u32 = 6;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoSymbolForMarkets {
     pub sid: i64,
@@ -53,6 +55,9 @@ pub struct CryptoMarketsConfig {
     pub fetch_all_exchanges: bool,
     pub min_volume_threshold: Option<f64>,
     pub max_markets_per_symbol: Option<usize>,
+    pub enable_response_cache: bool,
+    pub cache_ttl_hours: u32,  // Time-to-live in hours
+    pub force_refresh: bool,   // Skip cache and force fresh API calls
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +74,34 @@ pub struct CryptoMarketsLoader {
     client: Client,
 }
 
+impl CryptoMarketsConfig{
+
+    fn default() -> Self{
+        Self {
+            coingecko_api_key: None,
+            delay_ms: 500,
+            batch_size: 1,
+            max_retries: 5,
+            timeout_seconds: 30,
+            max_concurrent_requests: 1,
+            rate_limit_delay_ms: 30,
+            enable_progress_bar: true,
+            alphavantage_api_key: None,
+            fetch_all_exchanges: true,
+            min_volume_threshold: None,
+            max_markets_per_symbol: Some(2),
+            enable_response_cache: true,
+            cache_ttl_hours: MAX_TTL,
+            force_refresh: false,
+        }
+    }
+}
+
 impl CryptoMarketsLoader {
+    /// Generate cache key for API response
+    fn generate_cache_key(&self, coingecko_id: &str) -> String {
+        format!("coingecko_tickers:{}", coingecko_id)
+    }
     pub fn new(config: CryptoMarketsConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
@@ -357,6 +389,187 @@ impl CryptoMarketsLoader {
         }
 
         Ok(markets)
+    }
+    /// Check if cached response is valid
+    async fn get_cached_response(
+        &self,
+        database_url: &str,
+        cache_key: &str,
+    ) -> Option<CoinGeckoTickersResponse> {
+        if !self.config.enable_response_cache {
+            return None;
+        }
+
+        use diesel::prelude::*;
+
+        let mut conn = match PgConnection::establish(database_url) {
+            Ok(conn) => conn,
+            Err(_) => return None,
+        };
+
+        // Check for valid cached response
+        let cached_entry: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)> = diesel::sql_query(
+            "SELECT response_data, expires_at FROM api_response_cache
+             WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'coingecko'"
+        )
+            .bind::<diesel::sql_types::Text, _>(cache_key)
+            .get_result(&mut conn)
+            .optional()
+            .unwrap_or(None);
+
+        if let Some((response_data, expires_at)) = cached_entry {
+            info!("📦 Using cached response for {} (expires: {})", cache_key, expires_at);
+
+            // Parse cached JSON response
+            if let Ok(cached_response) = serde_json::from_value::<CoinGeckoTickersResponse>(response_data) {
+                return Some(cached_response);
+            } else {
+                warn!("Failed to parse cached response for {}", cache_key);
+            }
+        }
+
+        None
+    }
+
+    /// Save API response to cache
+    async fn cache_response(
+        &self,
+        database_url: &str,
+        cache_key: &str,
+        endpoint_url: &str,
+        response: &CoinGeckoTickersResponse,
+        status_code: u16,
+    ) {
+        if !self.config.enable_response_cache {
+            return;
+        }
+
+        use diesel::prelude::*;
+
+        let mut conn = match PgConnection::establish(database_url) {
+            Ok(conn) => conn,
+            Err(e) => {
+                warn!("Failed to connect to database for caching: {}", e);
+                return;
+            }
+        };
+
+        let response_json = match serde_json::to_value(response) {
+            Ok(json) => json,
+            Err(e) => {
+                warn!("Failed to serialize response for caching: {}", e);
+                return;
+            }
+        };
+
+        let expires_at = chrono::Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
+
+        // Insert or update cache entry
+        let result = diesel::sql_query(
+            "INSERT INTO api_response_cache
+             (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
+             VALUES ($1, 'coingecko', $2, $3, $4, $5)
+             ON CONFLICT (cache_key) DO UPDATE SET
+                response_data = EXCLUDED.response_data,
+                status_code = EXCLUDED.status_code,
+                expires_at = EXCLUDED.expires_at,
+                cached_at = NOW()"
+        )
+            .bind::<diesel::sql_types::Text, _>(cache_key)
+            .bind::<diesel::sql_types::Text, _>(endpoint_url)
+            .bind::<diesel::sql_types::Jsonb, _>(&response_json)
+            .bind::<diesel::sql_types::Integer, _>(status_code as i32)
+            .bind::<diesel::sql_types::Timestamptz, _>(expires_at)
+            .execute(&mut conn);
+
+        match result {
+            Ok(_) => info!("💾 Cached response for {} (expires: {})", cache_key, expires_at),
+            Err(e) => warn!("Failed to cache response for {}: {}", cache_key, e),
+        }
+    }
+
+    /// Enhanced fetch with caching
+    async fn fetch_coingecko_markets_cached(
+        &self,
+        database_url: &str,
+        coingecko_id: &str,
+        symbol: &CryptoSymbolForMarkets,
+    ) -> LoaderResult<Vec<CryptoMarketData>> {
+        let cache_key = self.generate_cache_key(coingecko_id);
+
+        // Try cache first (unless force refresh is enabled)
+        if !self.config.force_refresh {
+            if let Some(cached_response) = self.get_cached_response(database_url, &cache_key).await {
+                info!("📦 Using cached market data for {}", symbol.symbol);
+                return self.parse_coingecko_markets(cached_response, symbol);
+            }
+        }
+
+        // Cache miss or force refresh - fetch from API
+        info!("🌐 Fetching fresh market data for {} (cache miss)", symbol.symbol);
+
+        match self.fetch_coingecko_markets_fresh(coingecko_id, symbol).await {
+            Ok((markets, response, url, status)) => {
+                // Cache the successful response
+                self.cache_response(database_url, &cache_key, &url, &response, status).await;
+                Ok(markets)
+            }
+            Err(e) => Err(e)
+        }
+    }
+
+    /// Fetch fresh data from API (extracted from original fetch method)
+    async fn fetch_coingecko_markets_fresh(
+        &self,
+        coingecko_id: &str,
+        symbol: &CryptoSymbolForMarkets,
+    ) -> LoaderResult<(Vec<CryptoMarketData>, CoinGeckoTickersResponse, String, u16)> {
+        // ... (existing fetch logic, but return response for caching)
+        let base_url = "https://api.coingecko.com/api/v3";
+        let mut url = format!("{}/coins/{}/tickers", base_url, coingecko_id);
+
+        // Add API key if available
+        if let Some(ref api_key) = self.config.coingecko_api_key {
+            let auth_param = if api_key.starts_with("CG-") {
+                url = format!("https://pro-api.coingecko.com/api/v3/coins/{}/tickers", coingecko_id);
+                "x_cg_pro_api_key"
+            } else {
+                "x_cg_demo_api_key"
+            };
+            url = format!("{}?{}={}", url, auth_param, api_key);
+        }
+
+        let response = self.client.get(&url).send().await
+            .map_err(|e| LoaderError::IoError(format!("Request failed: {}", e)))?;
+
+        let status = response.status().as_u16();
+
+        if response.status().is_success() {
+            let tickers_response: CoinGeckoTickersResponse = response.json().await
+                .map_err(|e| LoaderError::SerializationError(format!("Parse failed: {}", e)))?;
+
+            let markets = self.parse_coingecko_markets(tickers_response.clone(), symbol)?;
+            Ok((markets, tickers_response, url, status))
+        } else {
+            Err(LoaderError::ApiError(format!("HTTP {}", status)))
+        }
+    }
+
+    /// Clean expired cache entries
+    pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, diesel::result::Error> {
+        use diesel::prelude::*;
+
+        let mut conn = PgConnection::establish(database_url)?;
+
+        let deleted_count = diesel::sql_query(
+            "DELETE FROM api_response_cache WHERE expires_at < NOW()"
+        ).execute(&mut conn)?;
+
+        if deleted_count > 0 {
+            info!("🧹 Cleaned up {} expired cache entries", deleted_count);
+        }
+
+        Ok(deleted_count)
     }
 }
 

@@ -75,6 +75,22 @@ pub struct CryptoMarketsArgs {
     /// Show detailed progress information
     #[arg(long)]
     verbose: bool,
+
+    /// Enable response caching to reduce API costs
+    #[arg(long, default_value = "true")]
+    enable_cache: bool,
+
+    /// Cache TTL in hours
+    #[arg(long, default_value = "6")]
+    cache_hours: u32,
+
+    /// Force refresh - ignore cache and fetch fresh data
+    #[arg(long)]
+    force_refresh: bool,
+
+    /// Clean expired cache entries before running
+    #[arg(long), default_value = "false"]
+    cleanup_cache: bool,
 }
 
 pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
@@ -110,6 +126,9 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
         fetch_all_exchanges: args.fetch_all_exchanges,
         min_volume_threshold: Some(args.min_volume),
         max_markets_per_symbol: Some(args.max_markets_per_symbol),
+        enable_response_cache: args.enable_cache,
+        cache_ttl_hours:  args.cache_hours,
+        force_refresh: args.force_refresh,
     };
 
     // Create client for loader context
