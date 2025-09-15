@@ -84,7 +84,7 @@ pub trait DataLoader: Send + Sync {
   /// Validate input before loading
   async fn validate_input(
     &self,
-    _input: &Self::Input,  // Fixed: added underscore
+    _input: &Self::Input,
   ) -> LoaderResult<()> {
     Ok(())
   }

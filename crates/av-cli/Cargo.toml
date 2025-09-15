@@ -16,7 +16,7 @@ path = "src/main.rs"
 av-core = { path = "../av-core", version = "0.1.0" }
 av-client = { path = "../av-client", version = "0.1.0" }
 av-models = { path = "../av-models", version = "0.1.0" }
-av-database-postgres = { path = "../av-database/postgres", version = "0.1.0" }  # Fixed
+av-database-postgres = { path = "../av-database/postgres", version = "0.1.0" }
 av-loaders = { path = "../av-loaders", version = "0.1.0" }
 diesel = {workspace = true}
 dotenvy = {workspace = true}

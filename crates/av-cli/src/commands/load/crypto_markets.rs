@@ -3,7 +3,6 @@ use clap::Args;
 use std::sync::Arc;
 use tracing::{info, warn,error};
 use chrono::Utc;
-use bigdecimal::BigDecimal;
 
 use crate::config::Config;
 use av_client::AlphaVantageClient;
@@ -89,7 +88,7 @@ pub struct CryptoMarketsArgs {
     force_refresh: bool,
 
     /// Clean expired cache entries before running
-    #[arg(long), default_value = "false"]
+    #[arg(long, default_value = "false")]
     cleanup_cache: bool,
 }
 
@@ -152,11 +151,12 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
     let input = CryptoMarketsInput {
         symbols: Some(crypto_symbols),
         exchange_filter: None,
+        min_volume_threshold: Some(args.min_volume),
+        max_markets_per_symbol: Some(args.max_markets_per_symbol),
         update_existing: args.update_existing,
         sources: vec![CryptoDataSource::CoinGecko],
         batch_size: Some(args.batch_size),
     };
-
     // Initialize markets loader
     let markets_loader = CryptoMarketsLoader::new(loader_config);
 
@@ -248,7 +248,6 @@ async fn save_market_data_to_db(
     market_data: &[CryptoMarketData],
     update_existing: bool,
 ) -> Result<(usize, usize)> {
-    use crypto_markets_table::dsl::*;
 
     let mut conn = establish_connection(database_url)?;
     let mut inserted_count = 0;

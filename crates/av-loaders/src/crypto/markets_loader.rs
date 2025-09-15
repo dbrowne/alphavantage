@@ -4,14 +4,16 @@ use crate::{
 use crate::crypto::CryptoDataSource;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use bigdecimal::{BigDecimal, ToPrimitive};
+use bigdecimal::{BigDecimal };
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{info, warn, error};
 use indicatif::{ProgressBar, ProgressStyle};
-// Define the struct locally to match what the CLI expects
+use diesel::prelude::*;
+use chrono::{DateTime, Utc};
 
-const MAX_TTL:u32 = 6;
+const MAX_TTL: u32 = 6;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoSymbolForMarkets {
     pub sid: i64,
@@ -64,6 +66,8 @@ pub struct CryptoMarketsConfig {
 pub struct CryptoMarketsInput {
     pub symbols: Option<Vec<CryptoSymbolForMarkets>>,
     pub exchange_filter: Option<Vec<String>>,
+    pub min_volume_threshold: Option<f64>,
+    pub max_markets_per_symbol: Option<usize>,
     pub update_existing: bool,
     pub sources: Vec<CryptoDataSource>,
     pub batch_size: Option<usize>,
@@ -74,9 +78,48 @@ pub struct CryptoMarketsLoader {
     client: Client,
 }
 
-impl CryptoMarketsConfig{
+// CoinGecko API response structures - FIXED: Added Clone and Serialize derives
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CoinGeckoTickersResponse {
+    name: String,
+    tickers: Vec<CoinGeckoTicker>,
+}
 
-    fn default() -> Self{
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CoinGeckoTicker {
+    base: String,
+    target: String,
+    market: CoinGeckoMarket,
+    last: Option<f64>,
+    volume: Option<f64>,
+    trust_score: Option<String>,
+    bid_ask_spread_percentage: Option<f64>,
+    timestamp: Option<String>,
+    last_traded_at: Option<String>,
+    last_fetch_at: Option<String>,
+    is_anomaly: Option<bool>,
+    is_stale: Option<bool>,
+    trade_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CoinGeckoMarket {
+    name: String,
+    identifier: String,
+    has_trading_incentive: Option<bool>,
+}
+
+// FIXED: Custom struct for SQL query result with proper derives
+#[derive(Debug, QueryableByName)]
+struct CacheQueryResult {
+    #[diesel(sql_type = diesel::sql_types::Jsonb)]
+    response_data: serde_json::Value,
+    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+    expires_at: DateTime<Utc>,
+}
+
+impl CryptoMarketsConfig {
+    fn default() -> Self {
         Self {
             coingecko_api_key: None,
             delay_ms: 500,
@@ -98,13 +141,10 @@ impl CryptoMarketsConfig{
 }
 
 impl CryptoMarketsLoader {
-    /// Generate cache key for API response
-    fn generate_cache_key(&self, coingecko_id: &str) -> String {
-        format!("coingecko_tickers:{}", coingecko_id)
-    }
     pub fn new(config: CryptoMarketsConfig) -> Self {
+        let timeout = Duration::from_secs(config.timeout_seconds);
         let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_seconds))
+            .timeout(timeout)
             .user_agent("AlphaVantage-Rust-Client/1.0")
             .build()
             .expect("Failed to create HTTP client");
@@ -112,6 +152,12 @@ impl CryptoMarketsLoader {
         Self { config, client }
     }
 
+    /// Generate cache key for request
+    fn generate_cache_key(&self, coingecko_id: &str) -> String {
+        format!("coingecko_tickers:{}", coingecko_id)
+    }
+
+    /// Main load method that orchestrates the entire process
     pub async fn load(
         &self,
         _context: &crate::LoaderContext,
@@ -201,8 +247,7 @@ impl CryptoMarketsLoader {
         Ok(all_market_data)
     }
 
-
-
+    /// Fetch market data for a single symbol
     async fn fetch_market_data_for_symbol(
         &self,
         symbol: CryptoSymbolForMarkets,
@@ -222,45 +267,22 @@ impl CryptoMarketsLoader {
                     market_data.append(&mut data);
                 }
                 Err(e) => {
-                    error!("❌ CoinGecko fetch failed for {}: {}", symbol.symbol, e);
-                    // Don't return error, just log it and continue with empty results
+                    error!("❌ CoinGecko API error for {}: {}", symbol.symbol, e);
                 }
             }
         } else {
-            warn!("⚠️  {} has no CoinGecko ID - skipping", symbol.symbol);
+            warn!("⚠️  No CoinGecko ID for {}", symbol.symbol);
         }
 
-        // Apply filters
-        let original_count = market_data.len();
-
-        if let Some(min_volume) = self.config.min_volume_threshold {
-            let before_filter = market_data.len();
-            market_data.retain(|m| {
-                if let Some(ref volume) = m.volume_24h {
-                    volume.to_f64().unwrap_or(0.0) >= min_volume
-                } else {
-                    false
-                }
-            });
-            let after_filter = market_data.len();
-            info!("📊 Volume filter for {}: {} -> {} markets (min: ${:.0})",
-                 symbol.symbol, before_filter, after_filter, min_volume);
+        // Add delay between symbol requests
+        if self.config.delay_ms > 0 {
+            sleep(Duration::from_millis(self.config.delay_ms)).await;
         }
-
-        if let Some(max_markets) = self.config.max_markets_per_symbol {
-            if market_data.len() > max_markets {
-                market_data.truncate(max_markets);
-                info!("📊 Truncated {} markets to {} (max per symbol)",
-                     symbol.symbol, max_markets);
-            }
-        }
-
-        info!("✅ Final result for {}: {} markets (from {} original)",
-             symbol.symbol, market_data.len(), original_count);
 
         Ok(market_data)
     }
 
+    /// Main CoinGecko API method with comprehensive retry logic
     async fn fetch_coingecko_markets(
         &self,
         coingecko_id: &str,
@@ -271,13 +293,10 @@ impl CryptoMarketsLoader {
 
         // Add API key if available
         if let Some(ref api_key) = self.config.coingecko_api_key {
-            // Determine the correct parameter name based on API key format
             let auth_param = if api_key.starts_with("CG-") {
-                // Pro API key
                 url = format!("https://pro-api.coingecko.com/api/v3/coins/{}/tickers", coingecko_id);
                 "x_cg_pro_api_key"
             } else {
-                // Demo API key
                 "x_cg_demo_api_key"
             };
             url = format!("{}?{}={}", url, auth_param, api_key);
@@ -324,23 +343,26 @@ impl CryptoMarketsLoader {
                                 error!("❌ JSON parse error for {}: {}", symbol.symbol, e);
                                 error!("❌ Problematic response: {}", response_text);
                                 return Err(LoaderError::SerializationError(format!(
-                                    "Failed to parse CoinGecko response for {}: {}", symbol.symbol, e
+                                    "Failed to parse JSON for {}: {}", symbol.symbol, e
                                 )));
                             }
                         }
-                    } else if status == 429 {
-                        let delay = Duration::from_millis(self.config.rate_limit_delay_ms * (retries + 1) as u64);
-                        warn!("⏱️  Rate limited for {}, waiting {:?} (attempt {})",
-                             symbol.symbol, delay, retries + 1);
-                        sleep(delay).await;
-                        retries += 1;
-                        continue;
-                    } else if status == 404 {
-                        warn!("❌ CoinGecko ID '{}' not found for {}", coingecko_id, symbol.symbol);
-                        return Ok(Vec::new()); // Return empty results for 404
                     } else {
                         let error_text = response.text().await.unwrap_or_default();
-                        error!("❌ API error for {}: HTTP {} - {}", symbol.symbol, status, error_text);
+                        error!("❌ HTTP {} for {}: {}", status, symbol.symbol, error_text);
+
+                        // Handle rate limiting
+                        if status.as_u16() == 429 {
+                            retries += 1;
+                            if retries < self.config.max_retries {
+                                let delay = Duration::from_millis(self.config.rate_limit_delay_ms * retries as u64);
+                                warn!("Rate limited for {}. Waiting {:?} before retry {}/{}",
+                                     symbol.symbol, delay, retries + 1, self.config.max_retries);
+                                sleep(delay).await;
+                                continue;
+                            }
+                        }
+
                         return Err(LoaderError::ApiError(format!(
                             "CoinGecko API error for {}: HTTP {} - {}", symbol.symbol, status, error_text
                         )));
@@ -348,6 +370,14 @@ impl CryptoMarketsLoader {
                 }
                 Err(e) => {
                     error!("❌ Network error for {}: {}", symbol.symbol, e);
+                    retries += 1;
+                    if retries < self.config.max_retries {
+                        let delay = Duration::from_millis(self.config.delay_ms * retries as u64);
+                        warn!("Network error for {}. Waiting {:?} before retry {}/{}",
+                             symbol.symbol, delay, retries + 1, self.config.max_retries);
+                        sleep(delay).await;
+                        continue;
+                    }
                     return Err(LoaderError::IoError(format!(
                         "Request failed for {}: {}", symbol.symbol, e
                     )));
@@ -390,7 +420,25 @@ impl CryptoMarketsLoader {
 
         Ok(markets)
     }
-    /// Check if cached response is valid
+
+    /// Clean expired cache entries
+    pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, LoaderError> {
+        let mut conn = PgConnection::establish(database_url)
+            .map_err(|e| LoaderError::DatabaseError(format!("Connection failed: {}", e)))?;
+
+        let deleted_count = diesel::sql_query(
+            "DELETE FROM api_response_cache WHERE expires_at < NOW()"
+        ).execute(&mut conn)
+            .map_err(|e| LoaderError::DatabaseError(format!("Cleanup failed: {}", e)))?;
+
+        if deleted_count > 0 {
+            info!("🧹 Cleaned up {} expired cache entries", deleted_count);
+        }
+
+        Ok(deleted_count)
+    }
+
+    /// Check if cached response is valid - FIXED: Using proper struct for SQL result
     async fn get_cached_response(
         &self,
         database_url: &str,
@@ -400,15 +448,13 @@ impl CryptoMarketsLoader {
             return None;
         }
 
-        use diesel::prelude::*;
-
         let mut conn = match PgConnection::establish(database_url) {
             Ok(conn) => conn,
             Err(_) => return None,
         };
 
-        // Check for valid cached response
-        let cached_entry: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)> = diesel::sql_query(
+        // FIXED: Use the proper struct instead of tuple
+        let cached_entry: Option<CacheQueryResult> = diesel::sql_query(
             "SELECT response_data, expires_at FROM api_response_cache
              WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'coingecko'"
         )
@@ -417,11 +463,15 @@ impl CryptoMarketsLoader {
             .optional()
             .unwrap_or(None);
 
-        if let Some((response_data, expires_at)) = cached_entry {
-            info!("📦 Using cached response for {} (expires: {})", cache_key, expires_at);
+        if let Some(cache_result) = cached_entry {
+            info!(
+                "📦 Using cached response for {} (expires: {})",
+                cache_key,
+                cache_result.expires_at
+            );
 
             // Parse cached JSON response
-            if let Ok(cached_response) = serde_json::from_value::<CoinGeckoTickersResponse>(response_data) {
+            if let Ok(cached_response) = serde_json::from_value::<CoinGeckoTickersResponse>(cache_result.response_data) {
                 return Some(cached_response);
             } else {
                 warn!("Failed to parse cached response for {}", cache_key);
@@ -431,7 +481,7 @@ impl CryptoMarketsLoader {
         None
     }
 
-    /// Save API response to cache
+    /// Save API response to cache - FIXED: Using proper error handling
     async fn cache_response(
         &self,
         database_url: &str,
@@ -444,8 +494,6 @@ impl CryptoMarketsLoader {
             return;
         }
 
-        use diesel::prelude::*;
-
         let mut conn = match PgConnection::establish(database_url) {
             Ok(conn) => conn,
             Err(e) => {
@@ -454,6 +502,7 @@ impl CryptoMarketsLoader {
             }
         };
 
+        // FIXED: This now works because CoinGeckoTickersResponse implements Serialize
         let response_json = match serde_json::to_value(response) {
             Ok(json) => json,
             Err(e) => {
@@ -524,7 +573,6 @@ impl CryptoMarketsLoader {
         coingecko_id: &str,
         symbol: &CryptoSymbolForMarkets,
     ) -> LoaderResult<(Vec<CryptoMarketData>, CoinGeckoTickersResponse, String, u16)> {
-        // ... (existing fetch logic, but return response for caching)
         let base_url = "https://api.coingecko.com/api/v3";
         let mut url = format!("{}/coins/{}/tickers", base_url, coingecko_id);
 
@@ -548,58 +596,11 @@ impl CryptoMarketsLoader {
             let tickers_response: CoinGeckoTickersResponse = response.json().await
                 .map_err(|e| LoaderError::SerializationError(format!("Parse failed: {}", e)))?;
 
+            // FIXED: This now works because CoinGeckoTickersResponse implements Clone
             let markets = self.parse_coingecko_markets(tickers_response.clone(), symbol)?;
             Ok((markets, tickers_response, url, status))
         } else {
             Err(LoaderError::ApiError(format!("HTTP {}", status)))
         }
     }
-
-    /// Clean expired cache entries
-    pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, diesel::result::Error> {
-        use diesel::prelude::*;
-
-        let mut conn = PgConnection::establish(database_url)?;
-
-        let deleted_count = diesel::sql_query(
-            "DELETE FROM api_response_cache WHERE expires_at < NOW()"
-        ).execute(&mut conn)?;
-
-        if deleted_count > 0 {
-            info!("🧹 Cleaned up {} expired cache entries", deleted_count);
-        }
-
-        Ok(deleted_count)
-    }
-}
-
-// CoinGecko API response structures
-#[derive(Debug, Deserialize)]
-struct CoinGeckoTickersResponse {
-    name: String,
-    tickers: Vec<CoinGeckoTicker>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CoinGeckoTicker {
-    base: String,
-    target: String,
-    market: CoinGeckoMarket,
-    last: Option<f64>,
-    volume: Option<f64>,
-    trust_score: Option<String>,
-    bid_ask_spread_percentage: Option<f64>,
-    timestamp: Option<String>,
-    last_traded_at: Option<String>,
-    last_fetch_at: Option<String>,
-    is_anomaly: Option<bool>,
-    is_stale: Option<bool>,
-    trade_url: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CoinGeckoMarket {
-    name: String,
-    identifier: String,
-    has_trading_incentive: Option<bool>,
 }
