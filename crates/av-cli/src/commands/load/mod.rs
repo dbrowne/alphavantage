@@ -36,6 +36,9 @@ enum LoadSubcommands {
   /// Update GitHub data for cryptocurrencies
   UpdateGithub(crypto_overview::UpdateGitHubArgs),
 
+  /// Load cryptocurrency market data from exchanges
+  CryptoMarkets(crypto_markets::CryptoMarketsArgs),
+
   /// Load intraday price data
   Intraday {
     /// Symbol to load (if not specified, loads all active symbols)
@@ -60,8 +63,6 @@ enum LoadSubcommands {
     #[arg(short, long, default_value = "50")]
     limit: usize,
   },
-  /// Load cryptocurrency market data from exchanges
-  CryptoMarkets(crypto_markets::CryptoMarketsArgs),
 }
 
 pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
