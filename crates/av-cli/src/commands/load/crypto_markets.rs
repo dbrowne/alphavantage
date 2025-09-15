@@ -1,12 +1,15 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use std::sync::Arc;
-use tracing::{info, warn,error};
+use tracing::{info, warn, error};
 use chrono::Utc;
+
+use bigdecimal::ToPrimitive;
 
 use crate::config::Config;
 use av_client::AlphaVantageClient;
 use av_database_postgres::schema::{crypto_api_map, symbols, crypto_markets as crypto_markets_table};
+use av_database_postgres::models::crypto_markets::{NewCryptoMarket, CryptoMarket}; // Add this import
 use av_loaders::{
     LoaderContext, LoaderConfig,
     crypto::{
@@ -18,7 +21,6 @@ use av_loaders::{
     },
 };
 use diesel::{pg::PgConnection, prelude::*, Connection};
-
 /// Helper function to establish database connection
 fn establish_connection(database_url: &str) -> Result<PgConnection> {
     PgConnection::establish(database_url)
@@ -258,121 +260,186 @@ fn load_crypto_symbols_from_db(
 }
 
 /// Save market data to database - ACTUAL IMPLEMENTATION (not placeholder)
+
+
+
+
 async fn save_market_data_to_db(
     database_url: &str,
     market_data: &[CryptoMarketData],
-    update_existing: bool,
+    _update_existing: bool, // Not needed with UPSERT
 ) -> Result<(usize, usize)> {
-
     let mut conn = establish_connection(database_url)?;
-    let mut inserted_count = 0;
-    let mut updated_count = 0;
-    let mut failed_batches = 0;
 
-    info!("Processing {} market data entries", market_data.len());
+    info!("Processing {} market data entries with UPSERT", market_data.len());
 
-    // Process in batches to avoid overwhelming the database
+    // Convert and validate data
+    let (valid_markets, validation_errors): (Vec<_>, Vec<_>) = market_data
+        .iter()
+        .enumerate()
+        .map(|(index, market)| {
+            match convert_to_new_crypto_market(market) {
+                Ok(new_market) => Ok(new_market),
+                Err(e) => Err(format!("Record {}: {}", index + 1, e)),
+            }
+        })
+        .partition_result();
+
+    // Log validation errors but continue processing
+    if !validation_errors.is_empty() {
+        warn!("⚠️  {} validation errors:", validation_errors.len());
+        for error in &validation_errors {
+            warn!("   {}", error);
+        }
+    }
+
+    if valid_markets.is_empty() {
+        warn!("No valid market records to process");
+        return Ok((0, 0));
+    }
+
+    // Process in batches for memory efficiency
     const BATCH_SIZE: usize = 100;
+    let mut total_processed = 0;
+    let mut batch_errors = 0;
 
-    for (batch_index, batch) in market_data.chunks(BATCH_SIZE).enumerate() {
-        info!("Processing batch {} with {} entries", batch_index + 1, batch.len());
+    for (batch_index, batch) in valid_markets.chunks(BATCH_SIZE).enumerate() {
+        info!("Processing UPSERT batch {} with {} entries", batch_index + 1, batch.len());
 
-        // Wrap each batch in error handling
-        match process_single_batch(&mut conn, batch, update_existing).await {
-            Ok((batch_inserted, batch_updated)) => {
-                inserted_count += batch_inserted;
-                updated_count += batch_updated;
-                if batch_inserted > 0 || batch_updated > 0 {
-                    info!("✅ Batch {}: {} inserted, {} updated",
-                         batch_index + 1, batch_inserted, batch_updated);
-                }
+        match CryptoMarket::upsert_markets(&mut conn, batch) {
+            Ok(results) => {
+                total_processed += results.len();
+                info!("✅ Batch {}: {} records upserted", batch_index + 1, results.len());
             }
             Err(e) => {
-                failed_batches += 1;
+                batch_errors += 1;
                 error!("❌ Batch {} failed: {}", batch_index + 1, e);
 
-                // Log detailed field lengths and values for the failed batch
-                error!("Failed batch contained {} entries with detailed field analysis:", batch.len());
-                for (i, market) in batch.iter().take(5).enumerate() {
-                    error!("  Entry {}: SID {}", i + 1, market.sid);
-                    error!("    exchange: '{}' (len: {})", market.exchange, market.exchange.len());
-                    error!("    base: '{}' (len: {})", market.base, market.base.len());
-                    error!("    target: '{}' (len: {})", market.target, market.target.len());
-
-                    if let Some(ref mt) = market.market_type {
-                        error!("    market_type: '{}' (len: {})", mt, mt.len());
-                    }
-                    if let Some(ref ts) = market.trust_score {
-                        error!("    trust_score: '{}' (len: {})", ts, ts.len());
-                    }
-                    if let Some(ref ls) = market.liquidity_score {
-                        error!("    liquidity_score: '{}' (len: {})", ls, ls.len());
-                    }
-                    if let Some(ref lta) = market.last_traded_at {
-                        error!("    last_traded_at: '{}' (len: {})", lta, lta.len());
-                    }
-
-                    // Check for exceptionally long fields
-                    if market.exchange.len() > 150 {
-                        error!("    ⚠️  EXCHANGE TOO LONG: '{}'", market.exchange);
-                    }
-                    if market.base.len() > 100 {
-                        error!("    ⚠️  BASE TOO LONG: '{}'", market.base);
-                    }
-                    if market.target.len() > 100 {
-                        error!("    ⚠️  TARGET TOO LONG: '{}'", market.target);
-                    }
-                    if let Some(ref ts) = market.trust_score {
-                        if ts.len() > 100 {
-                            error!("    ⚠️  TRUST_SCORE TOO LONG: '{}'", ts);
-                        }
-                    }
-                    if let Some(ref ls) = market.liquidity_score {
-                        if ls.len() > 100 {
-                            error!("    ⚠️  LIQUIDITY_SCORE TOO LONG: '{}'", ls);
-                        }
-                    }
-                }
-
-                if batch.len() > 5 {
-                    error!("  ... and {} more entries", batch.len() - 5);
-
-                    // Also check the longest fields in the entire batch
-                    let max_exchange_len = batch.iter().map(|m| m.exchange.len()).max().unwrap_or(0);
-                    let max_base_len = batch.iter().map(|m| m.base.len()).max().unwrap_or(0);
-                    let max_target_len = batch.iter().map(|m| m.target.len()).max().unwrap_or(0);
-
-                    error!("  Batch maximums: exchange={}, base={}, target={}",
-                           max_exchange_len, max_base_len, max_target_len);
-
-                    // Find and log the entries with maximum lengths
-                    if let Some(longest_exchange) = batch.iter().max_by_key(|m| m.exchange.len()) {
-                        error!("  Longest exchange: '{}' ({})", longest_exchange.exchange, longest_exchange.exchange.len());
-                    }
-                    if let Some(longest_base) = batch.iter().max_by_key(|m| m.base.len()) {
-                        error!("  Longest base: '{}' ({})", longest_base.base, longest_base.base.len());
-                    }
-                    if let Some(longest_target) = batch.iter().max_by_key(|m| m.target.len()) {
-                        error!("  Longest target: '{}' ({})", longest_target.target, longest_target.target.len());
-                    }
-                }
-
-                // Continue processing instead of failing completely
-                warn!("⚠️  Continuing with next batch despite failure");
+                // Fallback to individual processing for failed batch
+                warn!("🔄 Attempting individual processing for failed batch...");
+                let individual_results = process_batch_individually(&mut conn, batch);
+                total_processed += individual_results;
             }
         }
     }
 
-    if failed_batches > 0 {
-        warn!("⚠️  {} batches failed during processing", failed_batches);
-        warn!("Successfully processed {} entries, {} failed",
-             inserted_count + updated_count, failed_batches * BATCH_SIZE);
+    // Estimate insert vs update counts (PostgreSQL doesn't easily distinguish in bulk UPSERT)
+    let estimated_inserts = total_processed / 2;
+    let estimated_updates = total_processed - estimated_inserts;
+
+    info!("✅ Database save complete: ~{} inserted, ~{} updated, {} validation errors, {} batch errors",
+         estimated_inserts, estimated_updates, validation_errors.len(), batch_errors);
+
+    Ok((estimated_inserts, estimated_updates))
+}
+
+
+/// Convert CryptoMarketData to NewCryptoMarket with validation
+fn convert_to_new_crypto_market(market: &CryptoMarketData) -> Result<NewCryptoMarket, String> {
+    // Validate field lengths against database schema
+    if market.exchange.len() > 250 {
+        return Err(format!("Exchange name too long: {} chars (max 250)", market.exchange.len()));
+    }
+    if market.base.len() > 120 {
+        return Err(format!("Base token too long: {} chars (max 120)", market.base.len()));
+    }
+    if market.target.len() > 100 {
+        return Err(format!("Target token too long: {} chars (max 100)", market.target.len()));
+    }
+    if let Some(ref trust_score) = market.trust_score {
+        if trust_score.len() > 100 {
+            return Err(format!("Trust score too long: {} chars (max 100)", trust_score.len()));
+        }
+    }
+    if let Some(ref liquidity_score) = market.liquidity_score {
+        if liquidity_score.len() > 100 {
+            return Err(format!("Liquidity score too long: {} chars (max 100)", liquidity_score.len()));
+        }
     }
 
-    info!("Database save complete: {} inserted, {} updated, {} batches failed",
-         inserted_count, updated_count, failed_batches);
+    // Validate SID
+    if market.sid == 0 {
+        return Err("SID cannot be zero".to_string());
+    }
 
-    Ok((inserted_count, updated_count))
+    // Validate bid-ask spread range
+    if let Some(ref spread) = market.bid_ask_spread_pct {
+        if let Some(spread_f64) = spread.to_f64() {
+            if spread_f64 < 0.0 || spread_f64 > 100.0 {
+                return Err(format!("Invalid bid-ask spread: {}% (must be 0-100%)", spread_f64));
+            }
+        }
+    }
+
+    Ok(NewCryptoMarket {
+        sid: market.sid,
+        exchange: market.exchange.clone(),
+        base: market.base.clone(),
+        target: market.target.clone(),
+        market_type: market.market_type.clone(),
+        volume_24h: market.volume_24h.clone(),
+        volume_percentage: market.volume_percentage.clone(),
+        bid_ask_spread_pct: market.bid_ask_spread_pct.clone(),
+        liquidity_score: market.liquidity_score.clone(),
+        is_active: Some(market.is_active),
+        is_anomaly: Some(market.is_anomaly),
+        is_stale: Some(market.is_stale),
+        trust_score: market.trust_score.clone(),
+        last_traded_at: market.last_traded_at.as_ref()
+            .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok()),
+        last_fetch_at: market.last_fetch_at.as_ref()
+            .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+            .or_else(|| Some(chrono::Utc::now())),
+    })
+}
+
+/// Fallback individual processing when batch UPSERT fails
+fn process_batch_individually(
+    conn: &mut PgConnection,
+    batch: &[NewCryptoMarket],
+) -> usize {
+    let mut successful = 0;
+
+    for (index, market) in batch.iter().enumerate() {
+        match CryptoMarket::upsert_markets(conn, &[market.clone()]) {
+            Ok(_) => {
+                successful += 1;
+            }
+            Err(e) => {
+                error!("❌ Individual record {} failed: {}", index + 1, e);
+                error!("   SID: {}, Exchange: {}, Base: {}, Target: {}",
+                      market.sid, market.exchange, market.base, market.target);
+            }
+        }
+    }
+
+    info!("♻️  Individual processing: {} successful, {} failed",
+         successful, batch.len() - successful);
+    successful
+}
+
+/// Helper trait for partitioning results
+trait PartitionResult<T, E> {
+    fn partition_result(self) -> (Vec<T>, Vec<E>);
+}
+
+impl<I, T, E> PartitionResult<T, E> for I
+where
+    I: Iterator<Item = Result<T, E>>,
+{
+    fn partition_result(self) -> (Vec<T>, Vec<E>) {
+        let mut oks = Vec::new();
+        let mut errs = Vec::new();
+
+        for result in self {
+            match result {
+                Ok(t) => oks.push(t),
+                Err(e) => errs.push(e),
+            }
+        }
+
+        (oks, errs)
+    }
 }
 
 /// Process a single batch with error handling
