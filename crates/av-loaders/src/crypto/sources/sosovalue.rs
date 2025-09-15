@@ -17,7 +17,7 @@ impl SosoValueProvider {
   }
 }
 
-// FIXED: Response structure based on actual API response
+
 #[derive(Debug, Deserialize)]
 struct SosoValueResponse {
   code: i32,
@@ -30,7 +30,6 @@ struct SosoValueResponse {
   data: Option<Vec<SosoValueCrypto>>,
 }
 
-// FIXED: Crypto structure based on actual API response
 #[derive(Debug, Deserialize)]
 struct SosoValueCrypto {
   #[serde(rename = "currencyId")]
@@ -48,18 +47,14 @@ impl CryptoDataProvider for SosoValueProvider {
   async fn fetch_symbols(&self, client: &Client) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from SosoValue");
 
-    // FIXED: Use the correct endpoint from documentation
     let url = "https://openapi.sosovalue.com/openapi/v1/data/default/coin/list";
 
-    // FIXED: Use POST method as specified in documentation
     let mut request = client.post(url).header("Content-Type", "application/json");
 
-    // FIXED: Use the correct header name from documentation
     if let Some(ref key) = self.api_key {
       request = request.header("x-soso-api-key", key);
     }
 
-    // FIXED: Add the required empty JSON body from documentation
     request = request.json(&serde_json::json!({}));
 
     debug!("SosoValue request: POST {} with headers", url);
