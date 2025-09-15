@@ -92,12 +92,24 @@ pub struct CryptoMarketsArgs {
     cleanup_cache: bool,
 }
 
+// Updated CLI code for crates/av-cli/src/commands/load/crypto_markets.rs
+// Key changes to enable caching in the CLI
+
 pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
     info!("Starting crypto markets data loader");
 
     if args.dry_run {
         info!("Dry run mode - no database updates will be performed");
         return execute_dry_run(args).await;
+    }
+
+    // Clean expired cache if requested
+    if args.cleanup_cache {
+        info!("Cleaning expired cache entries...");
+        match CryptoMarketsLoader::cleanup_expired_cache(&config.database_url).await {
+            Ok(deleted) => info!("Cleaned {} expired cache entries", deleted),
+            Err(e) => warn!("Failed to clean cache: {}", e),
+        }
     }
 
     // Load symbols from database
@@ -111,7 +123,7 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
 
     info!("Loaded {} crypto symbols for market data fetching", crypto_symbols.len());
 
-    // Create markets loader configuration - include ALL required fields
+    // Create markets loader configuration
     let loader_config = CryptoMarketsConfig {
         coingecko_api_key: args.coingecko_api_key.clone(),
         delay_ms: 1000,
@@ -126,14 +138,14 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
         min_volume_threshold: Some(args.min_volume),
         max_markets_per_symbol: Some(args.max_markets_per_symbol),
         enable_response_cache: args.enable_cache,
-        cache_ttl_hours:  args.cache_hours,
+        cache_ttl_hours: args.cache_hours,
         force_refresh: args.force_refresh,
     };
 
     // Create client for loader context
     let av_client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
 
-    // Create loader context - use correct field names
+    // Create loader context
     let loader_context = LoaderContext {
         client: av_client,
         config: LoaderConfig {
@@ -147,7 +159,7 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
         process_tracker: None,
     };
 
-    // Create markets loader input - include ALL required fields
+    // Create markets loader input
     let input = CryptoMarketsInput {
         symbols: Some(crypto_symbols),
         exchange_filter: None,
@@ -157,12 +169,13 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
         sources: vec![CryptoDataSource::CoinGecko],
         batch_size: Some(args.batch_size),
     };
+
     // Initialize markets loader
     let markets_loader = CryptoMarketsLoader::new(loader_config);
 
-    // Load market data using the correct method name (load, not load_data)
-    info!("Starting market data fetching...");
-    match markets_loader.load(&loader_context, input).await {
+    // UPDATED: Use load_with_cache instead of load to enable caching
+    info!("Starting market data fetching with caching enabled...");
+    match markets_loader.load_with_cache(&loader_context, input, &config.database_url).await {
         Ok(market_data) => {
             info!("Fetched market data for {} symbols", market_data.len());
 
@@ -182,12 +195,14 @@ pub async fn execute(args: CryptoMarketsArgs, config: Config) -> Result<()> {
             }
         }
         Err(e) => {
-            warn!("Failed to load market data: {}", e);
+            error!("Failed to load market data: {}", e);
+            return Err(anyhow::anyhow!("Market data loading failed: {}", e));
         }
     }
 
     Ok(())
 }
+
 
 async fn execute_dry_run(_args: CryptoMarketsArgs) -> Result<()> {
     info!("Executing dry run for crypto market data loading");
