@@ -11,8 +11,10 @@ use tracing::{info, warn, error};
 use indicatif::{ProgressBar, ProgressStyle};
 use diesel::prelude::*;
 use chrono::{DateTime, Utc};
+use std::sync::Arc;
 
-const MAX_TTL: u32 = 6;
+#[allow(dead_code)]
+const MAX_TTL: u32 = 6;   //todo:: Refactor
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoSymbolForMarkets {
@@ -119,7 +121,8 @@ struct CacheQueryResult {
 }
 
 impl CryptoMarketsConfig {
-    fn default() -> Self {
+    #[allow(dead_code)]
+    fn default() -> Self {    //todo:  Refactor
         Self {
             coingecko_api_key: None,
             delay_ms: 500,
@@ -247,6 +250,100 @@ impl CryptoMarketsLoader {
         Ok(all_market_data)
     }
 
+
+    pub async fn load_with_cache(
+        &self,
+        _context: &crate::LoaderContext,
+        input: CryptoMarketsInput,
+        database_url: &str,
+    ) -> LoaderResult<Vec<CryptoMarketData>> {
+        let symbols = input.symbols.unwrap_or_default();
+
+        if symbols.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        info!("Starting market data fetch for {} symbols", symbols.len());
+
+        let mut all_market_data = Vec::new();
+
+        // Setup progress bar if enabled
+        let progress = if self.config.enable_progress_bar {
+            let pb = ProgressBar::new(symbols.len() as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+                    .expect("Invalid progress template")
+                    .progress_chars("##-"),
+            );
+            Some(pb)
+        } else {
+            None
+        };
+
+        // Process symbols in batches
+        let batch_size = input.batch_size.unwrap_or(self.config.batch_size);
+        let symbol_chunks: Vec<_> = symbols.chunks(batch_size).collect();
+
+        for (chunk_index, symbol_chunk) in symbol_chunks.iter().enumerate() {
+            info!("Processing batch {}/{}", chunk_index + 1, symbol_chunks.len());
+
+            // Execute batch tasks with concurrency control
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrent_requests));
+            let mut handles = Vec::new();
+
+            let database_url = Arc::<str>::from(database_url);
+
+            for symbol in symbol_chunk.iter() {
+                let sem = semaphore.clone();
+                let symbol_clone = symbol.clone();
+                let config = self.config.clone();
+                let client = self.client.clone();
+                let database_url = Arc::clone(&database_url);
+
+                let handle = tokio::spawn(async move {
+                    let _permit = sem.acquire().await.expect("Semaphore acquire failed");
+
+                    // Create a temporary loader for this task
+                    let temp_loader = CryptoMarketsLoader { config, client };
+                    temp_loader.fetch_market_data_for_symbol_cached(symbol_clone, &database_url).await
+                });
+                handles.push(handle);
+            }
+
+            // Collect results from the batch
+            for handle in handles {
+                match handle.await {
+                    Ok(Ok(mut market_data)) => {
+                        all_market_data.append(&mut market_data);
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Failed to fetch market data: {}", e);
+                    }
+                    Err(e) => {
+                        error!("Task join error: {}", e);
+                    }
+                }
+
+                if let Some(ref pb) = progress {
+                    pb.inc(1);
+                }
+            }
+
+            // Rate limiting between batches
+            if chunk_index < symbol_chunks.len() - 1 {
+                sleep(Duration::from_millis(self.config.rate_limit_delay_ms)).await;
+            }
+        }
+
+        if let Some(pb) = progress {
+            pb.finish_with_message("Market data fetch complete");
+        }
+
+        info!("Completed market data fetch. Retrieved {} market entries", all_market_data.len());
+        Ok(all_market_data)
+    }
+
     /// Fetch market data for a single symbol
     async fn fetch_market_data_for_symbol(
         &self,
@@ -262,6 +359,42 @@ impl CryptoMarketsLoader {
             info!("✅ {} has CoinGecko ID: {}", symbol.symbol, coingecko_id);
 
             match self.fetch_coingecko_markets(coingecko_id, &symbol).await {
+                Ok(mut data) => {
+                    info!("✅ CoinGecko returned {} markets for {}", data.len(), symbol.symbol);
+                    market_data.append(&mut data);
+                }
+                Err(e) => {
+                    error!("❌ CoinGecko API error for {}: {}", symbol.symbol, e);
+                }
+            }
+        } else {
+            warn!("⚠️  No CoinGecko ID for {}", symbol.symbol);
+        }
+
+        // Add delay between symbol requests
+        if self.config.delay_ms > 0 {
+            sleep(Duration::from_millis(self.config.delay_ms)).await;
+        }
+
+        Ok(market_data)
+    }
+
+
+    async fn fetch_market_data_for_symbol_cached(  // todo!  Refacotr this
+        &self,
+        symbol: CryptoSymbolForMarkets,
+        database_url: &str,
+    ) -> LoaderResult<Vec<CryptoMarketData>> {
+        info!("🔍 Processing symbol: {} ({})", symbol.symbol, symbol.name);
+        info!("🔍 CoinGecko ID: {:?}", symbol.coingecko_id);
+
+        let mut market_data = Vec::new();
+
+        // Check if we have a CoinGecko ID
+        if let Some(ref coingecko_id) = symbol.coingecko_id {
+            info!("✅ {} has CoinGecko ID: {}", symbol.symbol, coingecko_id);
+
+            match self.fetch_coingecko_markets_cached(database_url,coingecko_id, &symbol).await {
                 Ok(mut data) => {
                     info!("✅ CoinGecko returned {} markets for {}", data.len(), symbol.symbol);
                     market_data.append(&mut data);

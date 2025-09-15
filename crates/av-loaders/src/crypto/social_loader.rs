@@ -58,8 +58,9 @@ pub struct CryptoSocialInput {
     pub update_existing: bool,
 }
 
-pub struct CryptoSocialLoader {
-    config: CryptoSocialConfig,
+#[allow(dead_code)]
+pub struct CryptoSocialLoader {   //todo:: Refacor
+    config: CryptoSocialConfig
 }
 
 impl CryptoSocialLoader {
