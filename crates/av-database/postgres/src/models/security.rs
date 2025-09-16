@@ -11,6 +11,7 @@ use crate::schema::{equity_details, overviewexts, overviews, symbols};
 pub struct Symbol {
   pub sid: i64,
   pub symbol: String,
+  pub priority: i32,
   pub name: String,
   pub sec_type: String,
   pub region: String,
@@ -27,6 +28,7 @@ pub struct Symbol {
 pub struct NewSymbol<'a> {
   pub sid: &'a i64,
   pub symbol: &'a String,
+  pub priority: &'a i32,
   pub name: &'a String,
   pub sec_type: &'a String,
   pub region: &'a String,
@@ -249,6 +251,7 @@ impl Overviewext {
 pub struct NewSymbolOwned {
   pub sid: i64,
   pub symbol: String,
+  pub priority: i32,
   pub name: String,
   pub sec_type: String,
   pub region: String,
@@ -264,6 +267,7 @@ pub struct NewSymbolOwned {
 impl NewSymbolOwned {
   pub fn from_symbol_data(
     symbol: &str,
+    priority: i32,
     name: &str,
     sec_type: &str,
     region: &str,
@@ -274,6 +278,7 @@ impl NewSymbolOwned {
     Self {
       sid,
       symbol: symbol.to_string(),
+      priority,
       name: name.to_string(),
       sec_type: sec_type.to_string(),
       region: region.to_string(),
@@ -290,6 +295,7 @@ impl NewSymbolOwned {
     NewSymbol {
       sid: &self.sid,
       symbol: &self.symbol,
+      priority: &self.priority,
       name: &self.name,
       sec_type: &self.sec_type,
       region: &self.region,

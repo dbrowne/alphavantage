@@ -5,7 +5,8 @@
 -- =====================================================
 CREATE TABLE symbols (
                          sid             BIGINT PRIMARY KEY NOT NULL,
-                         symbol          VARCHAR(20) NOT NULL,
+                         symbol          VARCHAR(64) NOT NULL,
+                         priority        integer default 9999999 not null,
                          name            TEXT NOT NULL,
                          sec_type        VARCHAR(50) NOT NULL,
                          region          VARCHAR(10) NOT NULL,
@@ -19,7 +20,9 @@ CREATE TABLE symbols (
                          m_time          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+
 -- Indexes for symbols table
+CREATE INDEX idx_symbols_priority ON symbols(symbol, priority ASC);
 CREATE INDEX idx_symbols_symbol ON symbols(symbol);
 CREATE INDEX idx_symbols_sec_type ON symbols(sec_type);
 CREATE INDEX idx_symbols_active ON symbols(symbol)
@@ -46,7 +49,7 @@ CREATE INDEX idx_equity_details_exchange ON equity_details(exchange);
 -- =====================================================
 CREATE TABLE overviews (
                            sid                  BIGINT PRIMARY KEY REFERENCES symbols(sid) ON DELETE CASCADE,
-                           symbol               VARCHAR(20) NOT NULL,
+                           symbol               VARCHAR(64) NOT NULL,
                            name                 TEXT NOT NULL,
                            description          TEXT NOT NULL,
                            cik                  VARCHAR(20) NOT NULL,
@@ -114,7 +117,7 @@ CREATE TABLE intradayprices (
                                 eventid BIGSERIAL NOT NULL,
                                 tstamp  TIMESTAMPTZ NOT NULL,
                                 sid     BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
-                                symbol  VARCHAR(20) NOT NULL,
+                                symbol  VARCHAR(64) NOT NULL,
                                 open    REAL NOT NULL,
                                 high    REAL NOT NULL,
                                 low     REAL NOT NULL,
@@ -135,7 +138,7 @@ CREATE TABLE summaryprices (
                                tstamp  TIMESTAMPTZ NOT NULL,
                                date    DATE NOT NULL,
                                sid     BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
-                               symbol  VARCHAR(20) NOT NULL,
+                               symbol  VARCHAR(64) NOT NULL,
                                open    REAL NOT NULL,
                                high    REAL NOT NULL,
                                low     REAL NOT NULL,
@@ -155,7 +158,7 @@ CREATE TABLE topstats (
                           date        TIMESTAMPTZ NOT NULL,
                           event_type  VARCHAR(50) NOT NULL,
                           sid         BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
-                          symbol      VARCHAR(20) NOT NULL,
+                          symbol      VARCHAR(64) NOT NULL,
                           price       REAL NOT NULL,
                           change_val  REAL NOT NULL,
                           change_pct  REAL NOT NULL,
@@ -346,7 +349,7 @@ CREATE TABLE crypto_api_map (
                                 api_source          VARCHAR(50) NOT NULL,
                                 api_id              VARCHAR(100) NOT NULL,
                                 api_slug            VARCHAR(100),
-                                api_symbol          VARCHAR(20),
+                                api_symbol          VARCHAR(64),
                                 rank                INTEGER,
                                 is_active           BOOLEAN DEFAULT TRUE,
                                 last_verified       TIMESTAMPTZ,
@@ -362,7 +365,7 @@ CREATE INDEX idx_crypto_api_map_active ON crypto_api_map(api_source, is_active);
 -- Crypto overview basic (20 columns)
 CREATE TABLE crypto_overview_basic (
                                        sid                     BIGINT PRIMARY KEY REFERENCES symbols(sid),
-                                       symbol                  VARCHAR(20) NOT NULL,
+                                       symbol                  VARCHAR(64) NOT NULL,
                                        name                    TEXT NOT NULL,
                                        slug                    VARCHAR(100),
                                        description             TEXT,
@@ -480,18 +483,18 @@ CREATE TABLE crypto_social (
 CREATE TABLE crypto_markets (
                                 id                      SERIAL PRIMARY KEY,
                                 sid                     BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
-                                exchange                VARCHAR(100) NOT NULL,
-                                base                    VARCHAR(20) NOT NULL,
-                                target                  VARCHAR(20) NOT NULL,
+                                exchange                VARCHAR(250) NOT NULL,
+                                base                    VARCHAR(120) NOT NULL,
+                                target                  VARCHAR(100) NOT NULL,
                                 market_type             VARCHAR(20),
                                 volume_24h              NUMERIC(30,2),
                                 volume_percentage       NUMERIC(11,2),
                                 bid_ask_spread_pct      NUMERIC(10,4),
-                                liquidity_score         VARCHAR(20),
+                                liquidity_score         VARCHAR(100),
                                 is_active               BOOLEAN DEFAULT TRUE,
                                 is_anomaly              BOOLEAN DEFAULT FALSE,
                                 is_stale                BOOLEAN DEFAULT FALSE,
-                                trust_score             VARCHAR(20),
+                                trust_score             VARCHAR(100),
                                 last_traded_at          TIMESTAMPTZ,
                                 last_fetch_at           TIMESTAMPTZ,
                                 c_time                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -712,3 +715,112 @@ COMMENT ON TABLE topstats IS 'Top gainers/losers - TimescaleDB hypertable with 1
 COMMENT ON TABLE newsoverviews IS 'News overview data - TimescaleDB hypertable with 1-month chunks';
 COMMENT ON TABLE crypto_api_map IS 'Maps cryptocurrencies to various API providers';
 COMMENT ON VIEW crypto_overviews IS 'Compatibility view combining crypto_overview_basic and crypto_overview_metrics';
+
+CREATE TABLE article_translations (
+                                      id SERIAL PRIMARY KEY,
+                                      articleid TEXT REFERENCES articles(hashid),
+                                      language VARCHAR(10) NOT NULL,
+                                      title TEXT NOT NULL,
+                                      content TEXT NOT NULL,
+                                      UNIQUE(articleid, language)
+);
+-- Media attachments
+CREATE TABLE article_media (
+                               id SERIAL PRIMARY KEY,
+                               articleid TEXT REFERENCES articles(hashid),
+                               soso_url TEXT,
+                               original_url TEXT,
+                               short_url TEXT,
+                               media_type VARCHAR(20),
+                               media_order INTEGER DEFAULT 0
+);
+-- Tags
+CREATE TABLE article_tags (
+                              articleid TEXT REFERENCES articles(hashid),
+                              tag VARCHAR(100),
+                              PRIMARY KEY (articleid, tag)
+);
+-- Multiple symbol associations
+CREATE TABLE article_symbols (
+                                 articleid TEXT REFERENCES articles(hashid),
+                                 sid BIGINT REFERENCES symbols(sid),
+                                 full_name TEXT,
+                                 PRIMARY KEY (articleid, sid)
+);
+-- Quote/Retweet information
+CREATE TABLE article_quotes (
+                                id SERIAL PRIMARY KEY,
+                                articleid TEXT REFERENCES articles(hashid),
+                                original_url TEXT,
+                                author VARCHAR(255),
+                                author_avatar_url TEXT,
+                                nick_name VARCHAR(255),
+                                impression_count BIGINT,
+                                like_count INTEGER,
+                                reply_count INTEGER,
+                                retweet_count INTEGER,
+                                twitter_created_at TIMESTAMPTZ
+);
+-- Extend articles table
+ALTER TABLE articles
+    ADD COLUMN source_link TEXT,
+ADD COLUMN release_time BIGINT,
+ADD COLUMN author_description TEXT,
+ADD COLUMN author_avatar_url TEXT,
+ADD COLUMN feature_image TEXT,
+ADD COLUMN author_nick_name VARCHAR(255);
+
+CREATE TABLE crypto_metadata (
+                                 sid BIGINT PRIMARY KEY REFERENCES symbols(sid),
+                                 source VARCHAR(50) NOT NULL,
+                                 source_id TEXT NOT NULL,
+                                 market_cap_rank INTEGER,
+                                 base_currency VARCHAR(10),
+                                 quote_currency VARCHAR(10),
+                                 is_active BOOLEAN NOT NULL DEFAULT true,
+                                 additional_data JSONB,
+                                 last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                 UNIQUE(source, source_id)
+);
+
+ALTER TABLE crypto_markets
+    ADD CONSTRAINT crypto_markets_unique_market
+        UNIQUE (sid, exchange, base, target);
+
+-- Add indexes for performance
+CREATE INDEX idx_crypto_markets_sid ON crypto_markets(sid);
+CREATE INDEX idx_crypto_markets_exchange ON crypto_markets(exchange);
+CREATE INDEX idx_crypto_markets_volume ON crypto_markets(volume_24h DESC) WHERE volume_24h IS NOT NULL;
+CREATE INDEX idx_crypto_markets_active ON crypto_markets(is_active) WHERE is_active = true;
+CREATE INDEX idx_crypto_markets_last_fetch ON crypto_markets(last_fetch_at DESC);
+
+-- Add check constraints
+ALTER TABLE crypto_markets
+    ADD CONSTRAINT crypto_markets_volume_positive
+        CHECK (volume_24h IS NULL OR volume_24h >= 0);
+
+ALTER TABLE crypto_markets
+    ADD CONSTRAINT crypto_markets_spread_valid
+        CHECK (bid_ask_spread_pct IS NULL OR (bid_ask_spread_pct >= 0 AND bid_ask_spread_pct <= 100));
+
+-- Add comment
+COMMENT ON TABLE crypto_markets IS 'Cryptocurrency market data from various exchanges';
+
+-- response cache table to minimize db calls. Calls cost money
+CREATE TABLE api_response_cache (
+                                    cache_key VARCHAR(255) PRIMARY KEY,
+                                    api_source VARCHAR(50) NOT NULL,
+                                    endpoint_url TEXT NOT NULL,
+                                    response_data JSONB NOT NULL,
+                                    response_headers JSONB,
+                                    status_code INTEGER NOT NULL,
+                                    cached_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                                    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                                    etag VARCHAR(255),
+                                    last_modified VARCHAR(255)
+);
+
+CREATE INDEX idx_api_cache_source_expires ON api_response_cache(api_source, expires_at);
+CREATE INDEX idx_api_cache_expires ON api_response_cache(expires_at);
+
+Comment on table api_response_cache is 'cache for API calls to minimize vendor fees'
