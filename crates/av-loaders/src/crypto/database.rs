@@ -288,7 +288,7 @@ impl CryptoDbLoader {
     }
 
     // Multiple tokens - sort by market cap rank (lower rank = higher priority)
-    tokens.sort_by_key(|token| token.market_cap_rank.unwrap_or(u32::MAX));
+    tokens.sort_by_key(|token| token.market_cap_rank.unwrap_or(9999999));
 
     for (index, token) in tokens.iter_mut().enumerate() {
       if index == 0 && token.market_cap_rank.is_some() {
@@ -447,6 +447,7 @@ mod tests {
   fn create_test_symbol(symbol: &str, name: &str, source: CryptoDataSource) -> CryptoSymbol {
     CryptoSymbol {
       symbol: symbol.to_string(),
+      priority: 0,
       name: name.to_string(),
       source,
       source_id: format!("{}-{}", name.to_lowercase().replace(' ', "-"), symbol.to_lowercase()),

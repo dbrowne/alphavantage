@@ -499,7 +499,7 @@ async fn fetch_from_coingecko_free(
     atl_date: market_data["atl_date"]["usd"]
       .as_str()
       .and_then(|d| NaiveDate::parse_from_str(&d[..10], "%Y-%m-%d").ok()),
-    rank: data["market_cap_rank"].as_u64().unwrap_or(0) as u32,
+    rank: data["market_cap_rank"].as_u64().unwrap_or(9999999) as u32,
     website: data["links"]["homepage"][0].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty()),
     whitepaper: data["links"]["whitepaper"]
       .as_str()
@@ -1040,7 +1040,11 @@ fn save_crypto_overviews_with_github_to_db(
 
       // Create the values that need to be borrowed
       let slug = overview.symbol.to_lowercase().replace(" ", "-");
-      let market_cap_rank = overview.rank as i32;
+      let market_cap_rank = if overview.rank == 0 || overview.rank == 9999999 {
+        None
+      } else {
+        Some(overview.rank as i32)
+      };
       let now = chrono::Utc::now();
 
       // Create basic overview
@@ -1050,7 +1054,7 @@ fn save_crypto_overviews_with_github_to_db(
         name: &overview.name,
         slug: Some(&slug),
         description: Some(overview.description.as_str()),
-        market_cap_rank: Some(&market_cap_rank),
+        market_cap_rank: market_cap_rank.as_ref(),
         market_cap: Some(&overview.market_cap),
         fully_diluted_valuation: fully_diluted_valuation.as_ref(),
         volume_24h: Some(&overview.volume_24h),
