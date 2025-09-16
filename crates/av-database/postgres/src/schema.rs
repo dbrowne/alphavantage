@@ -142,7 +142,7 @@ diesel::table! {
         api_id -> Varchar,
         #[max_length = 100]
         api_slug -> Nullable<Varchar>,
-        #[max_length = 20]
+        #[max_length = 64]
         api_symbol -> Nullable<Varchar>,
         rank -> Nullable<Int4>,
         is_active -> Nullable<Bool>,
@@ -206,7 +206,7 @@ diesel::table! {
 
     crypto_overview_basic (sid) {
         sid -> Int8,
-        #[max_length = 20]
+        #[max_length = 64]
         symbol -> Varchar,
         name -> Text,
         #[max_length = 100]
@@ -368,7 +368,7 @@ diesel::table! {
         eventid -> Int8,
         tstamp -> Timestamptz,
         sid -> Int8,
-        #[max_length = 20]
+        #[max_length = 64]
         symbol -> Varchar,
         open -> Float4,
         high -> Float4,
@@ -430,7 +430,7 @@ diesel::table! {
 
     overviews (sid) {
         sid -> Int8,
-        #[max_length = 20]
+        #[max_length = 64]
         symbol -> Varchar,
         name -> Text,
         description -> Text,
@@ -513,7 +513,7 @@ diesel::table! {
         tstamp -> Timestamptz,
         date -> Date,
         sid -> Int8,
-        #[max_length = 20]
+        #[max_length = 64]
         symbol -> Varchar,
         open -> Float4,
         high -> Float4,
@@ -528,8 +528,9 @@ diesel::table! {
 
     symbols (sid) {
         sid -> Int8,
-        #[max_length = 20]
+        #[max_length = 64]
         symbol -> Varchar,
+        priority -> Int4,
         name -> Text,
         #[max_length = 50]
         sec_type -> Varchar,
@@ -589,7 +590,7 @@ diesel::table! {
         #[max_length = 50]
         event_type -> Varchar,
         sid -> Int8,
-        #[max_length = 20]
+        #[max_length = 64]
         symbol -> Varchar,
         price -> Float4,
         change_val -> Float4,

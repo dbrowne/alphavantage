@@ -25,7 +25,7 @@ pub struct CryptoArgs {
     #[arg(
     long,
     value_enum,
-    default_values = ["coingecko"],
+    default_values = ["coin-gecko"],
     value_delimiter = ','
     )]
     sources: Vec<CryptoDataSourceArg>,

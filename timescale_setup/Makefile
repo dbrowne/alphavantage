@@ -40,7 +40,7 @@ logs:
 
 # Connect to database
 psql:
-	docker exec -it ts_pg psql -U av_user -d ts_pg
+	docker exec -it ts_pg_av_dev psql -U ts_user -d sec_master
 
 # Clean up everything (including volumes)
 clean:
