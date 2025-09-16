@@ -12,6 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use diesel::prelude::*;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use crate::crypto::mapping_service::CryptoMappingService;
 
 #[allow(dead_code)]
 const MAX_TTL: u32 = 6;   //todo:: Refactor
@@ -80,7 +81,6 @@ pub struct CryptoMarketsLoader {
     client: Client,
 }
 
-// CoinGecko API response structures - FIXED: Added Clone and Serialize derives
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CoinGeckoTickersResponse {
     name: String,
@@ -154,7 +154,42 @@ impl CryptoMarketsLoader {
 
         Self { config, client }
     }
+    /// adding new mapping functionality
+    async fn fetch_market_data_for_symbol_with_dynamic_mapping(
+        &self,
+        symbol: CryptoSymbolForMarkets,
+        mapping_service: &CryptoMappingService,
+        conn: &mut PgConnection,
+    ) -> LoaderResult<Vec<CryptoMarketData>> {
+        info!("🔍 Processing symbol: {} ({})", symbol.symbol, symbol.name);
 
+        let mut market_data = Vec::new();
+
+        // Use dynamic discovery instead of hardcoded mapping!
+        match mapping_service.get_coingecko_id(conn, symbol.sid, &symbol.symbol).await {
+            Ok(Some(coingecko_id)) => {
+                info!("✅ {} has CoinGecko ID: {}", symbol.symbol, coingecko_id);
+
+                match self.fetch_coingecko_markets(&coingecko_id, &symbol).await {
+                    Ok(mut data) => {
+                        info!("✅ CoinGecko returned {} markets for {}", data.len(), symbol.symbol);
+                        market_data.append(&mut data);
+                    }
+                    Err(e) => {
+                        error!("❌ CoinGecko API error for {}: {}", symbol.symbol, e);
+                    }
+                }
+            }
+            Ok(None) => {
+                warn!("⚠️ No CoinGecko ID found for {} after discovery attempt", symbol.symbol);
+            }
+            Err(e) => {
+                error!("❌ Failed to get/discover CoinGecko ID for {}: {}", symbol.symbol, e);
+            }
+        }
+
+        Ok(market_data)
+    }
     /// Generate cache key for request
     fn generate_cache_key(&self, coingecko_id: &str) -> String {
         format!("coingecko_tickers:{}", coingecko_id)

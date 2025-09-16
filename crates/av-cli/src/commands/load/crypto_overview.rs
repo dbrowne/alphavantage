@@ -899,7 +899,7 @@ async fn check_github_rate_limit(
 }
 
 // Symbol to ID mapping functions
-fn get_coingecko_id(symbol: &str) -> String {
+fn get_coingecko_id(symbol: &str) -> String {// todo: This is for the free access but should delete
   match symbol.to_uppercase().as_str() {
     "BTC" => "bitcoin".to_string(),
     "ETH" => "ethereum".to_string(),
@@ -940,7 +940,7 @@ fn get_coingecko_id(symbol: &str) -> String {
   }
 }
 
-fn get_coinpaprika_id(symbol: &str) -> String {
+fn get_coinpaprika_id(symbol: &str) -> String {   //todo:: delete
   match symbol.to_uppercase().as_str() {
     "BTC" => "btc-bitcoin".to_string(),
     "ETH" => "eth-ethereum".to_string(),
@@ -970,7 +970,7 @@ fn get_coinpaprika_id(symbol: &str) -> String {
   }
 }
 
-fn get_coincap_id(symbol: &str) -> String {
+fn get_coincap_id(symbol: &str) -> String { //todo:: This should be deleted
   match symbol.to_uppercase().as_str() {
     "BTC" => "bitcoin".to_string(),
     "ETH" => "ethereum".to_string(),

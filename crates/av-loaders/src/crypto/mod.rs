@@ -4,6 +4,7 @@ pub mod sources;
 pub mod types;
 pub mod social_loader;
 pub mod markets_loader;
+pub mod mapping_service;
 
 // Re-export the main loaders and types
 pub use loader::CryptoSymbolLoader;
