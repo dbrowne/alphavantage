@@ -125,6 +125,7 @@ impl CryptoDataProvider for SosoValueProvider {
       .map(|crypto| CryptoSymbol {
         // Based on actual response: currencyName is the symbol, fullName is the name
         symbol: crypto.currency_name.to_uppercase(),
+        priority: 9999999,
         name: crypto.full_name,
         base_currency: None,
         quote_currency: Some("USD".to_string()),
