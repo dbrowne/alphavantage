@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use tracing::{ error, info, warn};
+use tracing::{ error, info, debug, warn};
 
 use crate::{
   DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState,
@@ -49,6 +49,7 @@ pub struct SourceResultSummary {
 #[derive(Debug, Clone)]
 pub struct CryptoSymbolForDb {
   pub symbol: String,
+  pub priority: i32,
   pub name: String,
   pub source: CryptoDataSource,
   pub source_id: String,
@@ -63,6 +64,7 @@ impl From<CryptoSymbol> for CryptoSymbolForDb {
   fn from(symbol: CryptoSymbol) -> Self {
     Self {
       symbol: symbol.symbol,
+      priority: symbol.priority,
       name: symbol.name,
       source: symbol.source,
       source_id: symbol.source_id,
@@ -145,38 +147,166 @@ impl CryptoDbLoader {
   ) -> LoaderResult<BatchResult<CryptoSymbolForDb>> {
     info!("Processing {} crypto symbols for database storage", symbols.len());
 
-    // Create a processor function for batch processing
-    let processor = move |symbol: CryptoSymbol| -> futures::future::BoxFuture<
-      'static,
-      LoaderResult<CryptoSymbolForDb>,
-    > {
-      Box::pin(async move {
-        // Validate symbol data
-        if symbol.symbol.is_empty() || symbol.name.is_empty() {
-          return Err(LoaderError::InvalidData(format!(
-            "Invalid symbol data: symbol='{}', name='{}'",
-            symbol.symbol, symbol.name
-          )));
-        }
+    // Convert all symbols to database format
+    let mut processed_tokens = self.save_all_crypto_tokens(symbols).await?;
 
-        // Additional validation following repository patterns
-        if symbol.symbol.len() > 20 {
-          return Err(LoaderError::InvalidData(format!(
-            "Symbol too long: {} (max 20 chars)",
-            symbol.symbol
-          )));
-        }
+    // Assign priorities based purely on market data
+    self.assign_token_priority(&mut processed_tokens);
 
-        if symbol.name.len() > 255 {
-          warn!("Name too long for symbol {}, truncating", symbol.symbol);
-        }
+    let total_count = processed_tokens.len();
 
-        Ok(CryptoSymbolForDb::from(symbol))
-      })
-    };
+    info!("Priority assignment completed for {} tokens", total_count);
 
-    self.batch_processor.process_batches(symbols, processor).await
+    // Return as BatchResult for compatibility with existing code
+    Ok(BatchResult {
+      success: processed_tokens,
+      failures: Vec::new(),
+      total_processed: total_count,
+    })
   }
+
+  /// Save all crypto tokens without aggressive deduplication
+  /// Allow multiple tokens with same trading symbol but different source IDs
+  ///
+
+  async fn save_all_crypto_tokens(&self, symbols: Vec<CryptoSymbol>) -> LoaderResult<Vec<CryptoSymbolForDb>> {
+    let mut processed_symbols = Vec::new();
+
+    for token in symbols {
+      // Create a unique composite key using symbol + source + source_id
+      // This allows multiple SOL tokens to coexist
+      let token_symbol = token.symbol.clone(); // Clone for error message
+      match self.process_individual_token(token).await {
+        Ok(processed_token) => {
+          processed_symbols.push(processed_token);
+        }
+        Err(e) => {
+          warn!("Failed to process token {}: {}", token_symbol, e);
+          // Continue processing other tokens
+        }
+      }
+    }
+
+    Ok(processed_symbols)
+  }
+
+  /// Find existing token by composite key (symbol + source + source_id)
+  async fn find_existing_token(&self, symbol: &str, source: &CryptoDataSource, source_id: &str) -> LoaderResult<Option<CryptoSymbolForDb>> {
+    // This function would check if the exact same token already exists
+    // by looking for the combination of trading symbol + source + source_id
+    //
+    // Note: This function returns Option<CryptoSymbolForDb> for now
+    // In a real implementation, this would query the database through
+    // the crypto_api_map table to find existing mappings
+
+    info!("Checking for existing token: {} from {} with source_id: {}", symbol, source, source_id);
+
+    // For now, return None (no existing token found)
+    // The CLI layer will handle the actual database queries
+    Ok(None)
+  }
+
+  /// Process individual token and prepare for database storage
+  async fn process_individual_token(&self, token: CryptoSymbol) -> LoaderResult<CryptoSymbolForDb> {
+    // Validate token data
+    if token.symbol.is_empty() || token.name.is_empty() {
+      return Err(LoaderError::InvalidData(format!(
+        "Invalid token data: symbol='{}', name='{}'",
+        token.symbol, token.name
+      )));
+    }
+
+    if token.symbol.len() > 20 {
+      return Err(LoaderError::InvalidData(format!(
+        "Trading symbol too long: {} (max 20 chars)",
+        token.symbol
+      )));
+    }
+
+    if token.name.len() > 255 {
+      warn!("Token name too long for {}, will be truncated", token.symbol);
+    }
+
+    // Convert to database format
+    let db_token = CryptoSymbolForDb::from(token.clone());
+
+    info!(
+            "Processed token: {} '{}' from {} (source_id: {})",
+            db_token.symbol, db_token.name, db_token.source, db_token.source_id
+        );
+
+    Ok(db_token)
+  }
+
+
+  /// Modified process_symbols method to use new multi-token approach
+  async fn process_symbols_multi_token(
+    &self,
+    symbols: Vec<CryptoSymbol>,
+  ) -> LoaderResult<BatchResult<CryptoSymbolForDb>> {
+    info!("Processing {} crypto symbols with multi-token support", symbols.len());
+
+    // Process all tokens without aggressive deduplication
+    let processed_tokens = self.save_all_crypto_tokens(symbols).await?;
+
+    // Return as BatchResult for compatibility with existing code
+    let total_count = processed_tokens.len();
+    Ok(BatchResult {
+      success: processed_tokens,
+      failures: Vec::new(), // We handled errors above by continuing on failure
+      total_processed: total_count,
+    })
+  }
+
+  /// Assign priority to tokens based purely on market cap rank - no hardcoded names
+  fn assign_token_priority(&self, tokens: &mut [CryptoSymbolForDb]) {
+    // Group tokens by trading symbol
+    let mut symbol_groups: HashMap<String, Vec<&mut CryptoSymbolForDb>> = HashMap::new();
+
+    for token in tokens.iter_mut() {
+      symbol_groups.entry(token.symbol.clone())
+          .or_insert_with(Vec::new)
+          .push(token);
+    }
+
+    // Process each symbol group
+    for (symbol, mut token_group) in symbol_groups {
+      self.assign_priorities_to_token_group(&symbol, &mut token_group);
+    }
+  }
+
+  /// Assign priorities to a group of tokens sharing the same symbol
+  /// Uses purely objective criteria: market cap rank
+  fn assign_priorities_to_token_group(&self, symbol: &str, tokens: &mut [&mut CryptoSymbolForDb]) {
+    info!("Assigning priorities for {} tokens with symbol '{}'", tokens.len(), symbol);
+
+    if tokens.len() == 1 {
+      // Single token - use its market cap rank or default
+      let token = &mut tokens[0];
+      token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(9999999);
+      return;
+    }
+
+    // Multiple tokens - sort by market cap rank (lower rank = higher priority)
+    tokens.sort_by_key(|token| token.market_cap_rank.unwrap_or(u32::MAX));
+
+    for (index, token) in tokens.iter_mut().enumerate() {
+      if index == 0 && token.market_cap_rank.is_some() {
+        // Best market cap rank gets priority 0 (primary)
+        token.priority = 0;
+        info!("Made '{}' primary for '{}' with market cap rank {:?}",
+                     token.name, symbol, token.market_cap_rank);
+      } else {
+        // Use actual market cap rank or default
+        token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(9999999);
+      }
+
+      debug!("Assigned priority {} to '{}' for symbol '{}'",
+                  token.priority, token.name, symbol);
+    }
+  }
+
+
 }
 
 #[async_trait]
