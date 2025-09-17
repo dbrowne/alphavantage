@@ -283,7 +283,6 @@ async fn save_crypto_symbol_to_database(
     db_symbol: &CryptoSymbolForDb,
     update_existing: bool
 ) -> Result<i64> {
-    use av_database_postgres::schema::{ crypto_api_map};
     use diesel::prelude::*;
 
     let mut conn = PgConnection::establish(database_url)
