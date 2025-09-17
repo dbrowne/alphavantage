@@ -6,6 +6,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+use tracing::field::debug;
 
 pub struct CoinGeckoProvider {
     pub api_key: Option<String>,
@@ -112,7 +113,7 @@ impl CoinGeckoProvider {
 
                     for coin in ranked_batch {
                         if let Some(rank) = coin.market_cap_rank {
-                            rankings_map.insert(coin.id, rank);
+                            rankings_map.insert(coin.id.clone(), rank);
                         }
                     }
 
@@ -120,7 +121,6 @@ impl CoinGeckoProvider {
                 }
                 Err(e) => {
                     warn!("Failed to fetch rankings page {}: {}", page, e);
-                    // Continue with other pages instead of failing completely
                 }
             }
         }

@@ -261,7 +261,7 @@ fn load_crypto_symbols_from_db(
     let mut query = symbols_table
         .inner_join(api_map_table.on(  // INNER JOIN - only symbols with mappings
                                        sid.eq(crypto_api_map::sid)
-                                           .and(api_source.eq("CoinGecko"))
+                                           .and(api_source.eq("coingecko"))
                                            .and(crypto_api_map::is_active.eq(Some(true)))
         ))
         .filter(sec_type.eq("Cryptocurrency"))

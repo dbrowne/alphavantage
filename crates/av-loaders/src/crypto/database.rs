@@ -291,16 +291,16 @@ impl CryptoDbLoader {
     tokens.sort_by_key(|token| token.market_cap_rank.unwrap_or(9999999));
 
     for (index, token) in tokens.iter_mut().enumerate() {
-      if index == 0 && token.market_cap_rank.is_some() {
-        // Best market cap rank gets priority 0 (primary)
-        token.priority = 0;
-        info!("Made '{}' primary for '{}' with market cap rank {:?}",
-                     token.name, symbol, token.market_cap_rank);
-      } else {
-        // Use actual market cap rank or default
-        token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(9999999);
-      }
 
+      if index == 0 && token.market_cap_rank.is_some() {
+        // Best market cap rank gets its actual rank as priority (primary)
+        token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(9999999);
+        info!("Made '{}' primary for '{}' with market cap rank {:?}",
+                 token.name, symbol, token.market_cap_rank);
+      } else {
+        // Non-primary tokens get default priority
+        token.priority = 9999999;
+      }
       debug!("Assigned priority {} to '{}' for symbol '{}'",
                   token.priority, token.name, symbol);
     }
