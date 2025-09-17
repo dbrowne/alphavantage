@@ -53,6 +53,10 @@ pub use crypto::{
         CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader,
         ProcessedSocialData, CryptoSymbolForSocial,
     },
+    metadata_loader::{
+        CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader,
+        CryptoMetadataOutput, CryptoSymbolForMetadata, ProcessedCryptoMetadata,
+    },
 };
 
 pub mod prelude {
@@ -61,6 +65,6 @@ pub mod prelude {
         LoaderResult, ProcessState, ProcessTracker,
         // Include crypto types in prelude
         CryptoDataSource, CryptoLoaderConfig, CryptoSymbolLoader,
-        CryptoMarketsLoader, CryptoSocialLoader,
+        CryptoMarketsLoader, CryptoSocialLoader,CryptoMetadataLoader
     };
 }

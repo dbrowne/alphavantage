@@ -5,6 +5,7 @@ pub mod types;
 pub mod social_loader;
 pub mod markets_loader;
 pub mod mapping_service;
+pub mod metadata_loader;
 
 // Re-export the main loaders and types
 pub use loader::CryptoSymbolLoader;
@@ -16,6 +17,12 @@ pub use social_loader::{
 pub use markets_loader::{
     CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
     CryptoMarketData, CryptoSymbolForMarkets,
+};
+
+pub use metadata_loader::{
+    CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader,
+    CryptoMetadataOutput, CryptoSymbolForMetadata, ProcessedCryptoMetadata,
+    MetadataSourceResult,
 };
 
 use thiserror::Error;
