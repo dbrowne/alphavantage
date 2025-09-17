@@ -9,6 +9,7 @@ pub mod crypto_overview;
 mod crypto_markets;
 pub mod crypto_social;
 pub mod crypto_mapping;
+pub mod crypto_metadata;
 
 use tracing::info;
 
@@ -41,7 +42,10 @@ enum LoadSubcommands {
     CryptoMarkets(crypto_markets::CryptoMarketsArgs),
 
     /// Manage cryptocurrency symbol mappings (discover, stats)
-    CryptoMapping(crypto_mapping::MappingArgs),  // ADD THIS LINE
+    CryptoMapping(crypto_mapping::MappingArgs),
+
+    // Manage crypto Meta data
+     CryptoMetadata(crypto_metadata::CryptoMetadataArgs),
 
     /// Load intraday price data
     Intraday {
@@ -78,7 +82,8 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
         LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
         LoadSubcommands::CryptoMarkets(args) => crypto_markets::execute(args, &config).await,
         LoadSubcommands::CryptoSocial(args) => crypto_social::execute(args, config).await,
-        LoadSubcommands::CryptoMapping(args) => crypto_mapping::execute(args, &config).await, // ADD THIS
+        LoadSubcommands::CryptoMapping(args) => crypto_mapping::execute(args, &config).await,
+        LoadSubcommands::CryptoMetadata(args) => crypto_metadata::execute(args, &config).await,
         LoadSubcommands::UpdateGithub(args) => {
             info!("Updating GitHub data for cryptocurrencies");
             crypto_overview::update_github_data(args, config).await
