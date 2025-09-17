@@ -155,6 +155,7 @@ impl CryptoDataProvider for CoinMarketCapProvider {
 
         CryptoSymbol {
           symbol: crypto.symbol.to_uppercase(),
+          priority: 9999999,
           name: crypto.name,
           base_currency: None,
           quote_currency: Some("USD".to_string()),

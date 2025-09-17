@@ -191,10 +191,10 @@ impl CryptoSymbolLoader {
     let source_priority = |source: &CryptoDataSource| -> u8 {
       match source {
         CryptoDataSource::CoinMarketCap =>2,
-        CryptoDataSource::CoinGecko => 4,
-        CryptoDataSource::CoinPaprika => 3,
+        CryptoDataSource::CoinGecko => 1,
+        CryptoDataSource::CoinPaprika => 4,
         CryptoDataSource::CoinCap => 5,
-        CryptoDataSource::SosoValue => 1,
+        CryptoDataSource::SosoValue => 3,
       }
     };
 
@@ -203,8 +203,19 @@ impl CryptoSymbolLoader {
 
       match unique_symbols.get(&key) {
         Some(existing) => {
-          // Keep the one from higher priority source
-          if source_priority(&symbol.source) > source_priority(&existing.source) {
+          // NEW LOGIC: Prefer symbols with valid market cap ranks
+          let should_replace = match (&symbol.market_cap_rank, &existing.market_cap_rank) {
+            // If new symbol has rank but existing doesn't, use new symbol
+            (Some(_), None) => true,
+            // If existing has rank but new doesn't, keep existing
+            (None, Some(_)) => false,
+            // If both have ranks, prefer the better (lower) rank
+            (Some(new_rank), Some(existing_rank)) => new_rank < existing_rank,
+            // If neither has rank, fall back to source priority
+            (None, None) => source_priority(&symbol.source) > source_priority(&existing.source),
+          };
+
+          if should_replace {
             unique_symbols.insert(key, symbol);
           }
         }
@@ -213,6 +224,8 @@ impl CryptoSymbolLoader {
         }
       }
     }
+
+
 
     unique_symbols.into_values().collect()
   }

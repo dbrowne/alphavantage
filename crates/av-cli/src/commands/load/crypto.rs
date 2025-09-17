@@ -19,13 +19,18 @@ use diesel::prelude::*;
 
 use crate::config::Config;
 
+use av_loaders::crypto::database::CryptoSymbolForDb;
+use av_database_postgres::models::security::{ NewSymbolOwned};
+use av_database_postgres::models::crypto::NewCryptoApiMap;
+
+
 #[derive(Args, Debug)]
 pub struct CryptoArgs {
     /// Data sources to use for crypto symbol loading
     #[arg(
     long,
     value_enum,
-    default_values = ["coingecko"],
+    default_values = ["coin-gecko"],
     value_delimiter = ','
     )]
     sources: Vec<CryptoDataSourceArg>,
@@ -198,65 +203,33 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
     match crypto_loader.load(&context, input).await {
         Ok(output) => {
             info!(
-        "Crypto loading completed: {} fetched, {} processed, {} errors",
-        output.symbols_fetched, output.symbols_processed, output.errors
-      );
-
-            // Display source-specific results
-            for (source, result) in output.source_results {
-                info!(
-          "{:?}: {} symbols fetched, {} processed, {} errors{}",
-          source,
-          result.symbols_fetched,
-          result.symbols_processed,
-          result.errors.len(),
-          if result.rate_limited { " (rate limited)" } else { "" }
-        );
-
-                if args.verbose && !result.errors.is_empty() {
-                    for error in &result.errors {
-                        warn!("  Error: {}", error);
-                    }
-                }
-            }
-
-            // Save symbols to database if not empty
-            if !output.symbols.is_empty() {
-                info!("Saving {} symbols to database...", output.symbols.len());
-                match save_crypto_symbols_to_db(
-                    &config.database_url,
-                    &output.symbols.iter().map(|db_symbol| {
-                        CryptoSymbol {
-                            symbol: db_symbol.symbol.clone(),
-                            name: db_symbol.name.clone(),
-                            source: db_symbol.source,
-                            source_id: db_symbol.source_id.clone(),
-                            market_cap_rank: db_symbol.market_cap_rank,
-                            base_currency: db_symbol.base_currency.clone(),
-                            quote_currency: db_symbol.quote_currency.clone(),
-                            is_active: db_symbol.is_active,
-                            created_at: chrono::Utc::now(),
-                            additional_data: std::collections::HashMap::new(),
-                        }
-                    }).collect::<Vec<CryptoSymbol>>(),
-                    args.update_existing,
-                    args.continue_on_error,
-                )
-                    .await
-                {
-                    Ok((inserted, updated, failed)) => {
-                        info!(
-              "Database update complete: {} inserted, {} updated, {} failed",
-              inserted, updated, failed
+                "Crypto loading completed: {} fetched, {} processed",
+                output.symbols_fetched, output.symbols_processed
             );
-                    }
-                    Err(e) => {
-                        error!("Failed to save symbols to database: {}", e);
-                        if !args.continue_on_error {
-                            return Err(e);
+
+            if !output.symbols.is_empty() {
+                // Save each symbol to database - this allows multiple tokens per trading symbol
+                let mut saved_count = 0;
+                let mut error_count = 0;
+
+                for db_symbol in output.symbols {
+                    match save_crypto_symbol_to_database(&config.database_url, &db_symbol, args.update_existing).await {
+                        Ok(sid) => {
+                            saved_count += 1;
+                            debug!("Saved {} '{}' with SID: {}", db_symbol.symbol, db_symbol.name, sid);
+                        }
+                        Err(e) => {
+                            error_count += 1;
+                            error!("Failed to save {} '{}': {}", db_symbol.symbol, db_symbol.name, e);
+
+                            if !args.continue_on_error {
+                                return Err(e);
+                            }
                         }
                     }
                 }
+
+                info!("Database operations: {} saved, {} errors", saved_count, error_count);
             }
         }
         Err(e) => {
@@ -265,9 +238,149 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
         }
     }
 
+
+    Ok(())
+}
+fn update_existing_token_in_db(
+    conn: &mut PgConnection,
+    sid: i64,
+    db_symbol: &CryptoSymbolForDb,
+) -> Result<()> {
+    use av_database_postgres::schema::{symbols, crypto_api_map};
+    use diesel::prelude::*;
+
+    // Update symbols table
+    diesel::update(symbols::table.find(sid))
+        .set((
+            symbols::name.eq(&db_symbol.name),
+            symbols::m_time.eq(chrono::Utc::now()),
+        ))
+        .execute(conn)?;
+
+    // Update crypto_api_map table
+    diesel::update(
+        crypto_api_map::table
+            .filter(crypto_api_map::sid.eq(sid))
+            .filter(crypto_api_map::api_source.eq(db_symbol.source.to_string()))
+    )
+        .set((
+            crypto_api_map::api_id.eq(&db_symbol.source_id),
+            crypto_api_map::api_symbol.eq(Some(&db_symbol.symbol)),
+            crypto_api_map::rank.eq(db_symbol.market_cap_rank.map(|r| r as i32)),
+            crypto_api_map::last_verified.eq(Some(chrono::Utc::now())),
+            crypto_api_map::m_time.eq(chrono::Utc::now()),
+        ))
+        .execute(conn)?;
+
     Ok(())
 }
 
+
+
+/// Save individual crypto symbol to database, allowing multiple tokens per trading symbol
+async fn save_crypto_symbol_to_database(
+    database_url: &str,
+    db_symbol: &CryptoSymbolForDb,
+    update_existing: bool
+) -> Result<i64> {
+    use diesel::prelude::*;
+
+    let mut conn = PgConnection::establish(database_url)
+        .map_err(|e| anyhow::anyhow!("Database connection failed: {}", e))?;
+
+    // Check if this exact token (same symbol + source + source_id) already exists
+    let existing_sid = find_existing_token_in_db(&mut conn, &db_symbol.symbol, &db_symbol.source, &db_symbol.source_id)?;
+
+    if let Some(sid) = existing_sid {
+        if update_existing {
+            // Update existing token
+            update_existing_token_in_db(&mut conn, sid, db_symbol)?;
+            info!("Updated existing token: {} '{}' (SID: {})", db_symbol.symbol, db_symbol.name, sid);
+            Ok(sid)
+        } else {
+            // Skip existing token
+            info!("Skipped existing token: {} '{}' (SID: {})", db_symbol.symbol, db_symbol.name, sid);
+            Ok(sid)
+        }
+    } else {
+        // Insert new token - this allows multiple SOL variants
+        let sid = insert_new_token_in_db(&mut conn, db_symbol)?;
+        info!("Inserted new token: {} '{}' (SID: {})", db_symbol.symbol, db_symbol.name, sid);
+        Ok(sid)
+    }
+}
+
+/// Find existing token by checking symbols + crypto_api_map tables
+fn find_existing_token_in_db(
+    conn: &mut PgConnection,
+    symbol: &str,
+    source: &CryptoDataSource,
+    source_id: &str
+) -> Result<Option<i64>> {
+    use av_database_postgres::schema::{symbols, crypto_api_map};
+    use diesel::prelude::*;
+
+    let existing_sid: Option<i64> = symbols::table
+        .inner_join(crypto_api_map::table.on(
+            crypto_api_map::sid.eq(symbols::sid)
+        ))
+        .filter(symbols::symbol.eq(symbol))
+        .filter(crypto_api_map::api_source.eq(source.to_string()))
+        .filter(crypto_api_map::api_id.eq(source_id))
+        .select(symbols::sid)
+        .first::<i64>(conn)
+        .optional()?;
+
+    Ok(existing_sid)
+}
+
+
+fn insert_new_token_in_db(conn: &mut PgConnection, db_symbol: &CryptoSymbolForDb) -> Result<i64> {
+    use av_database_postgres::schema::{symbols, crypto_api_map};
+    use diesel::prelude::*;
+
+    // Use CryptoSidGenerator directly - no need for wrapper function
+    let mut sid_generator = CryptoSidGenerator::new(conn)?;
+    let new_sid = sid_generator.next_sid();
+
+    // Create NewSymbolOwned with priority field
+    let mut new_symbol = NewSymbolOwned::from_symbol_data(
+        &db_symbol.symbol,
+        db_symbol.priority,// Trading symbol: "SOL"
+        &db_symbol.name,           // Full name: "Solana" or "Allbridge Bridged SOL"
+        "Cryptocurrency",
+        "Global",
+        "USD",
+        new_sid,
+    );
+
+    // Set the priority from the processed db_symbol
+    new_symbol.priority = db_symbol.priority;
+
+    diesel::insert_into(symbols::table)
+        .values(&new_symbol)
+        .execute(conn)?;
+
+    // Insert API mapping to link symbol to source
+    let api_mapping = NewCryptoApiMap {
+        sid: new_sid,
+        api_source: db_symbol.source.to_string(),
+        api_id: db_symbol.source_id.clone(),
+        api_slug: None,
+        api_symbol: Some(db_symbol.symbol.clone()),
+        rank: db_symbol.market_cap_rank.map(|r| r as i32),
+        is_active: Some(true),
+        last_verified: Some(chrono::Utc::now()),
+        c_time: chrono::Utc::now(),
+        m_time: chrono::Utc::now(),
+    };
+
+    diesel::insert_into(crypto_api_map::table)
+        .values(&api_mapping)
+        .execute(conn)?;
+
+    Ok(new_sid)
+}
 /// Execute in dry run mode - test API connections
 async fn execute_dry_run(args: CryptoArgs) -> Result<()> {
     info!("Executing crypto loader in dry run mode");
@@ -430,6 +543,7 @@ async fn save_crypto_symbols_to_db(
                         let new_symbol = NewSymbolOwned {
                             sid: new_sid,
                             symbol: crypto_symbol.symbol.clone(),
+                            priority: crypto_symbol.priority.clone(),
                             name: crypto_symbol.name.clone(),
                             sec_type: "Cryptocurrency".to_string(),
                             region: "Global".to_string(),      // ADD this line

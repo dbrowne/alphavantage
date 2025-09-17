@@ -502,6 +502,7 @@ fn save_symbols_to_db(
         let new_symbol = NewSymbol {
           sid: &new_sid,
           symbol: &security_data.symbol,
+          priority:&9999999,
           name: &truncated_name,
           sec_type: &format!("{:?}", security_type),
           region: &normalized_region,

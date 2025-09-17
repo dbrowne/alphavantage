@@ -64,6 +64,7 @@ impl CryptoDataProvider for CoinCapProvider {
           let rank = asset.rank.and_then(|r| r.parse::<u32>().ok());
           CryptoSymbol {
             symbol: asset.symbol.to_uppercase(),
+            priority: -1,
             name: asset.name,
             base_currency: None,
             quote_currency: Some("USD".to_string()),
