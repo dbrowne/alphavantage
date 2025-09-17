@@ -5,7 +5,8 @@
 -- =====================================================
 CREATE TABLE symbols (
                          sid             BIGINT PRIMARY KEY NOT NULL,
-                         symbol          VARCHAR(20) NOT NULL,
+                         symbol          VARCHAR(64) NOT NULL,
+                         priority        integer default 9999999 not null,
                          name            TEXT NOT NULL,
                          sec_type        VARCHAR(50) NOT NULL,
                          region          VARCHAR(10) NOT NULL,
@@ -19,7 +20,9 @@ CREATE TABLE symbols (
                          m_time          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+
 -- Indexes for symbols table
+CREATE INDEX idx_symbols_priority ON symbols(symbol, priority ASC);
 CREATE INDEX idx_symbols_symbol ON symbols(symbol);
 CREATE INDEX idx_symbols_sec_type ON symbols(sec_type);
 CREATE INDEX idx_symbols_active ON symbols(symbol)
@@ -46,7 +49,7 @@ CREATE INDEX idx_equity_details_exchange ON equity_details(exchange);
 -- =====================================================
 CREATE TABLE overviews (
                            sid                  BIGINT PRIMARY KEY REFERENCES symbols(sid) ON DELETE CASCADE,
-                           symbol               VARCHAR(20) NOT NULL,
+                           symbol               VARCHAR(64) NOT NULL,
                            name                 TEXT NOT NULL,
                            description          TEXT NOT NULL,
                            cik                  VARCHAR(20) NOT NULL,
@@ -114,7 +117,7 @@ CREATE TABLE intradayprices (
                                 eventid BIGSERIAL NOT NULL,
                                 tstamp  TIMESTAMPTZ NOT NULL,
                                 sid     BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
-                                symbol  VARCHAR(20) NOT NULL,
+                                symbol  VARCHAR(64) NOT NULL,
                                 open    REAL NOT NULL,
                                 high    REAL NOT NULL,
                                 low     REAL NOT NULL,
@@ -135,7 +138,7 @@ CREATE TABLE summaryprices (
                                tstamp  TIMESTAMPTZ NOT NULL,
                                date    DATE NOT NULL,
                                sid     BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
-                               symbol  VARCHAR(20) NOT NULL,
+                               symbol  VARCHAR(64) NOT NULL,
                                open    REAL NOT NULL,
                                high    REAL NOT NULL,
                                low     REAL NOT NULL,
@@ -155,7 +158,7 @@ CREATE TABLE topstats (
                           date        TIMESTAMPTZ NOT NULL,
                           event_type  VARCHAR(50) NOT NULL,
                           sid         BIGINT NOT NULL REFERENCES symbols(sid) ON DELETE CASCADE,
-                          symbol      VARCHAR(20) NOT NULL,
+                          symbol      VARCHAR(64) NOT NULL,
                           price       REAL NOT NULL,
                           change_val  REAL NOT NULL,
                           change_pct  REAL NOT NULL,
@@ -346,7 +349,7 @@ CREATE TABLE crypto_api_map (
                                 api_source          VARCHAR(50) NOT NULL,
                                 api_id              VARCHAR(100) NOT NULL,
                                 api_slug            VARCHAR(100),
-                                api_symbol          VARCHAR(20),
+                                api_symbol          VARCHAR(64),
                                 rank                INTEGER,
                                 is_active           BOOLEAN DEFAULT TRUE,
                                 last_verified       TIMESTAMPTZ,
@@ -362,7 +365,7 @@ CREATE INDEX idx_crypto_api_map_active ON crypto_api_map(api_source, is_active);
 -- Crypto overview basic (20 columns)
 CREATE TABLE crypto_overview_basic (
                                        sid                     BIGINT PRIMARY KEY REFERENCES symbols(sid),
-                                       symbol                  VARCHAR(20) NOT NULL,
+                                       symbol                  VARCHAR(64) NOT NULL,
                                        name                    TEXT NOT NULL,
                                        slug                    VARCHAR(100),
                                        description             TEXT,

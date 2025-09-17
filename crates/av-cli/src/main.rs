@@ -10,6 +10,7 @@ use commands::{
     sync::{SyncCommands, handle_sync},
     update::{CryptoUpdateCommands, handle_crypto_update},
 };
+use crate::commands::update::stats::{StatsCommands, handle_stats};
 
 mod config;
 
@@ -45,6 +46,10 @@ pub enum UpdateCommands {
     Crypto {
         #[command(subcommand)]
         cmd: CryptoUpdateCommands,
+    },
+    Stats {
+        #[command(subcommand)]
+        cmd: StatsCommands,
     },
 }
 
@@ -86,6 +91,9 @@ async fn handle_update(cmd: UpdateCommands, config: config::Config) -> Result<()
                 max_retries: config.api_config.max_retries,
             };
             handle_crypto_update(cmd, core_config).await
+        }
+        UpdateCommands::Stats { cmd } => {
+            handle_stats(cmd, config).await
         }
     }
 }

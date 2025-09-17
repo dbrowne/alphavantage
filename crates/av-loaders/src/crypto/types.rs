@@ -5,6 +5,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoSymbol {
   pub symbol: String,
+  pub priority: i32,
   pub name: String,
   pub base_currency: Option<String>,
   pub quote_currency: Option<String>,
