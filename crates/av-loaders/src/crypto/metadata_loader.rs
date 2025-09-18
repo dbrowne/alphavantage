@@ -429,10 +429,16 @@ impl CryptoMetadataLoader {
         &self,
         symbol: &CryptoSymbolForMetadata,
     ) -> Result<(ProcessedCryptoMetadata, serde_json::Value, String, u16), CryptoLoaderError> {
-        debug!("Loading CoinGecko metadata for {}", symbol.symbol);
+        debug!("Loading CoinGecko metadata for {}", symbol.source_id);
 
         // Build CoinGecko API URL
-        let url = format!("https://api.coingecko.com/api/v3/coins/{}", symbol.source_id);
+        let url = if let Some(api_key) = &self.config.coingecko_api_key {
+            format!("https://pro-api.coingecko.com/api/v3/coins/{}?x_cg_pro_api_key={}",
+                    symbol.source_id, api_key)
+        } else {
+            format!("https://api.coingecko.com/api/v3/coins/{}?localization=false",
+                    symbol.source_id)
+        };
 
         let client = reqwest::Client::new();
         let mut request = client.get(&url);
@@ -625,8 +631,8 @@ impl DataLoader for CryptoMetadataLoader {
 
         // Extract database URL from context (this would need to be added to LoaderContext)
         // For now, we'll use a placeholder - this should be improved in the actual integration
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgresql://ts_user:dev_pw@localhost:6433/sec_master".to_string());
+        let database_url = std::env::var("DATABASE_URL").unwrap();
+
 
         let mut all_metadata = Vec::new();
         let mut source_results = HashMap::new();

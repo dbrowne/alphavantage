@@ -1,10 +1,13 @@
+use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result};
 use clap::Args;
 use std::sync::Arc;
 use tracing::{info, warn, error};
 
-use av_core::{AlphaVantageClient, Config as AvConfig};
+use av_client::AlphaVantageClient;
+use av_core::Config as AvConfig;
 use av_loaders::{
+    DataLoader,
     LoaderContext, LoaderConfig,
     crypto::{
         CryptoDataSource,
@@ -45,7 +48,7 @@ pub struct CryptoMetadataArgs {
     pub concurrent: usize,
 
     /// Delay between requests in milliseconds
-    #[arg(long, default_value = "1000")]
+    #[arg(long, default_value = "200")]
     pub delay_ms: u64,
 
     /// Batch size for processing
@@ -53,11 +56,11 @@ pub struct CryptoMetadataArgs {
     pub batch_size: usize,
 
     /// Maximum retry attempts per symbol
-    #[arg(long, default_value = "3")]
+    #[arg(long, default_value = "4")]
     pub max_retries: usize,
 
     /// Request timeout in seconds
-    #[arg(long, default_value = "30")]
+    #[arg(long, default_value = "10")]
     pub timeout_seconds: u64,
 
     /// Limit number of symbols to process (for testing)
@@ -77,7 +80,7 @@ pub struct CryptoMetadataArgs {
     pub sources: Vec<String>,
 
     /// Skip AlphaVantage metadata (use only CoinGecko)
-    #[arg(long)]
+    #[arg(long, default_value = "true")]   //todo: Determine if alphavantage is worth pulling for crypto data skip for now
     pub skip_alphavantage: bool,
 
     /// Enable response caching to reduce API costs
@@ -95,6 +98,10 @@ pub struct CryptoMetadataArgs {
     /// Skip CoinGecko metadata (use only AlphaVantage)
     #[arg(long)]
     pub skip_coingecko: bool,
+
+    /// Clean up expired cache entries before processing
+    #[arg(long)]
+    pub cleanup_cache: bool,
 }
 
 /// Main execution function for crypto metadata loading
@@ -150,7 +157,7 @@ pub async fn execute(args: CryptoMetadataArgs, config: &Config) -> Result<()> {
         sources.push(CryptoDataSource::CoinGecko);
     }
 
-    // For AlphaVantage, we'll use any available source as a placeholder since the enum doesn't have AlphaVantage
+    // For AlphaVantage, I'm using an available source as a placeholder since the enum doesn't have AlphaVantage
     // The actual AlphaVantage integration happens when the API key is detected in the loader
     if !args.skip_alphavantage && (args.alphavantage_api_key.is_some() || std::env::var("ALPHA_VANTAGE_API_KEY").is_ok()) {
         // Use SosoValue as a placeholder - the loader will detect AlphaVantage API key and use that instead
@@ -195,7 +202,7 @@ pub async fn execute(args: CryptoMetadataArgs, config: &Config) -> Result<()> {
         client,
         config: LoaderConfig {
             max_concurrent_requests: args.concurrent,
-            retry_attempts: args.max_retries,
+            retry_attempts: args.max_retries as u32,
             retry_delay_ms: args.delay_ms,
             show_progress: args.verbose,
             track_process: false,
@@ -269,14 +276,14 @@ fn load_crypto_symbols_from_db(
     limit: Option<usize>,
 ) -> Result<Vec<CryptoSymbolForMetadata>> {
     use diesel::prelude::*;
-    use av_database::postgres::{establish_connection, schema::{symbols, crypto_api_map}};
+    use av_database_postgres::{establish_connection, schema::{symbols, crypto_api_map}};
 
     let mut conn = establish_connection(database_url)
         .context("Failed to connect to database")?;
 
     let mut query = symbols::table
         .inner_join(crypto_api_map::table.on(symbols::sid.eq(crypto_api_map::sid)))
-        .filter(symbols::security_type.eq("Cryptocurrency"))
+        .filter(symbols::sec_type.eq("Cryptocurrency"))  // Fixed: using sec_type instead of security_type
         .into_boxed();
 
     // Filter by specific symbols if provided
@@ -290,22 +297,25 @@ fn load_crypto_symbols_from_db(
     }
 
     let results: Vec<(
-        (i64, String, String, bool), // symbols: (sid, symbol, name, is_active)
-        (String, String, String), // crypto_api_map: (api_source, api_id, api_slug)
+        (i64, String, String), // symbols: (sid, symbol, name)
+        (String, String, Option<String>, Option<bool>), // crypto_api_map: (api_source, api_id, api_slug, is_active)
     )> = query
         .select((
-            (symbols::sid, symbols::symbol, symbols::name, symbols::is_active),
-            (crypto_api_map::api_source, crypto_api_map::api_id, crypto_api_map::api_slug.assume_not_null()),
+            (symbols::sid, symbols::symbol, symbols::name),
+            (crypto_api_map::api_source, crypto_api_map::api_id, crypto_api_map::api_slug, crypto_api_map::is_active),
         ))
         .load(&mut conn)
         .context("Failed to load crypto symbols from database")?;
 
+    let mut seen = HashSet::new();
+
     let crypto_symbols = results
         .into_iter()
-        .map(|((sid, symbol, name, is_active), (api_source, api_id, api_slug))| {
+        .filter(|((sid, symbol, _), _)| seen.insert((*sid, symbol.clone())))
+        .map(|((sid, symbol, name), (api_source, api_id, api_slug, is_active))| {
             let source = match api_source.as_str() {
                 "coingecko" => CryptoDataSource::CoinGecko,
-                "alphavantage" => CryptoDataSource::SosoValue, // Use SosoValue as placeholder for AlphaVantage
+                "alphavantage" => CryptoDataSource::SosoValue, // Use SosoValue as placeholder for AlphaVantage TODO: fix this!!
                 _ => CryptoDataSource::CoinGecko, // default fallback
             };
 
@@ -314,8 +324,8 @@ fn load_crypto_symbols_from_db(
                 symbol,
                 name,
                 source,
-                source_id: api_slug, // Use slug as source_id for CoinGecko
-                is_active,
+                source_id: api_slug.unwrap_or(api_id), // Use api_slug if available, otherwise api_id
+                is_active: is_active.unwrap_or(true), // Default to true if is_active is NULL  TODO: address this in future release
             }
         })
         .collect();
@@ -330,7 +340,7 @@ async fn save_metadata_to_db(
     update_existing: bool,
 ) -> Result<(usize, usize)> {
     use diesel::prelude::*;
-    use av_database::postgres::{establish_connection, schema::crypto_metadata};
+    use av_database_postgres::{establish_connection, schema::crypto_metadata};
 
     let mut conn = establish_connection(database_url)
         .context("Failed to connect to database")?;
@@ -338,81 +348,57 @@ async fn save_metadata_to_db(
     let mut inserted = 0;
     let mut updated = 0;
 
-    for metadata_entry in metadata {
-        let new_metadata = (
-            crypto_metadata::sid.eq(metadata_entry.sid),
-            crypto_metadata::source.eq(&metadata_entry.source),
-            crypto_metadata::source_id.eq(&metadata_entry.source_id),
-            crypto_metadata::market_cap_rank.eq(metadata_entry.market_cap_rank),
-            crypto_metadata::base_currency.eq(&metadata_entry.base_currency),
-            crypto_metadata::quote_currency.eq(&metadata_entry.quote_currency),
-            crypto_metadata::is_active.eq(metadata_entry.is_active),
-            crypto_metadata::additional_data.eq(&metadata_entry.additional_data),
-            crypto_metadata::last_updated.eq(metadata_entry.last_updated),
-        );
+    for meta in metadata {
+        // Check if record exists for this sid
+        let exists = crypto_metadata::table
+            .filter(crypto_metadata::sid.eq(meta.sid))
+            .select(crypto_metadata::sid)
+            .first::<i64>(&mut conn)
+            .optional()?;
 
-        if update_existing {
-            // Try to update first using the unique constraint (source, source_id)
-            let update_result = diesel::update(crypto_metadata::table)
-                .filter(
-                    crypto_metadata::source.eq(&metadata_entry.source)
-                        .and(crypto_metadata::source_id.eq(&metadata_entry.source_id))
-                )
-                .set((
-                    crypto_metadata::sid.eq(metadata_entry.sid),
-                    crypto_metadata::market_cap_rank.eq(metadata_entry.market_cap_rank),
-                    crypto_metadata::base_currency.eq(&metadata_entry.base_currency),
-                    crypto_metadata::quote_currency.eq(&metadata_entry.quote_currency),
-                    crypto_metadata::is_active.eq(metadata_entry.is_active),
-                    crypto_metadata::additional_data.eq(&metadata_entry.additional_data),
-                    crypto_metadata::last_updated.eq(metadata_entry.last_updated),
-                ))
-                .execute(&mut conn);
-
-            match update_result {
-                Ok(rows_affected) if rows_affected > 0 => {
-                    updated += 1;
-                }
-                _ => {
-                    // Insert if update didn't affect any rows
-                    match diesel::insert_into(crypto_metadata::table)
-                        .values(new_metadata)
-                        .execute(&mut conn)
-                    {
-                        Ok(_) => inserted += 1,
-                        Err(e) => {
-                            // Check if it's a unique constraint violation on (source, source_id)
-                            let error_msg = e.to_string();
-                            if error_msg.contains("crypto_metadata_source_source_id_key")
-                                || error_msg.contains("UNIQUE constraint") {
-                                warn!("Duplicate metadata entry for source '{}', source_id '{}' - skipping",
-                                      metadata_entry.source, metadata_entry.source_id);
-                            } else {
-                                warn!("Failed to insert metadata for sid {} ({}:{}): {}",
-                                      metadata_entry.sid, metadata_entry.source, metadata_entry.source_id, e);
-                            }
-                        }
-                    }
-                }
+        if let Some(_) = exists {
+            if update_existing {
+                // Update existing record
+                diesel::update(crypto_metadata::table.find(meta.sid))
+                    .set((
+                        crypto_metadata::source.eq(&meta.source),
+                        crypto_metadata::source_id.eq(&meta.source_id),
+                        crypto_metadata::market_cap_rank.eq(meta.market_cap_rank),
+                        crypto_metadata::base_currency.eq(&meta.base_currency),
+                        crypto_metadata::quote_currency.eq(&meta.quote_currency),
+                        crypto_metadata::is_active.eq(meta.is_active),
+                        crypto_metadata::additional_data.eq(&meta.additional_data),
+                        crypto_metadata::last_updated.eq(meta.last_updated),
+                    ))
+                    .execute(&mut conn)
+                    .context(format!("Failed to update metadata for sid {}", meta.sid))?;
+                updated += 1;
+                info!("Updated metadata for sid {} from source {}", meta.sid, meta.source);
+            } else {
+                info!("Skipping existing metadata for sid {} (update_existing=false)", meta.sid);
             }
         } else {
-            // Insert only with proper conflict resolution for UNIQUE(source, source_id)
-            match diesel::insert_into(crypto_metadata::table)
-                .values(new_metadata)
-                .on_conflict((crypto_metadata::source, crypto_metadata::source_id))
-                .do_nothing()
+            // Insert new record
+            diesel::insert_into(crypto_metadata::table)
+                .values((
+                    crypto_metadata::sid.eq(meta.sid),
+                    crypto_metadata::source.eq(&meta.source),
+                    crypto_metadata::source_id.eq(&meta.source_id),
+                    crypto_metadata::market_cap_rank.eq(meta.market_cap_rank),
+                    crypto_metadata::base_currency.eq(&meta.base_currency),
+                    crypto_metadata::quote_currency.eq(&meta.quote_currency),
+                    crypto_metadata::is_active.eq(meta.is_active),
+                    crypto_metadata::additional_data.eq(&meta.additional_data),
+                    crypto_metadata::last_updated.eq(meta.last_updated),
+                ))
+                .on_conflict_do_nothing()  // Handle unique constraint on (source, source_id)
                 .execute(&mut conn)
-            {
-                Ok(rows_affected) => {
-                    if rows_affected > 0 {
-                        inserted += 1;
-                    }
-                }
-                Err(e) => warn!("Failed to insert metadata for sid {} ({}:{}): {}",
-                               metadata_entry.sid, metadata_entry.source, metadata_entry.source_id, e),
-            }
+                .context(format!("Failed to insert metadata for sid {}", meta.sid))?;
+            inserted += 1;
+            info!("Inserted new metadata for sid {} from source {}", meta.sid, meta.source);
         }
     }
 
+    info!("Metadata database operation complete: {} inserted, {} updated", inserted, updated);
     Ok((inserted, updated))
 }

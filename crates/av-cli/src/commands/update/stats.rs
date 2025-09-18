@@ -265,7 +265,7 @@ async fn execute_crypto_market_stats(
     println!("===========================");
 
     // Build base query conditions
-    let active_filter = if show_inactive { None } else { Some(true) };
+    let _active_filter = if show_inactive { None } else { Some(true) };
 
     let total_markets: i64 = if let Some(ref symbol) = symbol_filter {
         // Query with symbol filter using join
