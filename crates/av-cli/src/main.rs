@@ -8,7 +8,7 @@ use commands::{
     load::LoadCommand,
     query::QueryCommand,
     sync::{SyncCommands, handle_sync},
-    update::{CryptoUpdateCommands, handle_crypto_update},
+    update::crypto::{CryptoUpdateCommands, handle_crypto_update},
 };
 use crate::commands::update::stats::{StatsCommands, handle_stats};
 

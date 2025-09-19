@@ -479,6 +479,9 @@ CREATE TABLE crypto_social (
                                m_time                   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE crypto_social ADD COLUMN IF NOT EXISTS blockchain_sites JSONB;
+CREATE INDEX idx_crypto_social_blockchain_sites ON crypto_social USING GIN(blockchain_sites);
+
 -- Crypto markets
 CREATE TABLE crypto_markets (
                                 id                      SERIAL PRIMARY KEY,

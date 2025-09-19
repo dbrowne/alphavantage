@@ -191,9 +191,9 @@ diesel::table! {
         source -> Varchar,
         source_id -> Text,
         market_cap_rank -> Nullable<Int4>,
-        #[max_length = 10]
+        #[max_length = 64]
         base_currency -> Nullable<Varchar>,
-        #[max_length = 10]
+        #[max_length = 64]
         quote_currency -> Nullable<Varchar>,
         is_active -> Bool,
         additional_data -> Nullable<Jsonb>,
@@ -283,6 +283,7 @@ diesel::table! {
         sentiment_votes_down_pct -> Nullable<Numeric>,
         c_time -> Timestamptz,
         m_time -> Timestamptz,
+        blockchain_sites -> Nullable<Jsonb>,
     }
 }
 

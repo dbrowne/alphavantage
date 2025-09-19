@@ -5,6 +5,7 @@ use av_core::Config;
 use crate::commands::update::crypto_update_functions;
 use crate::commands::update::crypto_update_cli;
 
+use crate::commands::update::crypto_metadata_etl;
 pub use crypto_update_functions::*;
 pub use crypto_update_cli::*;
 
@@ -18,6 +19,7 @@ pub enum CryptoUpdateCommands {
     Technical(UpdateCryptoArgs),
     /// Update all crypto tables at once
     All(UpdateCryptoArgs),
+    Metadata,
 }
 
 pub async fn handle_crypto_update(cmd: CryptoUpdateCommands, config: Config) -> Result<()> {
@@ -37,5 +39,15 @@ pub async fn handle_crypto_update(cmd: CryptoUpdateCommands, config: Config) -> 
         CryptoUpdateCommands::All(args) => {
             update_crypto_command(args, config).await
         }
+        CryptoUpdateCommands::Metadata => {
+            // Get database URL from environment
+            dotenvy::dotenv().ok();
+            let database_url = std::env::var("DATABASE_URL")
+                .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set in .env file"))?;
+
+            crypto_metadata_etl::execute_metadata_etl(&database_url)?;
+            Ok(())
+        }
+
     }
 }

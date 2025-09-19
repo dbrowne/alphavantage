@@ -6,7 +6,6 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
-use tracing::field::debug;
 
 pub struct CoinGeckoProvider {
     pub api_key: Option<String>,
