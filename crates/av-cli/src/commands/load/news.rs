@@ -1,17 +1,16 @@
-//! News and sentiment data loading command implementation
-
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use av_client::AlphaVantageClient;
+use av_database_postgres::models::news::ProcessedNewsStats;
 use av_loaders::{
     NewsLoader, NewsLoaderConfig, NewsLoaderInput,
     LoaderContext, LoaderConfig, DataLoader,
-    load_news_for_equity_symbols,
-    NewsSymbolInfo,  // Use the aliased name exported from lib.rs
+    NewsSymbolInfo,
 };
 use chrono::{Duration, Utc};
 use clap::Args;
 use diesel::prelude::*;
 use std::sync::Arc;
+use std::collections::HashMap;
 use tracing::{info, warn, error};
 
 use crate::config::Config;
@@ -31,10 +30,6 @@ pub struct NewsArgs {
     days_back: u32,
 
     /// Topics to filter by (comma-separated)
-    /// Supported: blockchain, earnings, ipo, mergers_and_acquisitions,
-    /// financial_markets, economy_fiscal, economy_monetary, economy_macro,
-    /// energy_transportation, finance, life_sciences, manufacturing,
-    /// real_estate, retail_wholesale, technology
     #[arg(short = 't', long, value_delimiter = ',')]
     topics: Option<Vec<String>>,
 
@@ -67,16 +62,16 @@ pub struct NewsArgs {
     dry_run: bool,
 }
 
-/// Main execute function for news loading
+/// Main execute function with inline persistence
 pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
     info!("Starting news sentiment loader");
 
     // Validate limit
     if args.limit > 1000 {
-        return Err(anyhow::anyhow!("Limit cannot exceed 1000 (API maximum)"));
+        return Err(anyhow!("Limit cannot exceed 1000 (API maximum)"));
     }
     if args.limit < 1 {
-        return Err(anyhow::anyhow!("Limit must be at least 1"));
+        return Err(anyhow!("Limit must be at least 1"));
     }
 
     // Create API client
@@ -95,153 +90,332 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
     };
 
     info!("📰 News Loader Configuration:");
-    info!("  Limit: {} articles per symbol", args.limit);
     info!("  Days back: {}", args.days_back);
-    info!("  Sort: {}", args.sort_order);
-    info!("  Cache: {}", if args.no_cache { "Disabled" } else { "Enabled" });
+    info!("  Limit: {} articles per request", args.limit);
+    info!("  Sort order: {}", args.sort_order);
+    info!("  Cache: {}", if args.no_cache { "disabled" } else { "enabled" });
 
-    if args.dry_run {
-        info!("Dry run mode - no database updates will be performed");
+    // Get symbols to process
+    let symbols = if args.all_equity {
+        info!("Loading all equity symbols with overview=true");
+        NewsLoader::get_equity_symbols_with_overview(&config.database_url)?
+    } else if let Some(ref symbol_list) = args.symbols {
+        info!("Loading specific symbols: {:?}", symbol_list);
+        get_specific_symbols(&config.database_url, symbol_list)?
+    } else {
+        return Err(anyhow!("Must specify either --all-equity or --symbols"));
+    };
+
+    if symbols.is_empty() {
+        warn!("No symbols found to process");
+        return Ok(());
     }
 
-    if args.all_equity {
-        // Load news for all equity symbols with overview=true
-        info!("Loading news for all equity symbols with overview=true");
+    info!("Processing {} symbols", symbols.len());
 
-        match load_news_for_equity_symbols(
-            client,
-            &config.database_url,
-            news_config
-        ).await {
-            Ok(output) => {
-                info!("✅ News loading complete!");
-                info!("  Articles processed: {}", output.articles_processed);
-                info!("  News data items loaded: {}", output.loaded_count);
+    // Create loader
+    let loader = NewsLoader::new(5).with_config(news_config);
 
-                if output.cache_hits > 0 {
-                    info!("  Cache hits: {}", output.cache_hits);
-                }
-                if output.api_calls > 0 {
-                    info!("  API calls made: {}", output.api_calls);
-                }
+    // Create input
+    let input = NewsLoaderInput {
+        symbols: symbols.clone(),
+        time_from: Some(Utc::now() - Duration::days(args.days_back as i64)),
+        time_to: Some(Utc::now()),
+    };
 
-                if !output.errors.is_empty() {
-                    warn!("{} errors encountered during processing", output.errors.len());
-                    for error in &output.errors {
-                        error!("  - {}", error);
-                    }
-                    if !args.continue_on_error {
-                        return Err(anyhow::anyhow!("Errors occurred during processing"));
-                    }
-                }
+    // Create context
+    let context = LoaderContext::new(
+        client,
+        LoaderConfig::default(),
+    );
+
+    // Load data from API
+    info!("📡 Fetching news from AlphaVantage API...");
+    let output = match loader.load(&context, input).await {
+        Ok(output) => output,
+        Err(e) => {
+            error!("Failed to load news: {}", e);
+            if !args.continue_on_error {
+                return Err(e.into());
             }
-            Err(e) => {
-                error!("Failed to load news: {}", e);
-                if !args.continue_on_error {
-                    return Err(e.into());
-                }
-            }
+            return Ok(());
         }
-    } else if let Some(symbols) = &args.symbols {
-        // Load news for specific symbols - need to look them up in database first
-        info!("Looking up {} symbols in database", symbols.len());
+    };
 
-        // Look up symbols in the database to get real sids
-        let symbol_infos = tokio::task::spawn_blocking({
-            let db_url = config.database_url.clone();
-            let syms = symbols.clone();
-            move || -> Result<Vec<NewsSymbolInfo>> {
-                use av_database_postgres::schema::symbols;
+    info!(
+        "✅ API fetch complete:\n  \
+        - {} articles processed\n  \
+        - {} data batches created\n  \
+        - {} cache hits\n  \
+        - {} API calls made",
+        output.articles_processed,
+        output.loaded_count,
+        output.cache_hits,
+        output.api_calls
+    );
 
-                let mut conn = diesel::PgConnection::establish(&db_url)?;
-                let mut infos = Vec::new();
+    // Save to database
+    if !args.dry_run && !output.data.is_empty() {
+        info!("💾 Saving news to database...");
 
-                for sym in syms {
-                    let result: Option<(i64, String, String, bool)> = symbols::table
-                        .filter(symbols::symbol.eq(&sym))
-                        .select((symbols::sid, symbols::symbol, symbols::sec_type, symbols::overview))
-                        .first(&mut conn)
-                        .optional()?;
+        let stats = save_news_to_database(&config.database_url, output.data, args.continue_on_error).await?;
 
-                    match result {
-                        Some((sid, symbol, sec_type, overview)) => {
-                            if sec_type == "Equity" && overview {
-                                infos.push(NewsSymbolInfo { sid, symbol });
-                            } else {
-                                warn!("Symbol {} found but is not an equity with overview=true (type: {}, overview: {})",
-                                      sym, sec_type, overview);
-                            }
-                        }
-                        None => {
-                            warn!("Symbol {} not found in database", sym);
-                        }
-                    }
-                }
+        info!(
+            "✅ Database persistence complete:\n  \
+            - {} news overviews\n  \
+            - {} feeds\n  \
+            - {} articles\n  \
+            - {} ticker sentiments\n  \
+            - {} topics",
+            stats.news_overviews,
+            stats.feeds,
+            stats.articles,
+            stats.sentiments,
+            stats.topics
+        );
+    } else if args.dry_run {
+        info!("🔍 Dry run mode - no database updates performed");
+        info!("Would have saved {} news data batches", output.loaded_count);
+    } else if output.data.is_empty() {
+        warn!("⚠️ No data to save to database");
+    }
 
-                Ok(infos)
-            }
-        }).await??;
-
-        if symbol_infos.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No valid equity symbols with overview=true found. Symbols must be loaded in database first."
-            ));
+    // Report loader errors
+    if !output.errors.is_empty() {
+        error!("❌ Errors during news loading:");
+        for error in &output.errors {
+            error!("  - {}", error);
         }
+        if !args.continue_on_error {
+            return Err(anyhow!("News loading completed with errors"));
+        }
+    }
 
-        info!("Found {} valid symbols to process", symbol_infos.len());
+    info!("🎉 News loading completed successfully");
+    Ok(())
+}
 
-        // Create loader
-        let loader = NewsLoader::new(5).with_config(news_config);
+/// Helper function to get specific symbols from database
+fn get_specific_symbols(database_url: &str, symbols: &[String]) -> Result<Vec<NewsSymbolInfo>> {
+    use diesel::prelude::*;
+    use av_database_postgres::schema::symbols;
 
-        // Create input
-        let input = NewsLoaderInput {
-            symbols: symbol_infos,
-            time_from: Some(Utc::now() - Duration::days(args.days_back as i64)),
-            time_to: Some(Utc::now()),
+    let mut conn = PgConnection::establish(database_url)?;
+
+    let results = symbols::table
+        .filter(symbols::symbol.eq_any(symbols))
+        .select((symbols::sid, symbols::symbol))
+        .load::<(i64, String)>(&mut conn)?;
+
+    Ok(results.into_iter().map(|(sid, symbol)| NewsSymbolInfo {
+        sid,
+        symbol,
+    }).collect())
+}
+
+/// Save news data to database using synchronous diesel with symbol mapping
+async fn save_news_to_database(
+    database_url: &str,
+    news_data: Vec<av_database_postgres::models::news::NewsData>,
+    _continue_on_error: bool,
+) -> Result<ProcessedNewsStats> {
+    use av_database_postgres::schema::*;
+    use diesel::insert_into;
+
+    // Clone database_url for the spawned task
+    let database_url = database_url.to_string();
+
+    // Run in blocking task since we're using synchronous diesel
+    tokio::task::spawn_blocking(move || {
+        let mut conn = PgConnection::establish(&database_url)
+            .map_err(|e| anyhow!("Database connection failed: {}", e))?;
+
+        // Load symbol to SID mapping for all symbols in the database
+        let symbol_to_sid: HashMap<String, i64> = {
+            let results: Vec<(String, i64)> = symbols::table
+                .select((symbols::symbol, symbols::sid))
+                .load(&mut conn)
+                .map_err(|e| anyhow!("Failed to load symbol mapping: {}", e))?;
+
+            let mut mapping = HashMap::new();
+            for (symbol, sid) in results {
+                mapping.insert(symbol, sid);
+            }
+            mapping
         };
 
-        // Create loader context
-        let loader_config = LoaderConfig::default();
-        let context = LoaderContext::new(client, loader_config);
+        info!("Loaded {} symbols for sentiment mapping", symbol_to_sid.len());
 
-        // Load news data
-        match loader.load(&context, input).await {
-            Ok(output) => {
-                info!("✅ News loading complete!");
-                info!("  Articles processed: {}", output.articles_processed);
-                info!("  News data items loaded: {}", output.loaded_count);
+        let mut stats = ProcessedNewsStats::default();
+        let mut missed_symbols: Vec<String> = Vec::new();
 
-                if output.cache_hits > 0 {
-                    info!("  Cache hits: {}", output.cache_hits);
+        // Use transaction for atomicity
+        conn.transaction::<_, diesel::result::Error, _>(|conn| {
+            for data in news_data {
+                // Check if we've already processed this batch
+                let existing = newsoverviews::table
+                    .filter(newsoverviews::hashid.eq(&data.hash_id))
+                    .select(newsoverviews::id)
+                    .first::<i32>(conn)
+                    .optional()?;
+
+                if existing.is_some() {
+                    // Already processed this batch, skip it entirely
+                    continue;
                 }
-                if output.api_calls > 0 {
-                    info!("  API calls made: {}", output.api_calls);
-                }
 
-                if !output.errors.is_empty() {
-                    warn!("{} errors encountered", output.errors.len());
-                    for error in &output.errors {
-                        error!("  - {}", error);
+                // Insert new newsoverview
+                let overview_id = insert_into(newsoverviews::table)
+                    .values((
+                        newsoverviews::creation.eq(data.timestamp),
+                        newsoverviews::sid.eq(data.sid),
+                        newsoverviews::items.eq(data.items.len() as i32),
+                        newsoverviews::hashid.eq(&data.hash_id),
+                    ))
+                    .returning(newsoverviews::id)
+                    .get_result::<i32>(conn)?;
+
+                stats.news_overviews += 1;
+
+                // Process each news item
+                for item in data.items {
+                    // Insert or get source
+                    let source_id = match sources::table
+                        .filter(sources::domain.eq(&item.source_domain))
+                        .select(sources::id)
+                        .first::<i32>(conn)
+                        .optional()?
+                    {
+                        Some(id) => id,
+                        None => {
+                            insert_into(sources::table)
+                                .values((
+                                    sources::source_name.eq(&item.source_name),
+                                    sources::domain.eq(&item.source_domain),
+                                ))
+                                .returning(sources::id)
+                                .get_result::<i32>(conn)?
+                        }
+                    };
+
+                    // Insert or get author
+                    let author_id = insert_into(authors::table)
+                        .values(authors::author_name.eq(&item.author_name))
+                        .on_conflict(authors::author_name)
+                        .do_nothing()
+                        .returning(authors::id)
+                        .get_result::<i32>(conn)
+                        .or_else(|_| {
+                            authors::table
+                                .filter(authors::author_name.eq(&item.author_name))
+                                .select(authors::id)
+                                .first::<i32>(conn)
+                        })?;
+
+                    // Check if article exists
+                    let article_exists = articles::table
+                        .filter(articles::hashid.eq(&item.article_hash))
+                        .select(articles::hashid)
+                        .first::<String>(conn)
+                        .optional()?;
+
+                    if article_exists.is_none() {
+                        // Insert article
+                        insert_into(articles::table)
+                            .values((
+                                articles::hashid.eq(&item.article_hash),
+                                articles::sourceid.eq(source_id),
+                                articles::category.eq(&item.category),
+                                articles::title.eq(&item.title),
+                                articles::url.eq(&item.url),
+                                articles::summary.eq(&item.summary),
+                                articles::banner.eq(&item.banner_url),
+                                articles::author.eq(author_id),
+                                articles::ct.eq(item.published_time),
+                                articles::source_link.eq(item.source_link.as_ref()),
+                                articles::release_time.eq(item.release_time),
+                                articles::author_description.eq(item.author_description.as_ref()),
+                                articles::author_avatar_url.eq(item.author_avatar_url.as_ref()),
+                                articles::feature_image.eq(item.feature_image.as_ref()),
+                                articles::author_nick_name.eq(item.author_nick_name.as_ref()),
+                            ))
+                            .execute(conn)?;
+                        stats.articles += 1;
                     }
-                    if !args.continue_on_error {
-                        return Err(anyhow::anyhow!("Errors occurred during processing"));
-                    }
-                }
 
-                if args.dry_run {
-                    info!("Dry run mode - data fetched but not saved to database");
+                    // Create feed entry
+                    let feed_id = insert_into(feeds::table)
+                        .values((
+                            feeds::sid.eq(data.sid),
+                            feeds::newsoverviewid.eq(overview_id),
+                            feeds::articleid.eq(&item.article_hash),
+                            feeds::sourceid.eq(source_id),
+                            feeds::osentiment.eq(item.overall_sentiment_score),
+                            feeds::sentlabel.eq(&item.overall_sentiment_label),
+                            feeds::created_at.eq(Utc::now()),
+                        ))
+                        .returning(feeds::id)
+                        .get_result::<i32>(conn)?;
+
+                    stats.feeds += 1;
+
+                    // Process ALL ticker sentiments - they're already resolved to SIDs
+                    for sentiment in &item.ticker_sentiments {
+                        insert_into(tickersentiments::table)
+                            .values((
+                                tickersentiments::feedid.eq(feed_id),
+                                tickersentiments::sid.eq(sentiment.sid),
+                                tickersentiments::relevance.eq(sentiment.relevance_score),
+                                tickersentiments::tsentiment.eq(sentiment.sentiment_score),
+                                tickersentiments::sentiment_label.eq(&sentiment.sentiment_label),
+                            ))
+                            .execute(conn)?;
+                        stats.sentiments += 1;
+                    }
+
+                    // Process topics
+                    for topic in &item.topics {
+                        // Get or create topic reference
+                        let topic_id = insert_into(topicrefs::table)
+                            .values(topicrefs::name.eq(&topic.name))
+                            .on_conflict(topicrefs::name)
+                            .do_nothing()
+                            .returning(topicrefs::id)
+                            .get_result::<i32>(conn)
+                            .or_else(|_| {
+                                topicrefs::table
+                                    .filter(topicrefs::name.eq(&topic.name))
+                                    .select(topicrefs::id)
+                                    .first::<i32>(conn)
+                            })?;
+
+                        // Insert topic mapping
+                        insert_into(topicmaps::table)
+                            .values((
+                                topicmaps::sid.eq(data.sid),
+                                topicmaps::feedid.eq(feed_id),
+                                topicmaps::topicid.eq(topic_id),
+                                topicmaps::relscore.eq(topic.relevance_score),
+                            ))
+                            .execute(conn)?;
+                        stats.topics += 1;
+                    }
+
+                    // Insert author mapping for this feed
+                    insert_into(authormaps::table)
+                        .values((
+                            authormaps::feedid.eq(feed_id),
+                            authormaps::authorid.eq(author_id),
+                        ))
+                        .on_conflict((authormaps::feedid, authormaps::authorid))
+                        .do_nothing()
+                        .execute(conn)?;
                 }
             }
-            Err(e) => {
-                error!("Failed to load news: {}", e);
-                if !args.continue_on_error {
-                    return Err(e.into());
-                }
-            }
-        }
-    } else {
-        return Err(anyhow::anyhow!("Please specify either --all-equity or --symbols"));
-    }
 
-    Ok(())
+            Ok(())
+        }).map_err(|e| anyhow!("Transaction failed: {}", e))?;
+
+        Ok(stats)
+    }).await?
 }
