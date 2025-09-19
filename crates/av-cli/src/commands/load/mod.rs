@@ -10,6 +10,7 @@ mod crypto_markets;
 pub mod crypto_social;
 pub mod crypto_mapping;
 pub mod crypto_metadata;
+pub mod news;
 
 use tracing::info;
 
@@ -66,11 +67,8 @@ enum LoadSubcommands {
     },
 
     /// Load news and sentiment data
-    News {
-        /// Limit the number of articles per symbol
-        #[arg(short, long, default_value = "50")]
-        limit: usize,
-    },
+        News(news::NewsArgs),
+
 }
 
 // And add to the execute match:
@@ -94,8 +92,6 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
         LoadSubcommands::Daily { symbol: _ } => {
             todo!("Implement daily loading")
         }
-        LoadSubcommands::News { limit: _ } => {
-            todo!("Implement news loading")
-        }
+        LoadSubcommands::News(args) => news::execute(args, config).await,
     }
 }
