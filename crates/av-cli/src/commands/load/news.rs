@@ -4,16 +4,18 @@ use av_database_postgres::models::news::ProcessedNewsStats;
 use av_loaders::{
     NewsLoader, NewsLoaderConfig, NewsLoaderInput,
     LoaderContext, LoaderConfig, DataLoader,
-    NewsSymbolInfo,
+    // Remove the SymbolInfo import - we'll use the type from NewsLoader
 };
 use chrono::{Duration, Utc};
 use clap::Args;
 use diesel::prelude::*;
 use std::sync::Arc;
-use std::collections::HashMap;
 use tracing::{info, warn, error};
 
 use crate::config::Config;
+
+// Use the NewsSymbolInfo type alias from av_loaders
+type SymbolInfo = av_loaders::news_loader::SymbolInfo;
 
 #[derive(Args, Clone, Debug)]
 pub struct NewsArgs {
@@ -37,8 +39,8 @@ pub struct NewsArgs {
     #[arg(long, default_value = "LATEST")]
     sort_order: String,
 
-    /// Maximum number of articles to fetch (default: 100, max: 1000)
-    #[arg(short, long, default_value = "100")]
+    /// Maximum number of articles to fetch per symbol (default: 1000, max: 1000)
+    #[arg(short, long, default_value = "1000")]
     limit: u32,
 
     /// Disable caching
@@ -54,12 +56,26 @@ pub struct NewsArgs {
     cache_ttl_hours: u32,
 
     /// Continue on error instead of stopping
-    #[arg(long)]
+    #[arg(long, default_value = "true")]
     continue_on_error: bool,
+
+
+    /// Stop on first error (opposite of continue-on-error)
+    #[arg(long)]
+    stop_on_error: bool,
+
 
     /// Dry run - fetch but don't save to database
     #[arg(long)]
     dry_run: bool,
+
+    /// Delay between API calls in milliseconds (default: 800ms for ~75 requests/minute)
+    #[arg(long, default_value = "800")]
+    api_delay_ms: u64,
+
+    /// Process only first N symbols (for testing)
+    #[arg(long)]
+    symbol_limit: Option<usize>,
 }
 
 /// Main execute function with inline persistence
@@ -74,8 +90,42 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
         return Err(anyhow!("Limit must be at least 1"));
     }
 
+    let continue_on_error = if args.stop_on_error {
+        false
+    } else {
+        args.continue_on_error
+    };
+
     // Create API client
     let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
+
+    // Get symbols to process
+    let mut symbols_to_process = if args.all_equity {
+        info!("Loading all equity symbols with overview=true");
+        NewsLoader::get_equity_symbols_with_overview(&config.database_url)?
+    } else if let Some(ref symbol_list) = args.symbols {
+        info!("Loading specific symbols: {:?}", symbol_list);
+        get_specific_symbols(&config.database_url, symbol_list)?
+    } else {
+        return Err(anyhow!("Must specify either --all-equity or --symbols"));
+    };
+
+    // Apply symbol limit if specified (for testing)
+    if let Some(limit) = args.symbol_limit {
+        symbols_to_process = symbols_to_process.into_iter().take(limit).collect();
+    }
+
+    if symbols_to_process.is_empty() {
+        warn!("No symbols found to process");
+        return Ok(());
+    }
+
+    // Calculate estimated time
+    let api_delay_ms = args.api_delay_ms;
+    let estimated_minutes = (symbols_to_process.len() as f64 * api_delay_ms as f64 / 1000.0) / 60.0;
+    info!("Processing {} symbols", symbols_to_process.len());
+    info!("Estimated processing time: {:.1} minutes with {}ms delay between calls",
+          estimated_minutes, api_delay_ms);
 
     // Configure news loader
     let news_config = NewsLoaderConfig {
@@ -87,38 +137,24 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
         cache_ttl_hours: args.cache_ttl_hours,
         force_refresh: args.force_refresh,
         database_url: config.database_url.clone(),
+        continue_on_error: args.continue_on_error,
+        api_delay_ms,
+        progress_interval: 10,
     };
 
     info!("📰 News Loader Configuration:");
     info!("  Days back: {}", args.days_back);
-    info!("  Limit: {} articles per request", args.limit);
+    info!("  Limit: {} articles per symbol", args.limit);
     info!("  Sort order: {}", args.sort_order);
     info!("  Cache: {}", if args.no_cache { "disabled" } else { "enabled" });
-
-    // Get symbols to process
-    let symbols = if args.all_equity {
-        info!("Loading all equity symbols with overview=true");
-        NewsLoader::get_equity_symbols_with_overview(&config.database_url)?
-    } else if let Some(ref symbol_list) = args.symbols {
-        info!("Loading specific symbols: {:?}", symbol_list);
-        get_specific_symbols(&config.database_url, symbol_list)?
-    } else {
-        return Err(anyhow!("Must specify either --all-equity or --symbols"));
-    };
-
-    if symbols.is_empty() {
-        warn!("No symbols found to process");
-        return Ok(());
-    }
-
-    info!("Processing {} symbols", symbols.len());
+    info!("  API delay: {}ms between calls", api_delay_ms);
 
     // Create loader
     let loader = NewsLoader::new(5).with_config(news_config);
 
     // Create input
     let input = NewsLoaderInput {
-        symbols: symbols.clone(),
+        symbols: symbols_to_process,
         time_from: Some(Utc::now() - Duration::days(args.days_back as i64)),
         time_to: Some(Utc::now()),
     };
@@ -146,11 +182,11 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
         "✅ API fetch complete:\n  \
         - {} articles processed\n  \
         - {} data batches created\n  \
-        - {} cache hits\n  \
+        - {} symbols with no news\n  \
         - {} API calls made",
         output.articles_processed,
         output.loaded_count,
-        output.cache_hits,
+        output.no_data_count,
         output.api_calls
     );
 
@@ -196,7 +232,7 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
 }
 
 /// Helper function to get specific symbols from database
-fn get_specific_symbols(database_url: &str, symbols: &[String]) -> Result<Vec<NewsSymbolInfo>> {
+fn get_specific_symbols(database_url: &str, symbols: &[String]) -> Result<Vec<SymbolInfo>> {
     use diesel::prelude::*;
     use av_database_postgres::schema::symbols;
 
@@ -207,7 +243,7 @@ fn get_specific_symbols(database_url: &str, symbols: &[String]) -> Result<Vec<Ne
         .select((symbols::sid, symbols::symbol))
         .load::<(i64, String)>(&mut conn)?;
 
-    Ok(results.into_iter().map(|(sid, symbol)| NewsSymbolInfo {
+    Ok(results.into_iter().map(|(sid, symbol)| SymbolInfo {
         sid,
         symbol,
     }).collect())
@@ -220,34 +256,17 @@ async fn save_news_to_database(
     _continue_on_error: bool,
 ) -> Result<ProcessedNewsStats> {
     use av_database_postgres::schema::*;
-    use diesel::insert_into;
+    use diesel::{insert_into, PgConnection, Connection, RunQueryDsl, QueryDsl, ExpressionMethods};
+    use chrono::Utc;
+    use anyhow::anyhow;
 
-    // Clone database_url for the spawned task
     let database_url = database_url.to_string();
 
-    // Run in blocking task since we're using synchronous diesel
     tokio::task::spawn_blocking(move || {
         let mut conn = PgConnection::establish(&database_url)
             .map_err(|e| anyhow!("Database connection failed: {}", e))?;
 
-        // Load symbol to SID mapping for all symbols in the database
-        let symbol_to_sid: HashMap<String, i64> = {
-            let results: Vec<(String, i64)> = symbols::table
-                .select((symbols::symbol, symbols::sid))
-                .load(&mut conn)
-                .map_err(|e| anyhow!("Failed to load symbol mapping: {}", e))?;
-
-            let mut mapping = HashMap::new();
-            for (symbol, sid) in results {
-                mapping.insert(symbol, sid);
-            }
-            mapping
-        };
-
-        info!("Loaded {} symbols for sentiment mapping", symbol_to_sid.len());
-
         let mut stats = ProcessedNewsStats::default();
-        let mut missed_symbols: Vec<String> = Vec::new();
 
         // Use transaction for atomicity
         conn.transaction::<_, diesel::result::Error, _>(|conn| {
@@ -260,7 +279,6 @@ async fn save_news_to_database(
                     .optional()?;
 
                 if existing.is_some() {
-                    // Already processed this batch, skip it entirely
                     continue;
                 }
 
@@ -359,7 +377,7 @@ async fn save_news_to_database(
 
                     stats.feeds += 1;
 
-                    // Process ALL ticker sentiments - they're already resolved to SIDs
+                    // Process ALL ticker sentiments
                     for sentiment in &item.ticker_sentiments {
                         insert_into(tickersentiments::table)
                             .values((
@@ -401,7 +419,7 @@ async fn save_news_to_database(
                         stats.topics += 1;
                     }
 
-                    // Insert author mapping for this feed
+                    // Insert author mapping
                     insert_into(authormaps::table)
                         .values((
                             authormaps::feedid.eq(feed_id),
