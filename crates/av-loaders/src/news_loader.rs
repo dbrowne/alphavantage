@@ -2,7 +2,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use diesel::{Connection, PgConnection, RunQueryDsl, QueryDsl, ExpressionMethods};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, error};
 use std::collections::HashMap;
 
 use av_client::AlphaVantageClient;
@@ -43,6 +43,12 @@ pub struct NewsLoaderConfig {
     pub force_refresh: bool,
     /// Database URL for cache and symbol lookup
     pub database_url: String,
+    /// Continue processing on error
+    pub continue_on_error: bool,
+    /// Delay between API calls in milliseconds
+    pub api_delay_ms: u64,
+    /// Show progress every N symbols
+    pub progress_interval: usize,
 }
 
 impl Default for NewsLoaderConfig {
@@ -51,11 +57,14 @@ impl Default for NewsLoaderConfig {
             days_back: Some(7),
             topics: None,
             sort_order: Some("LATEST".to_string()),
-            limit: Some(100),
+            limit: Some(1000),  // Higher limit per symbol
             enable_cache: true,
             cache_ttl_hours: 24,
             force_refresh: false,
             database_url: String::new(),
+            continue_on_error: true,
+            api_delay_ms: 800,  // Default for standard tier (~75 calls per minute)
+            progress_interval: 10,
         }
     }
 }
@@ -293,47 +302,101 @@ impl DataLoader for NewsLoader {
             return Ok(output);
         }
 
-        // Build ticker string
-        let tickers: Vec<String> = input.symbols.iter().map(|s| s.symbol.clone()).collect();
-        let tickers_str = tickers.join(",");
+        info!("Processing {} symbols individually for maximum news coverage",
+              input.symbols.len());
 
-        // Build topic string if provided
-        let topics_str = self.config.topics.as_ref().map(|t| t.join(","));
+        let mut all_news_data = Vec::new();
+        let total_symbols = input.symbols.len();
 
-        // Format time parameters - AlphaVantage expects YYYYMMDDTHHMM format
-        let time_from = input.time_from.map(|t| t.format("%Y%m%dT%H%M").to_string());
-        let time_to = input.time_to.map(|t| t.format("%Y%m%dT%H%M").to_string());
+        for (idx, symbol_info) in input.symbols.iter().enumerate() {
+            info!("📡 Fetching news for symbol {}/{}: {}",
+                  idx + 1,
+                  total_symbols,
+                  symbol_info.symbol);
 
-        // Get limit
-        let limit = self.config.limit;
+            // Build topic string if provided
+            let topics_str = self.config.topics.as_ref().map(|t| t.join(","));
 
-        info!("📡 Fetching news from API for {} symbols", input.symbols.len());
-        output.api_calls += 1;
+            // Format time parameters
+            let time_from = input.time_from.map(|t| t.format("%Y%m%dT%H%M").to_string());
+            let time_to = input.time_to.map(|t| t.format("%Y%m%dT%H%M").to_string());
 
-        // Fetch from API
-        let news = match context.client.news().news_sentiment(
-            Some(&tickers_str),
-            topics_str.as_deref(),
-            time_from.as_deref(),
-            time_to.as_deref(),
-            self.config.sort_order.as_deref(),
-            limit,
-        ).await {
-            Ok(news) => news,
-            Err(e) => {
-                output.errors.push(format!("Failed to fetch news: {}", e));
-                return Ok(output);
+            output.api_calls += 1;
+
+            // Fetch from API for this single symbol
+            match context.client.news().news_sentiment(
+                Some(&symbol_info.symbol),
+                topics_str.as_deref(),
+                time_from.as_deref(),
+                time_to.as_deref(),
+                self.config.sort_order.as_deref(),
+                self.config.limit,
+            ).await {
+                Ok(news) => {
+                    if news.feed.is_empty() {
+                        debug!("  No news found for {}", symbol_info.symbol);
+                        output.no_data_count += 1;
+                    } else {
+                        info!("  Found {} articles for {}", news.feed.len(), symbol_info.symbol);
+
+                        // Convert to internal format - pass as single-element slice
+                        let batch_data = self.convert_news_to_data(&news, &[symbol_info.clone()]);
+
+                        output.articles_processed += news.feed.len();
+                        output.loaded_count += batch_data.len();
+                        all_news_data.extend(batch_data);
+                    }
+                }
+                Err(e) => {
+                    // Log the error but continue processing
+                    let error_msg = e.to_string();
+
+                    // Check if it's an "invalid input" error from the API
+                    let is_invalid_input = error_msg.contains("Invalid inputs") ||
+                        error_msg.contains("Invalid API call");
+
+                    if is_invalid_input {
+                        debug!("  Symbol {} not available in news API", symbol_info.symbol);
+                        output.no_data_count += 1;
+                    } else {
+                        warn!("Failed to fetch news for {}: {}", symbol_info.symbol, error_msg);
+                        output.errors.push(format!("{}: {}", symbol_info.symbol, error_msg));
+
+                        // Only stop if continue_on_error is false AND it's not an API "invalid input" error
+                        if !self.config.continue_on_error {
+                            error!("Stopping due to error (not an invalid symbol error)");
+                            break;
+                        }
+                    }
+                }
             }
-        };
 
-        info!("Processing {} news articles", news.feed.len());
+            // Add delay between API calls to respect rate limits
+            if idx < total_symbols - 1 {
+                let delay_ms = self.config.api_delay_ms;
 
-        // Convert to internal format
-        let news_data = self.convert_news_to_data(&news, &input.symbols);
+                // Show progress every N symbols
+                if (idx + 1) % self.config.progress_interval == 0 {
+                    let elapsed_minutes = (idx + 1) as f64 * (delay_ms as f64 / 1000.0) / 60.0;
+                    let remaining_minutes = (total_symbols - idx - 1) as f64 * (delay_ms as f64 / 1000.0) / 60.0;
+                    info!("Progress: {}/{} symbols processed. Time elapsed: {:.1}min, Remaining: {:.1}min",
+                          idx + 1, total_symbols, elapsed_minutes, remaining_minutes);
+                }
 
-        output.loaded_count = news_data.len();
-        output.articles_processed = news.feed.len();
-        output.data = news_data;
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+
+        output.data = all_news_data;
+
+        info!("✅ News loading complete:");
+        info!("  - {} symbols processed", total_symbols);
+        info!("  - {} total articles fetched", output.articles_processed);
+        info!("  - {} symbols with no news or not in API", output.no_data_count);
+        info!("  - {} API calls made", output.api_calls);
+        if !output.errors.is_empty() {
+            info!("  - {} actual errors encountered", output.errors.len());
+        }
 
         Ok(output)
     }

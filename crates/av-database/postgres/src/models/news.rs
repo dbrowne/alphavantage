@@ -69,10 +69,10 @@ pub struct ProcessedNewsStats {
 // ===== NewsOverview =====
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = newsoverviews)]
-#[diesel(primary_key(creation, id))] 
+#[diesel(primary_key(creation, id))]
 pub struct NewsOverview {
   pub id: i32,
-  pub creation: chrono::DateTime<chrono::Utc>, 
+  pub creation: chrono::DateTime<chrono::Utc>,
   pub sid: i64,
   pub items: i32,
   pub hashid: String,
@@ -191,9 +191,9 @@ pub struct Feed {
   pub newsoverviewid: i32,
   pub articleid: String,
   pub sourceid: i32,
-  pub osentiment: f32, 
+  pub osentiment: f32,
   pub sentlabel: String,
-  pub created_at: chrono::DateTime<chrono::Utc>, 
+  pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Insertable, Debug)]
@@ -203,7 +203,7 @@ pub struct NewFeed<'a> {
   pub newsoverviewid: &'a i32,
   pub articleid: &'a str,
   pub sourceid: &'a i32,
-  pub osentiment: &'a f32, 
+  pub osentiment: &'a f32,
   pub sentlabel: &'a str,
 }
 
@@ -214,7 +214,7 @@ pub struct NewFeedOwned {
   pub newsoverviewid: i32,
   pub articleid: String,
   pub sourceid: i32,
-  pub osentiment: f32, 
+  pub osentiment: f32,
   pub sentlabel: String,
 }
 
@@ -482,9 +482,9 @@ pub struct TickerSentiment {
   pub id: i32,
   pub feedid: i32,
   pub sid: i64,
-  pub relevance: f32,          
-  pub tsentiment: f32,        
-  pub sentiment_label: String, 
+  pub relevance: f32,
+  pub tsentiment: f32,
+  pub sentiment_label: String,
 }
 
 #[derive(Insertable, Debug)]
@@ -504,7 +504,7 @@ pub struct NewTickerSentimentOwned {
   pub sid: i64,
   pub relevance: f32,
   pub tsentiment: f32,
-  pub sentiment_label: String, 
+  pub sentiment_label: String,
 }
 
 impl<'a> NewTickerSentiment<'a> {
@@ -615,7 +615,7 @@ pub struct TopicMap {
   pub sid: i64,
   pub feedid: i32,
   pub topicid: i32,
-  pub relscore: f32, 
+  pub relscore: f32,
 }
 
 #[derive(Insertable, Debug)]
