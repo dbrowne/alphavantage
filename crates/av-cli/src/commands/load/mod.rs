@@ -11,6 +11,9 @@ pub mod crypto_social;
 pub mod crypto_mapping;
 pub mod crypto_metadata;
 pub mod news;
+mod news_utils;
+
+pub mod crypto_news;
 
 use tracing::info;
 
@@ -68,6 +71,7 @@ enum LoadSubcommands {
 
     /// Load news and sentiment data
         News(news::NewsArgs),
+        CryptoNews(crypto_news::CryptoNewsArgs),
 
 }
 
@@ -93,5 +97,6 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
             todo!("Implement daily loading")
         }
         LoadSubcommands::News(args) => news::execute(args, config).await,
+        LoadSubcommands::CryptoNews(args) => crypto_news::execute(args, config).await,
     }
 }

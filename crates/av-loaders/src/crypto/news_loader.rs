@@ -291,7 +291,7 @@ impl CryptoNewsLoader {
 #[async_trait]
 impl DataLoader for CryptoNewsLoader {
     type Input = CryptoNewsInput;
-    type Output = self::NewsLoaderOutput;  // Use the local type
+    type Output = NewsLoaderOutput;  // Use the local type
 
     async fn load(
         &self,
