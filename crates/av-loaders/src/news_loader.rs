@@ -4,7 +4,8 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use diesel::{Connection, PgConnection, RunQueryDsl, QueryDsl, ExpressionMethods};
 use tracing::{debug, info, warn, error};
 use std::collections::HashMap;
-
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use av_client::AlphaVantageClient;
 use av_database_postgres::{
     models::news::{NewsData, NewsItem, TickerSentimentData, TopicData},
@@ -459,13 +460,19 @@ fn generate_article_hash(url: &str) -> String {
 }
 
 fn generate_batch_hash(sid: i64, items: &[NewsItem]) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
     let mut hasher = DefaultHasher::new();
     sid.hash(&mut hasher);
-    items.len().hash(&mut hasher);
-    Utc::now().timestamp().hash(&mut hasher);
+
+    // Hash the article hashes to make it deterministic
+    let mut article_hashes: Vec<&str> = items.iter()
+        .map(|item| item.article_hash.as_str())
+        .collect();
+    article_hashes.sort(); // Sort to ensure consistent ordering
+
+    for hash in article_hashes {
+        hash.hash(&mut hasher);
+    }
+
     format!("{:x}", hasher.finish())
 }
 

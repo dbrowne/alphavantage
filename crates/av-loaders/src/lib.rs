@@ -64,6 +64,7 @@ pub use crypto::{
         CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader,
         CryptoMetadataOutput, CryptoSymbolForMetadata, ProcessedCryptoMetadata,
     },
+    crypto_news_loader::load_crypto_news,
 };
 
 pub mod prelude {
@@ -73,6 +74,7 @@ pub mod prelude {
         // Include crypto types in prelude
         CryptoDataSource, CryptoLoaderConfig, CryptoSymbolLoader,
         CryptoMarketsLoader, CryptoSocialLoader,CryptoMetadataLoader,
-        NewsLoader, NewsLoaderConfig, load_news_for_equity_symbols
+        NewsLoader, NewsLoaderConfig, load_news_for_equity_symbols,
+        crypto::crypto_news_loader::load_crypto_news,
     };
 }
