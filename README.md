@@ -5,16 +5,39 @@ A Rust implementation and complete re write of my  Rust [Alphavantage API](https
 
 ## ⚠️ Project Status
 
-**This project is currently under active development.** Only the symbol persistence functionality is fully implemented end-to-end. Other features are in various stages of development.
+**This project is currently under active development.**
+
+
+A high-performance, async Rust client library and comprehensive data pipeline for financial market data. Built with a modular workspace architecture, it provides robust integration with AlphaVantage API, CoinGecko, and other data sources, featuring advanced caching, TimescaleDB support, and comprehensive cryptocurrency coverage.
+
+## 🚀 Features
+
+### Core Capabilities
+- **Multi-Source Data Integration**: AlphaVantage, CoinGecko, GitHub, and more
+- **Async/Await Architecture**: Built on Tokio for maximum concurrency
+- **Advanced Caching System**: Response caching to minimize API calls and costs
+- **TimescaleDB Integration**: Optimized time-series data storage with hypertables
+- **Comprehensive Crypto Support**: Enhanced metadata, social metrics, and market data
+- **Process Tracking**: ETL monitoring with automatic retry mechanisms
+- **Rate Limiting**: Intelligent rate limiting based on API tier
+
+### Data Coverage
+- **Equities**: Stocks, ETFs with company fundamentals
+- **Cryptocurrency**: 10,000+ coins with enhanced metadata from multiple sources
+- **News & Sentiment**: NLP-powered sentiment analysis with topic categorization
+- **Market Analytics**: Top gainers/losers tracking (in development)
 
 ### Currently Implemented
 - ✅ Symbol loading and persistence for equities, bonds, and mutual funds
 - ✅ Database schema with TimescaleDB support
+- ✅ AlphaVantage API client endpoints 
 - ✅ Basic project structure and workspace organization
+- ✅ Data loaders for fundamentals, and news
 
 ### In Development
-- 🚧 AlphaVantage API client endpoints
-- 🚧 Data loaders for price data, fundamentals, and news
+- 🚧 AlphaVantage API client endpoints for equity market price data
+- 🚧 CoinGecko API client endpoints
+- 🚧 Data loaders for price data
 - 🚧 CLI commands for data fetching and analysis
 - 🚧 Full integration between API client and database
 
@@ -22,49 +45,79 @@ A Rust implementation and complete re write of my  Rust [Alphavantage API](https
 
 This project aims to provide a complete solution for fetching, storing, and analyzing financial market data from AlphaVantage. Built with Rust's async ecosystem, it will offer high-performance data loading capabilities with proper rate limiting, concurrent processing, and comprehensive error handling.
 
-## Project Structure
-```alphavantage/
+
+
+## 📦 Project Structure
+
+```
+alphavantage/
 ├── crates/
 │   ├── av-core/              # Core types, traits, and configuration
-│   ├── av-client/            # API client (in development)
+│   ├── av-client/            # AlphaVantage API client
 │   ├── av-models/            # Data models for API responses
 │   ├── av-database/          # Database integration layer
 │   │   └── postgres/         # PostgreSQL/TimescaleDB implementation
-│   ├── av-loaders/           # Data loading functionality (in development)
-│   └── av-cli/               # Command-line interface (in development)
-├── tests                     # integration tests
-├── timescale_setup/          # TimescaleDB Docker setup
+│   ├── av-loaders/           # Advanced data loading functionality
+│   │   └── crypto/           # Cryptocurrency-specific loaders
+│   └── av-cli/               # Command-line interface
 ├── migrations/               # Database migrations
-└── data/                     # CSV data files
+├── timescale_setup/          # TimescaleDB Docker setup
+├── tests/                    # Integration tests
+└── data/                     # CSV data files for symbol imports
 ```
 
+## 🗄️  Database Schema
 
 ## Database Schema
 
 The project includes a comprehensive PostgreSQL schema with TimescaleDB extensions:
 
-### Implemented Tables
-- `symbols` - Security master data (fully implemented)
-- `overviews` - Company fundamentals (schema only)
-- `intradayprices` - High-frequency price data as hypertable (schema only)
-- `summaryprices` - Daily OHLCV data (schema only)
-- `newsoverviews` - News articles with sentiment (schema only)
-- `topstats` - Market movers tracking (schema only)
-- Process management tables for ETL tracking
+### Core Tables
+- **symbols** - Master security data with exchange information (stocks, ETFs, crypto)
+- **overviews** - Company fundamentals and metrics
+- **overviewexts** - Extended company information
+- **equity_details** - Additional equity-specific information
+- **intradayprices** - High-frequency price data (schema defined, not yet populated)
+- **summaryprices** - Daily OHLCV data (schema defined, not yet populated)
+- **topstats** - Market movers tracking (schema defined, not yet populated)
 
-## Tentative Development Roadmap  
+### Cryptocurrency Tables
+- **crypto_api_map** - Mapping between symbols and external API identifiers
+- **crypto_metadata** - Core cryptocurrency metadata
+- **crypto_overview_basic** - Basic crypto information
+- **crypto_overview_metrics** - Detailed crypto metrics
+- **crypto_technical** - Technical indicators and blockchain metrics
+- **crypto_social** - Social media metrics and community data
+- **crypto_markets** - Exchange and market pair information
 
-### Phase 1: Core Infrastructure ✅
-- Workspace structure
-- Database schema
-- Symbol loading
+### News & Sentiment
+- **newsoverviews** - Article metadata with sentiment scores
+- **feeds** - Individual news feeds
+- **articles** - Article content and details
+- **article_media** - Media attachments for articles
+- **article_quotes** - Quoted text from articles
+- **article_symbols** - Symbol mentions in articles
+- **article_tags** - Article categorization tags
+- **article_translations** - Multi-language article support
+- **sources** - News sources
+- **authors** - Article authors
+- **authormaps** - Author-article relationships
+- **tickersentiments** - Ticker-specific sentiment analysis
+- **topicmaps** - Topic-symbol relationships
+- **topicrefs** - Topic reference data
 
+### System Tables
+- **api_response_cache** - Response caching for API efficiency
+- **procstates** - ETL process state tracking
+- **proctypes** - Process type definitions
+- **states** - Process state definitions
+- **__diesel_schema_migrations** - Database migration tracking
 
 ### Phase 2: Data Loaders
 - Company overview loader ✅
 - Crypto currency symbol loader ✅
-- Crypto Overview loader 
-- News loader with sentiment analysis
+- Crypto Overview loader ✅
+- News loader with sentiment analysis ✅
 - Price data loaders
 - Batch processing with progress tracking
 
@@ -134,6 +187,7 @@ sec_master=> \dt
  Schema |            Name            | Type  |  Owner
 --------+----------------------------+-------+---------
  public | __diesel_schema_migrations | table | ts_user
+ public | api_response_cache         | table | ts_user
  public | article_media              | table | ts_user
  public | article_quotes             | table | ts_user
  public | article_symbols            | table | ts_user
@@ -165,7 +219,7 @@ sec_master=> \dt
  public | topicmaps                  | table | ts_user
  public | topicrefs                  | table | ts_user
  public | topstats                   | table | ts_user
-(32 rows)
+(33 rows)
 ```
 5. **Schemaspy documentation**
 ```bash
