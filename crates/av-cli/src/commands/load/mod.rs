@@ -11,6 +11,8 @@ pub mod crypto_social;
 pub mod crypto_mapping;
 pub mod crypto_metadata;
 pub mod news;
+pub mod news_utils;
+pub mod crypto_news;
 
 use tracing::info;
 
@@ -47,6 +49,7 @@ enum LoadSubcommands {
 
     // Manage crypto Meta data
      CryptoMetadata(crypto_metadata::CryptoMetadataArgs),
+    CryptoNews(crypto_news::CryptoNewsArgs),
 
     /// Load intraday price data
     Intraday {
@@ -82,6 +85,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
         LoadSubcommands::CryptoSocial(args) => crypto_social::execute(args, config).await,
         LoadSubcommands::CryptoMapping(args) => crypto_mapping::execute(args, &config).await,
         LoadSubcommands::CryptoMetadata(args) => crypto_metadata::execute(args, &config).await,
+        LoadSubcommands::CryptoNews(args) => crypto_news::execute(args,config).await,
         LoadSubcommands::UpdateGithub(args) => {
             info!("Updating GitHub data for cryptocurrencies");
             crypto_overview::update_github_data(args, config).await
