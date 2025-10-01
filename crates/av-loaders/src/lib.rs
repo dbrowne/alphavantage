@@ -22,6 +22,13 @@ pub mod loader;
 pub mod overview_loader;
 pub mod process_tracker;
 pub mod security_loader;
+pub mod news_loader;
+
+pub use news_loader::{
+    NewsLoader, NewsLoaderConfig, NewsLoaderInput, NewsLoaderOutput,
+    SymbolInfo as NewsSymbolInfo,
+    load_news_for_equity_symbols,
+};
 
 // Re-export commonly used types
 pub use batch_processor::{BatchConfig, BatchProcessor};
@@ -57,6 +64,7 @@ pub use crypto::{
         CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader,
         CryptoMetadataOutput, CryptoSymbolForMetadata, ProcessedCryptoMetadata,
     },
+    crypto_news_loader::load_crypto_news,
 };
 
 pub mod prelude {
@@ -65,6 +73,8 @@ pub mod prelude {
         LoaderResult, ProcessState, ProcessTracker,
         // Include crypto types in prelude
         CryptoDataSource, CryptoLoaderConfig, CryptoSymbolLoader,
-        CryptoMarketsLoader, CryptoSocialLoader,CryptoMetadataLoader
+        CryptoMarketsLoader, CryptoSocialLoader,CryptoMetadataLoader,
+        NewsLoader, NewsLoaderConfig, load_news_for_equity_symbols,
+        crypto::crypto_news_loader::load_crypto_news,
     };
 }
