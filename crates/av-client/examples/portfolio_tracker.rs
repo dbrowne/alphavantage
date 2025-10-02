@@ -56,11 +56,9 @@ struct HoldingAnalysis {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
   if !atty::is(atty::Stream::Stdout) {
     colored::control::set_override(false);
-  }
-  else{
+  } else {
     colored::control::set_override(true);
   }
   // Initialize logging
@@ -271,11 +269,6 @@ async fn get_sentiment_with_retry(client: &AlphaVantageClient, symbol: &str) -> 
   Err(Error::Api("No sentiment data available".to_string()))
 }
 
-
-
-
-
-
 /// Display portfolio analysis with formatted columns and colored values
 fn display_portfolio_analysis(analysis: &PortfolioAnalysis) {
   // Check if terminal supports colors
@@ -292,44 +285,27 @@ fn display_portfolio_analysis(analysis: &PortfolioAnalysis) {
   let label_width = 25;
 
   // Total Value
-  println!("{:<width$} ${:>12.2}",
-           "Total Market Value:",
-           analysis.total_value,
-           width = label_width
+  println!(
+    "{:<width$} ${:>12.2}",
+    "Total Market Value:",
+    analysis.total_value,
+    width = label_width
   );
 
   // Total Cost
-  println!("{:<width$} ${:>12.2}",
-           "Total Cost Basis:",
-           analysis.total_cost,
-           width = label_width
-  );
+  println!("{:<width$} ${:>12.2}", "Total Cost Basis:", analysis.total_cost, width = label_width);
 
   // Total Gain/Loss with color
   let gain_loss_str = format!("${:>12.2}", analysis.total_gain_loss);
-  let colored_gain_loss = if analysis.total_gain_loss >= 0.0 {
-    gain_loss_str.green()
-  } else {
-    gain_loss_str.red()
-  };
-  println!("{:<width$} {}",
-           "Total Gain/Loss:",
-           colored_gain_loss,
-           width = label_width
-  );
+  let colored_gain_loss =
+    if analysis.total_gain_loss >= 0.0 { gain_loss_str.green() } else { gain_loss_str.red() };
+  println!("{:<width$} {}", "Total Gain/Loss:", colored_gain_loss, width = label_width);
 
   // Percentage with color
   let percent_str = format!("{:>11.2}%", analysis.total_gain_loss_percent);
-  let colored_percent = if analysis.total_gain_loss_percent >= 0.0 {
-    percent_str.green()
-  } else {
-    percent_str.red()
-  };
-  println!("{:<width$} {}",
-           "Total Return:",
-           colored_percent,
-           width = label_width
-  );
+  let colored_percent =
+    if analysis.total_gain_loss_percent >= 0.0 { percent_str.green() } else { percent_str.red() };
+  println!("{:<width$} {}", "Total Return:", colored_percent, width = label_width);
 
   // Holdings Detail Section
   println!("\n📈 Holdings Detail:");
@@ -352,16 +328,15 @@ fn display_portfolio_analysis(analysis: &PortfolioAnalysis) {
 
   // Sort holdings by weight (largest positions first)
   let mut sorted_holdings = analysis.holdings_analysis.clone();
-  sorted_holdings.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+  sorted_holdings
+    .sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
 
   // Display each holding
   for holding in &sorted_holdings {
     // Format basic columns
-    print!("{:<8} {:>10.2} {:>12.2} {:>12.2} ",
-           holding.symbol,
-           holding.shares,
-           holding.cost_basis,
-           holding.current_price
+    print!(
+      "{:<8} {:>10.2} {:>12.2} {:>12.2} ",
+      holding.symbol, holding.shares, holding.cost_basis, holding.current_price
     );
 
     // Market value
@@ -411,34 +386,38 @@ fn display_portfolio_analysis(analysis: &PortfolioAnalysis) {
   println!("{}", "─".repeat(50));
 
   // Best and worst performers
-  if let Some(best) = sorted_holdings.iter()
-      .max_by(|a, b| a.unrealized_gain_loss_percent.partial_cmp(&b.unrealized_gain_loss_percent).unwrap()) {
-
+  if let Some(best) = sorted_holdings.iter().max_by(|a, b| {
+    a.unrealized_gain_loss_percent.partial_cmp(&b.unrealized_gain_loss_percent).unwrap()
+  }) {
     let best_str = format!("{} ({:+.2}%)", best.symbol, best.unrealized_gain_loss_percent);
-    println!("{:<25} {}",
-             "Best Performer:",
-             if best.unrealized_gain_loss_percent > 0.0 { best_str.green() } else { best_str.red() }
+    println!(
+      "{:<25} {}",
+      "Best Performer:",
+      if best.unrealized_gain_loss_percent > 0.0 { best_str.green() } else { best_str.red() }
     );
   }
 
-  if let Some(worst) = sorted_holdings.iter()
-      .min_by(|a, b| a.unrealized_gain_loss_percent.partial_cmp(&b.unrealized_gain_loss_percent).unwrap()) {
-
+  if let Some(worst) = sorted_holdings.iter().min_by(|a, b| {
+    a.unrealized_gain_loss_percent.partial_cmp(&b.unrealized_gain_loss_percent).unwrap()
+  }) {
     let worst_str = format!("{} ({:+.2}%)", worst.symbol, worst.unrealized_gain_loss_percent);
-    println!("{:<25} {}",
-             "Worst Performer:",
-             if worst.unrealized_gain_loss_percent < 0.0 { worst_str.red() } else { worst_str.green() }
+    println!(
+      "{:<25} {}",
+      "Worst Performer:",
+      if worst.unrealized_gain_loss_percent < 0.0 { worst_str.red() } else { worst_str.green() }
     );
   }
 
   // Diversification check
-  let max_weight = sorted_holdings.iter()
-      .map(|h| h.weight)
-      .max_by(|a, b| a.partial_cmp(b).unwrap())
-      .unwrap_or(0.0);
+  let max_weight = sorted_holdings
+    .iter()
+    .map(|h| h.weight)
+    .max_by(|a, b| a.partial_cmp(b).unwrap())
+    .unwrap_or(0.0);
 
   let diversification_msg = if max_weight > 30.0 {
-    format!("⚠️  Concentrated position: {} at {:.1}%", sorted_holdings[0].symbol, max_weight).yellow()
+    format!("⚠️  Concentrated position: {} at {:.1}%", sorted_holdings[0].symbol, max_weight)
+      .yellow()
   } else {
     "✅ Well diversified".green()
   };
@@ -457,12 +436,13 @@ fn display_top_movers(movers: &TopGainersLosers) {
   println!("{}", "─".repeat(60));
 
   for gainer in movers.top_gainers.iter().take(5) {
-    println!("{:<10} {:>10} {:>12} {:>9}% {:>15}",
-             gainer.ticker,
-             gainer.price,
-             gainer.change_amount.green(),
-             gainer.change_percentage.green(),
-             format_volume(&gainer.volume)
+    println!(
+      "{:<10} {:>10} {:>12} {:>9}% {:>15}",
+      gainer.ticker,
+      gainer.price,
+      gainer.change_amount.green(),
+      gainer.change_percentage.green(),
+      format_volume(&gainer.volume)
     );
   }
 
@@ -472,19 +452,23 @@ fn display_top_movers(movers: &TopGainersLosers) {
   println!("{}", "─".repeat(60));
 
   for loser in movers.top_losers.iter().take(5) {
-    println!("{:<10} {:>10} {:>12} {:>9}% {:>15}",
-             loser.ticker,
-             loser.price,
-             loser.change_amount.red(),
-             loser.change_percentage.red(),
-             format_volume(&loser.volume)
+    println!(
+      "{:<10} {:>10} {:>12} {:>9}% {:>15}",
+      loser.ticker,
+      loser.price,
+      loser.change_amount.red(),
+      loser.change_percentage.red(),
+      format_volume(&loser.volume)
     );
   }
 
   // Most Active
   if !movers.most_actively_traded.is_empty() {
     println!("\n📊 Most Active:");
-    println!("{:<10} {:>10} {:>12} {:>10} {:>15}", "Symbol", "Price", "Change", "Change %", "Volume");
+    println!(
+      "{:<10} {:>10} {:>12} {:>10} {:>15}",
+      "Symbol", "Price", "Change", "Change %", "Volume"
+    );
     println!("{}", "─".repeat(60));
 
     for active in movers.most_actively_traded.iter().take(5) {
@@ -500,12 +484,13 @@ fn display_top_movers(movers: &TopGainersLosers) {
         active.change_percentage.green()
       };
 
-      println!("{:<10} {:>10} {:>12} {:>9}% {:>15}",
-               active.ticker,
-               active.price,
-               change_color,
-               pct_color,
-               format_volume(&active.volume)
+      println!(
+        "{:<10} {:>10} {:>12} {:>9}% {:>15}",
+        active.ticker,
+        active.price,
+        change_color,
+        pct_color,
+        format_volume(&active.volume)
       );
     }
   }
@@ -533,7 +518,10 @@ fn display_portfolio_sentiment(portfolio: &[Holding], sentiment_data: &HashMap<S
   println!("\n📰 Portfolio News Sentiment");
   println!("{}", "═".repeat(80));
 
-  println!("{:<10} {:>20} {:>20} {:>15}", "Symbol", "Sentiment Score", "Sentiment Label", "Market Impact");
+  println!(
+    "{:<10} {:>20} {:>20} {:>15}",
+    "Symbol", "Sentiment Score", "Sentiment Label", "Market Impact"
+  );
   println!("{}", "─".repeat(70));
 
   let mut total_weighted_sentiment = 0.0;
@@ -572,22 +560,24 @@ fn display_portfolio_sentiment(portfolio: &[Holding], sentiment_data: &HashMap<S
         "Low".dimmed()
       };
 
-      println!("{:<10} {} {:>20} {:>15}",
-               holding.symbol,
-               colored_score,
-               match color {
-                 "green" => label.green(),
-                 "red" => label.red(),
-                 _ => label.yellow(),
-               },
-               impact
+      println!(
+        "{:<10} {} {:>20} {:>15}",
+        holding.symbol,
+        colored_score,
+        match color {
+          "green" => label.green(),
+          "red" => label.red(),
+          _ => label.yellow(),
+        },
+        impact
       );
     } else {
-      println!("{:<10} {:>20} {:>20} {:>15}",
-               holding.symbol,
-               "N/A".dimmed(),
-               "No Data".dimmed(),
-               "-".dimmed()
+      println!(
+        "{:<10} {:>20} {:>20} {:>15}",
+        holding.symbol,
+        "N/A".dimmed(),
+        "No Data".dimmed(),
+        "-".dimmed()
       );
     }
   }
@@ -606,13 +596,18 @@ fn display_portfolio_sentiment(portfolio: &[Holding], sentiment_data: &HashMap<S
       ("Neutral", avg_str.yellow())
     };
 
-    println!("{:<10} {} {:>20} {:>15}",
-             "WEIGHTED",
-             avg_colored,
-             if weighted_avg > 0.2 { avg_label.green() }
-             else if weighted_avg < -0.2 { avg_label.red() }
-             else { avg_label.yellow() },
-             "Portfolio Avg".bright_white()
+    println!(
+      "{:<10} {} {:>20} {:>15}",
+      "WEIGHTED",
+      avg_colored,
+      if weighted_avg > 0.2 {
+        avg_label.green()
+      } else if weighted_avg < -0.2 {
+        avg_label.red()
+      } else {
+        avg_label.yellow()
+      },
+      "Portfolio Avg".bright_white()
     );
   }
 }
@@ -675,7 +670,6 @@ fn setup_terminal_colors() {
   colored::control::set_virtual_terminal(true).ok();
 }
 
-
 /// Helper function to create a progress bar for loading
 fn show_progress(current: usize, total: usize, message: &str) {
   let percentage = (current as f32 / total as f32 * 100.0) as u32;
@@ -693,32 +687,30 @@ fn show_progress(current: usize, total: usize, message: &str) {
 /// Alternative display using a table crate for even better formatting
 #[cfg(feature = "pretty-table")]
 fn display_portfolio_table(analysis: &PortfolioAnalysis) {
-  use prettytable::{Table, Row, Cell, format};
+  use prettytable::{Cell, Row, Table, format};
 
   let mut table = Table::new();
   table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
 
   // Add header
   table.set_titles(row![
-        "Symbol",
-        "Shares",
-        "Cost",
-        "Current",
-        "Value",
-        "Gain/Loss",
-        "Return",
-        "Weight",
-        "Sentiment"
-    ]);
+    "Symbol",
+    "Shares",
+    "Cost",
+    "Current",
+    "Value",
+    "Gain/Loss",
+    "Return",
+    "Weight",
+    "Sentiment"
+  ]);
 
   // Add rows
   for holding in &analysis.holdings_analysis {
     let gain_loss_cell = if holding.unrealized_gain_loss >= 0.0 {
-      Cell::new(&format!("{:.2}", holding.unrealized_gain_loss))
-          .style_spec("Fg")
+      Cell::new(&format!("{:.2}", holding.unrealized_gain_loss)).style_spec("Fg")
     } else {
-      Cell::new(&format!("{:.2}", holding.unrealized_gain_loss))
-          .style_spec("Fr")
+      Cell::new(&format!("{:.2}", holding.unrealized_gain_loss)).style_spec("Fr")
     };
 
     table.add_row(Row::new(vec![
@@ -730,15 +722,14 @@ fn display_portfolio_table(analysis: &PortfolioAnalysis) {
       gain_loss_cell,
       Cell::new(&format!("{:.2}%", holding.unrealized_gain_loss_percent)),
       Cell::new(&format!("{:.1}%", holding.weight)),
-      Cell::new(&holding.sentiment_score
-          .map(|s| format!("{:.3}", s))
-          .unwrap_or_else(|| "N/A".to_string())),
+      Cell::new(
+        &holding.sentiment_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "N/A".to_string()),
+      ),
     ]));
   }
 
   table.printstd();
 }
-
 
 /// Get market overview using top gainers/losers
 async fn get_market_overview(client: &AlphaVantageClient) -> Result<(), Error> {

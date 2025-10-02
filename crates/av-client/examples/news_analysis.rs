@@ -254,12 +254,12 @@ async fn analyze_crypto_sentiment(client: &AlphaVantageClient) -> Result<(), Err
   let news = client
     .news()
     .news_sentiment(
-     None,
+      None,
       Some("Blockchain"), // topics
-      None,                                // time_from
-      None,                                // time_to
-      None,                                // sort
-      Some(50),                            // limit
+      None,               // time_from
+      None,               // time_to
+      None,               // sort
+      Some(50),           // limit
     )
     .await?;
   let analysis = analyze_sentiment(&news, None);

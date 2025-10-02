@@ -22,13 +22,13 @@ pub struct CryptoSymbolLoader {
 impl CryptoSymbolLoader {
   pub fn new(config: CryptoLoaderConfig) -> Self {
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent("AlphaVantage-Rust-Client/1.0")
-        .build()
-        .expect("Failed to create HTTP client");
+      .timeout(std::time::Duration::from_secs(30))
+      .user_agent("AlphaVantage-Rust-Client/1.0")
+      .build()
+      .expect("Failed to create HTTP client");
 
     let mut providers: HashMap<CryptoDataSource, Box<dyn CryptoDataProvider + Send + Sync>> =
-        HashMap::new();
+      HashMap::new();
 
     // Initialize providers based on config
     for source in &config.sources {
@@ -45,7 +45,7 @@ impl CryptoSymbolLoader {
           if let Ok(api_key) = std::env::var("COINGECKO_API_KEY") {
             providers.insert(
               CryptoDataSource::CoinGecko,
-              Box::new(CoinGeckoProvider::new(Some(api_key))),  // TODO: Make API consistent
+              Box::new(CoinGeckoProvider::new(Some(api_key))), // TODO: Make API consistent
             );
           }
         }
@@ -101,9 +101,9 @@ impl CryptoSymbolLoader {
       let pb = ProgressBar::new(self.config.sources.len() as u64);
       pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
-            .progress_chars("#>-"),
+          .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+          .unwrap()
+          .progress_chars("#>-"),
       );
       pb.set_message("Loading crypto symbols");
       Some(pb)
@@ -190,7 +190,7 @@ impl CryptoSymbolLoader {
     // Define source priority (higher number = higher priority)
     let source_priority = |source: &CryptoDataSource| -> u8 {
       match source {
-        CryptoDataSource::CoinMarketCap =>2,
+        CryptoDataSource::CoinMarketCap => 2,
         CryptoDataSource::CoinGecko => 1,
         CryptoDataSource::CoinPaprika => 4,
         CryptoDataSource::CoinCap => 5,
@@ -224,8 +224,6 @@ impl CryptoSymbolLoader {
         }
       }
     }
-
-
 
     unique_symbols.into_values().collect()
   }

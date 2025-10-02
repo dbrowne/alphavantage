@@ -2,120 +2,119 @@ use crate::transport::Transport;
 use av_core::{Error, Result};
 use av_models::crypto_social::{CoinGeckoSocialResponse, GitHubRepoInfo};
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::debug;
 
 pub struct CryptoSocialEndpoints {
-    transport: Arc<Transport>,
+  transport: Arc<Transport>,
 }
 
 impl CryptoSocialEndpoints {
-    pub fn new(transport: Arc<Transport>) -> Self {
-        Self {
-            transport,
-        }
+  pub fn new(transport: Arc<Transport>) -> Self {
+    Self { transport }
+  }
+
+  /// Fetch social data from CoinGecko for a specific cryptocurrency
+  pub async fn fetch_coingecko_social_data(
+    &self,
+    coingecko_id: &str,
+    api_key: Option<&str>,
+  ) -> Result<CoinGeckoSocialResponse> {
+    let mut url = format!(
+      "https://api.coingecko.com/api/v3/coins/{}?localization=false&tickers=false&market_data=false&community_data=true&developer_data=true&sparkline=false",
+      coingecko_id
+    );
+
+    if let Some(key) = api_key {
+      url.push_str(&format!("&x_cg_pro_api_key={}", key));
     }
 
-    /// Fetch social data from CoinGecko for a specific cryptocurrency
-    pub async fn fetch_coingecko_social_data(
-        &self,
-        coingecko_id: &str,
-        api_key: Option<&str>,
-    ) -> Result<CoinGeckoSocialResponse> {
-        let mut url = format!(
-            "https://api.coingecko.com/api/v3/coins/{}?localization=false&tickers=false&market_data=false&community_data=true&developer_data=true&sparkline=false",
-            coingecko_id
-        );
+    debug!("Fetching CoinGecko social data for: {}", coingecko_id);
 
-        if let Some(key) = api_key {
-            url.push_str(&format!("&x_cg_pro_api_key={}", key));
-        }
+    // Use the HTTP client directly for external API calls
+    let client = self.transport.client();
+    let response = client
+      .get(&url)
+      .send()
+      .await
+      .map_err(|e| Error::Http(format!("CoinGecko API request failed: {}", e)))?;
 
-        debug!("Fetching CoinGecko social data for: {}", coingecko_id);
-
-        // Use the HTTP client directly for external API calls
-        let client = self.transport.client();
-        let response = client.get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::Http(format!("CoinGecko API request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(Error::Http(format!(
-                "CoinGecko API error: HTTP {}", response.status()
-            )));
-        }
-
-        let social_data: CoinGeckoSocialResponse = response.json().await
-            .map_err(|e| Error::Parse(format!("Failed to parse CoinGecko response: {}", e)))?;
-
-        Ok(social_data)
+    if !response.status().is_success() {
+      return Err(Error::Http(format!("CoinGecko API error: HTTP {}", response.status())));
     }
 
-    /// Fetch GitHub repository information for enhanced social data
-    pub async fn fetch_github_repo_info(
-        &self,
-        repo_url: &str,
-        github_token: Option<&str>,
-    ) -> Result<GitHubRepoInfo> {
-        // Extract owner/repo from GitHub URL
-        let repo_path = repo_url
-            .strip_prefix("https://github.com/")
-            .or_else(|| repo_url.strip_prefix("http://github.com/"))
-            .ok_or_else(|| Error::Config("Invalid GitHub URL format".to_string()))?;
+    let social_data: CoinGeckoSocialResponse = response
+      .json()
+      .await
+      .map_err(|e| Error::Parse(format!("Failed to parse CoinGecko response: {}", e)))?;
 
-        let api_url = format!("https://api.github.com/repos/{}", repo_path);
+    Ok(social_data)
+  }
 
-        debug!("Fetching GitHub repo info for: {}", repo_path);
+  /// Fetch GitHub repository information for enhanced social data
+  pub async fn fetch_github_repo_info(
+    &self,
+    repo_url: &str,
+    github_token: Option<&str>,
+  ) -> Result<GitHubRepoInfo> {
+    // Extract owner/repo from GitHub URL
+    let repo_path = repo_url
+      .strip_prefix("https://github.com/")
+      .or_else(|| repo_url.strip_prefix("http://github.com/"))
+      .ok_or_else(|| Error::Config("Invalid GitHub URL format".to_string()))?;
 
-        // Use the HTTP client directly for external API calls
-        let client = self.transport.client();
-        let mut request = client.get(&api_url);
+    let api_url = format!("https://api.github.com/repos/{}", repo_path);
 
-        // Add headers
-        request = request.header("User-Agent", "AlphaVantage-Rust-Client/1.0");
-        request = request.header("Accept", "application/vnd.github.v3+json");
+    debug!("Fetching GitHub repo info for: {}", repo_path);
 
-        if let Some(token) = github_token {
-            request = request.header("Authorization", format!("token {}", token));
-        }
+    // Use the HTTP client directly for external API calls
+    let client = self.transport.client();
+    let mut request = client.get(&api_url);
 
-        let response = request.send().await
-            .map_err(|e| Error::Http(format!("GitHub API request failed: {}", e)))?;
+    // Add headers
+    request = request.header("User-Agent", "AlphaVantage-Rust-Client/1.0");
+    request = request.header("Accept", "application/vnd.github.v3+json");
 
-        if !response.status().is_success() {
-            if response.status() == 404 {
-                return Err(Error::Api("GitHub repository not found".to_string()));
-            }
-            return Err(Error::Http(format!(
-                "GitHub API error: HTTP {}", response.status()
-            )));
-        }
-
-        let repo_info: GitHubRepoInfo = response.json().await
-            .map_err(|e| Error::Parse(format!("Failed to parse GitHub response: {}", e)))?;
-
-        Ok(repo_info)
+    if let Some(token) = github_token {
+      request = request.header("Authorization", format!("token {}", token));
     }
 
-    /// Get multiple coin social data with rate limiting
-    pub async fn batch_fetch_social_data(
-        &self,
-        coingecko_ids: Vec<&str>,
-        api_key: Option<&str>,
-        delay_ms: u64,
-    ) -> Vec<Result<CoinGeckoSocialResponse>> {
-        let mut results = Vec::new();
+    let response =
+      request.send().await.map_err(|e| Error::Http(format!("GitHub API request failed: {}", e)))?;
 
-        for (i, id) in coingecko_ids.iter().enumerate() {
-            if i > 0 {
-                sleep(Duration::from_millis(delay_ms)).await;
-            }
-
-            let result = self.fetch_coingecko_social_data(id, api_key).await;
-            results.push(result);
-        }
-
-        results
+    if !response.status().is_success() {
+      if response.status() == 404 {
+        return Err(Error::Api("GitHub repository not found".to_string()));
+      }
+      return Err(Error::Http(format!("GitHub API error: HTTP {}", response.status())));
     }
+
+    let repo_info: GitHubRepoInfo = response
+      .json()
+      .await
+      .map_err(|e| Error::Parse(format!("Failed to parse GitHub response: {}", e)))?;
+
+    Ok(repo_info)
+  }
+
+  /// Get multiple coin social data with rate limiting
+  pub async fn batch_fetch_social_data(
+    &self,
+    coingecko_ids: Vec<&str>,
+    api_key: Option<&str>,
+    delay_ms: u64,
+  ) -> Vec<Result<CoinGeckoSocialResponse>> {
+    let mut results = Vec::new();
+
+    for (i, id) in coingecko_ids.iter().enumerate() {
+      if i > 0 {
+        sleep(Duration::from_millis(delay_ms)).await;
+      }
+
+      let result = self.fetch_coingecko_social_data(id, api_key).await;
+      results.push(result);
+    }
+
+    results
+  }
 }
