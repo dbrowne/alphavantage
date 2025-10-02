@@ -102,7 +102,6 @@ impl Transport {
 
     url.query_pairs_mut().extend_pairs(params);
 
-
     debug!("Making request to: {}", url);
 
     let response = self

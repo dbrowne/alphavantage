@@ -49,11 +49,7 @@ pub struct BatchResult<T> {
 
 impl<T> BatchResult<T> {
   pub fn new() -> Self {
-    Self {
-      success: Vec::new(),
-      failures: Vec::new(),
-      total_processed: 0,
-    }
+    Self { success: Vec::new(), failures: Vec::new(), total_processed: 0 }
   }
 
   pub fn success_count(&self) -> usize {
@@ -93,9 +89,10 @@ impl BatchProcessor {
     processor: F,
   ) -> LoaderResult<BatchResult<O>>
   where
-      T: Send + 'static,
-      F: Fn(T) -> futures::future::BoxFuture<'static, LoaderResult<O>> + Send + Sync + Clone + 'static,
-      O: Send + 'static,
+    T: Send + 'static,
+    F:
+      Fn(T) -> futures::future::BoxFuture<'static, LoaderResult<O>> + Send + Sync + Clone + 'static,
+    O: Send + 'static,
   {
     let mut result = BatchResult::new();
     let total_items = items.len();
@@ -125,9 +122,10 @@ impl BatchProcessor {
             result.failures.push((global_idx, e));
 
             if !self.config.continue_on_error {
-              return Err(LoaderError::BatchProcessingError(
-                format!("Batch processing failed at item {}", global_idx)
-              ));
+              return Err(LoaderError::BatchProcessingError(format!(
+                "Batch processing failed at item {}",
+                global_idx
+              )));
             }
           }
         }
@@ -143,8 +141,11 @@ impl BatchProcessor {
       batch_idx += 1;
     }
 
-    debug!("Batch processing complete: {} successes, {} failures",
-               result.success_count(), result.failure_count());
+    debug!(
+      "Batch processing complete: {} successes, {} failures",
+      result.success_count(),
+      result.failure_count()
+    );
 
     Ok(result)
   }
@@ -156,25 +157,25 @@ impl BatchProcessor {
     processor: F,
   ) -> LoaderResult<Vec<Result<O, LoaderError>>>
   where
-      T: Send + 'static,
-      F: Fn(T) -> futures::future::BoxFuture<'static, LoaderResult<O>> + Send + Sync + Clone,
-      O: Send + 'static,
+    T: Send + 'static,
+    F: Fn(T) -> futures::future::BoxFuture<'static, LoaderResult<O>> + Send + Sync + Clone,
+    O: Send + 'static,
   {
     let semaphore = self.semaphore.clone();
 
     let results = stream::iter(batch)
-        .map(move |item| {
-          let processor = processor.clone();
-          let semaphore = semaphore.clone();
+      .map(move |item| {
+        let processor = processor.clone();
+        let semaphore = semaphore.clone();
 
-          async move {
-            let _permit = semaphore.acquire().await.unwrap();
-            processor(item).await
-          }
-        })
-        .buffer_unordered(self.config.max_concurrent_batches)
-        .collect::<Vec<_>>()
-        .await;
+        async move {
+          let _permit = semaphore.acquire().await.unwrap();
+          processor(item).await
+        }
+      })
+      .buffer_unordered(self.config.max_concurrent_batches)
+      .collect::<Vec<_>>()
+      .await;
 
     Ok(results)
   }

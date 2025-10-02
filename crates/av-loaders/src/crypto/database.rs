@@ -1,15 +1,13 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use tracing::{ error, info, debug, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
   DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState,
   batch_processor::{BatchConfig, BatchProcessor, BatchResult},
 };
 
-use super::{
-  CryptoDataSource, CryptoLoaderConfig,  CryptoSymbol, CryptoSymbolLoader,
-};
+use super::{CryptoDataSource, CryptoLoaderConfig, CryptoSymbol, CryptoSymbolLoader};
 
 /// Input for the crypto database integration loader
 #[derive(Debug, Clone)]
@@ -169,7 +167,10 @@ impl CryptoDbLoader {
   /// Allow multiple tokens with same trading symbol but different source IDs
   ///
 
-  async fn save_all_crypto_tokens(&self, symbols: Vec<CryptoSymbol>) -> LoaderResult<Vec<CryptoSymbolForDb>> {
+  async fn save_all_crypto_tokens(
+    &self,
+    symbols: Vec<CryptoSymbol>,
+  ) -> LoaderResult<Vec<CryptoSymbolForDb>> {
     let mut processed_symbols = Vec::new();
 
     for token in symbols {
@@ -191,7 +192,12 @@ impl CryptoDbLoader {
   }
 
   /// Find existing token by composite key (symbol + source + source_id)
-  async fn find_existing_token(&self, symbol: &str, source: &CryptoDataSource, source_id: &str) -> LoaderResult<Option<CryptoSymbolForDb>> {
+  async fn find_existing_token(
+    &self,
+    symbol: &str,
+    source: &CryptoDataSource,
+    source_id: &str,
+  ) -> LoaderResult<Option<CryptoSymbolForDb>> {
     // This function would check if the exact same token already exists
     // by looking for the combination of trading symbol + source + source_id
     //
@@ -231,13 +237,12 @@ impl CryptoDbLoader {
     let db_token = CryptoSymbolForDb::from(token.clone());
 
     info!(
-            "Processed token: {} '{}' from {} (source_id: {})",
-            db_token.symbol, db_token.name, db_token.source, db_token.source_id
-        );
+      "Processed token: {} '{}' from {} (source_id: {})",
+      db_token.symbol, db_token.name, db_token.source, db_token.source_id
+    );
 
     Ok(db_token)
   }
-
 
   /// Modified process_symbols method to use new multi-token approach
   async fn process_symbols_multi_token(
@@ -264,9 +269,7 @@ impl CryptoDbLoader {
     let mut symbol_groups: HashMap<String, Vec<&mut CryptoSymbolForDb>> = HashMap::new();
 
     for token in tokens.iter_mut() {
-      symbol_groups.entry(token.symbol.clone())
-          .or_insert_with(Vec::new)
-          .push(token);
+      symbol_groups.entry(token.symbol.clone()).or_insert_with(Vec::new).push(token);
     }
 
     // Process each symbol group
@@ -291,22 +294,20 @@ impl CryptoDbLoader {
     tokens.sort_by_key(|token| token.market_cap_rank.unwrap_or(9999999));
 
     for (index, token) in tokens.iter_mut().enumerate() {
-
       if index == 0 && token.market_cap_rank.is_some() {
         // Best market cap rank gets its actual rank as priority (primary)
         token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(9999999);
-        info!("Made '{}' primary for '{}' with market cap rank {:?}",
-                 token.name, symbol, token.market_cap_rank);
+        info!(
+          "Made '{}' primary for '{}' with market cap rank {:?}",
+          token.name, symbol, token.market_cap_rank
+        );
       } else {
         // Non-primary tokens get default priority
         token.priority = 9999999;
       }
-      debug!("Assigned priority {} to '{}' for symbol '{}'",
-                  token.priority, token.name, symbol);
+      debug!("Assigned priority {} to '{}' for symbol '{}'", token.priority, token.name, symbol);
     }
   }
-
-
 }
 
 #[async_trait]
@@ -320,9 +321,9 @@ impl DataLoader for CryptoDbLoader {
 
     if let Some(tracker) = &context.process_tracker {
       tracker
-          .start("crypto_db_loader")
-          .await
-          .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
+        .start("crypto_db_loader")
+        .await
+        .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
     }
 
     // Configure API keys if provided
@@ -408,11 +409,11 @@ impl DataLoader for CryptoDbLoader {
 
     if let Some(tracker) = &context.process_tracker {
       let state =
-          if total_errors > 0 { ProcessState::CompletedWithErrors } else { ProcessState::Success };
+        if total_errors > 0 { ProcessState::CompletedWithErrors } else { ProcessState::Success };
       tracker
-          .complete(state)
-          .await
-          .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
+        .complete(state)
+        .await
+        .map_err(|e| LoaderError::ProcessTrackingError(e.to_string()))?;
     }
 
     info!(

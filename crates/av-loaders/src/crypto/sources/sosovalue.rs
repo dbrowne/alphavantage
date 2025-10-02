@@ -17,7 +17,6 @@ impl SosoValueProvider {
   }
 }
 
-
 #[derive(Debug, Deserialize)]
 struct SosoValueResponse {
   code: i32,
