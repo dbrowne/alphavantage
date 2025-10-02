@@ -47,10 +47,7 @@ impl<'a> NewIntradayPrice<'a> {
     let mut total_inserted = 0;
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let inserted = insert_into(intradayprices::table)
-        .values(chunk)
-        .execute(conn)
-        .await?;
+      let inserted = insert_into(intradayprices::table).values(chunk).execute(conn).await?;
       total_inserted += inserted;
     }
 
@@ -187,10 +184,7 @@ impl<'a> NewSummaryPrice<'a> {
     let mut total_inserted = 0;
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let inserted = insert_into(summaryprices::table)
-        .values(chunk)
-        .execute(conn)
-        .await?;
+      let inserted = insert_into(summaryprices::table).values(chunk).execute(conn).await?;
       total_inserted += inserted;
     }
 
@@ -224,10 +218,7 @@ impl NewSummaryPriceOwned {
     let mut total_inserted = 0;
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let inserted = insert_into(summaryprices::table)
-        .values(chunk)
-        .execute(conn)
-        .await?;
+      let inserted = insert_into(summaryprices::table).values(chunk).execute(conn).await?;
       total_inserted += inserted;
     }
 
@@ -384,10 +375,7 @@ impl<'a> NewTopStat<'a> {
     let mut total_inserted = 0;
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let inserted = insert_into(topstats::table)
-        .values(chunk)
-        .execute(conn)
-        .await?;
+      let inserted = insert_into(topstats::table).values(chunk).execute(conn).await?;
       total_inserted += inserted;
     }
 
@@ -419,10 +407,7 @@ impl NewTopStatOwned {
     let mut total_inserted = 0;
 
     for chunk in records.chunks(BATCH_SIZE) {
-      let inserted = insert_into(topstats::table)
-        .values(chunk)
-        .execute(conn)
-        .await?;
+      let inserted = insert_into(topstats::table).values(chunk).execute(conn).await?;
       total_inserted += inserted;
     }
 

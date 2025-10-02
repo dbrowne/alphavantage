@@ -48,7 +48,7 @@ impl CryptoDataProvider for CoinPaprikaProvider {
       .filter(|coin| coin.is_active)
       .map(|coin| CryptoSymbol {
         symbol: coin.symbol.to_uppercase(),
-          priority: 9999999,
+        priority: 9999999,
         name: coin.name,
         base_currency: None,
         quote_currency: Some("USD".to_string()),

@@ -29,11 +29,11 @@
 
 pub mod common;
 pub mod crypto;
+pub mod crypto_social;
 pub mod forex;
 pub mod fundamentals;
 pub mod news;
 pub mod time_series;
-pub mod crypto_social;
 pub use crypto_social::*;
 
 // Re-export common types for convenience
