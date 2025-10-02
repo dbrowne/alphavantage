@@ -1,9 +1,9 @@
 //! Base traits and types for data loaders
 
-use async_trait::async_trait;
-use std::sync::Arc;
-use av_client::AlphaVantageClient;
 use crate::{LoaderResult, ProcessTracker};
+use async_trait::async_trait;
+use av_client::AlphaVantageClient;
+use std::sync::Arc;
 
 /// Configuration for data loaders
 #[derive(Debug, Clone)]
@@ -48,15 +48,8 @@ pub struct LoaderContext {
 }
 
 impl LoaderContext {
-  pub fn new(
-    client: Arc<AlphaVantageClient>,
-    config: LoaderConfig,
-  ) -> Self {
-    Self {
-      client,
-      config,
-      process_tracker: None,
-    }
+  pub fn new(client: Arc<AlphaVantageClient>, config: LoaderConfig) -> Self {
+    Self { client, config, process_tracker: None }
   }
 
   pub fn with_process_tracker(mut self, tracker: ProcessTracker) -> Self {
@@ -75,17 +68,10 @@ pub trait DataLoader: Send + Sync {
   type Output;
 
   /// Load data from the given input
-  async fn load(
-    &self,
-    context: &LoaderContext,
-    input: Self::Input,
-  ) -> LoaderResult<Self::Output>;
+  async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output>;
 
   /// Validate input before loading
-  async fn validate_input(
-    &self,
-    _input: &Self::Input,
-  ) -> LoaderResult<()> {
+  async fn validate_input(&self, _input: &Self::Input) -> LoaderResult<()> {
     Ok(())
   }
 

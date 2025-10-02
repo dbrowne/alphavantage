@@ -1,20 +1,20 @@
 use anyhow::Result;
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::Arc;
 use std::collections::HashMap;
-use tracing::{info, warn, error, debug};
+use std::sync::Arc;
+use tracing::{debug, error, info, warn};
 
 use av_client::AlphaVantageClient;
-use av_core::types::market::{SecurityIdentifier, SecurityType, Exchange};
+use av_core::types::market::{Exchange, SecurityIdentifier, SecurityType};
 use av_loaders::{
-  SecurityLoader, SecurityLoaderInput, LoaderConfig, LoaderContext,
-  process_tracker::ProcessTracker, DataLoader, SymbolMatchMode,
+  DataLoader, LoaderConfig, LoaderContext, SecurityLoader, SecurityLoaderInput, SymbolMatchMode,
+  process_tracker::ProcessTracker,
 };
 
 // Import diesel types
-use diesel::prelude::*;
 use diesel::PgConnection;
+use diesel::prelude::*;
 
 use crate::config::Config;
 
@@ -73,9 +73,7 @@ impl SidGenerator {
     info!("Initializing SID generator - reading existing SIDs from database");
 
     // Get all existing SIDs
-    let sids: Vec<i64> = symbols
-        .select(sid)
-        .load(conn)?;
+    let sids: Vec<i64> = symbols.select(sid).load(conn)?;
 
     let mut max_raw_ids: HashMap<SecurityType, u32> = HashMap::new();
 
@@ -98,9 +96,7 @@ impl SidGenerator {
 
     info!("SID generator initialized with {} security types", next_ids.len());
 
-    Ok(Self {
-      next_raw_ids: next_ids,
-    })
+    Ok(Self { next_raw_ids: next_ids })
   }
 
   /// Generate the next SID for a given security type
@@ -145,14 +141,12 @@ pub fn normalize_alpha_region(region: &str) -> String {
 
   // Ensure the result fits in VARCHAR(10)
   if normalized.len() > 10 {
-    warn!("Region '{}' exceeds 10 characters, truncating to '{}'",
-          normalized, &normalized[..10]);
+    warn!("Region '{}' exceeds 10 characters, truncating to '{}'", normalized, &normalized[..10]);
     normalized[..10].to_string()
   } else {
     normalized.to_string()
   }
 }
-
 
 /// Main execute function
 pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
@@ -190,8 +184,7 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     MatchMode::Top => SymbolMatchMode::TopMatches(args.top_matches),
   };
 
-  let loader = SecurityLoader::new(args.concurrent)
-      .with_match_mode(match_mode);
+  let loader = SecurityLoader::new(args.concurrent).with_match_mode(match_mode);
 
   // Collect all securities first, then save in one transaction
   let mut all_securities = Vec::new();
@@ -201,10 +194,7 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
   if std::path::Path::new(&nasdaq_path).exists() {
     info!("Loading NASDAQ symbols from: {}", nasdaq_path);
 
-    let input = SecurityLoaderInput {
-      file_path: nasdaq_path,
-      exchange: "NASDAQ".to_string(),
-    };
+    let input = SecurityLoaderInput { file_path: nasdaq_path, exchange: "NASDAQ".to_string() };
 
     match loader.load(&context, input).await {
       Ok(output) => {
@@ -232,10 +222,7 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
   if std::path::Path::new(&nyse_path).exists() {
     info!("Loading NYSE symbols from: {}", nyse_path);
 
-    let input = SecurityLoaderInput {
-      file_path: nyse_path,
-      exchange: "NYSE".to_string(),
-    };
+    let input = SecurityLoaderInput { file_path: nyse_path, exchange: "NYSE".to_string() };
 
     match loader.load(&context, input).await {
       Ok(output) => {
@@ -265,19 +252,18 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     tokio::task::spawn_blocking(move || -> Result<usize> {
       // Establish connection in the blocking context
       let mut conn = PgConnection::establish(&db_url)
-          .map_err(|e| anyhow::anyhow!("Error connecting to database: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Error connecting to database: {}", e))?;
 
       // Initialize SID generator
       let mut sid_generator = SidGenerator::new(&mut conn)?;
 
       // Save all symbols
       save_symbols_to_db(&mut conn, &all_securities, &mut sid_generator)
-    }).await??
+    })
+    .await??
   } else {
     0
   };
-
-
 
   // Complete process tracking
   if let Some(tracker) = &context.process_tracker {
@@ -314,8 +300,7 @@ async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
     MatchMode::Top => SymbolMatchMode::TopMatches(args.top_matches),
   };
 
-  let loader = SecurityLoader::new(args.concurrent)
-      .with_match_mode(match_mode);
+  let loader = SecurityLoader::new(args.concurrent).with_match_mode(match_mode);
 
   let mut total_loaded = 0;
   let mut total_errors = 0;
@@ -329,10 +314,7 @@ async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
     if std::path::Path::new(&path).exists() {
       info!("Loading {} symbols from: {}", exchange, path);
 
-      let input = SecurityLoaderInput {
-        file_path: path,
-        exchange: exchange.to_string(),
-      };
+      let input = SecurityLoaderInput { file_path: path, exchange: exchange.to_string() };
 
       match loader.load(&context, input).await {
         Ok(output) => {
@@ -368,16 +350,16 @@ fn save_symbols_to_db(
   securities: &[av_loaders::SecurityData],
   sid_generator: &mut SidGenerator,
 ) -> Result<usize> {
-  use av_database_postgres::schema::{symbols,equity_details};
-  use av_database_postgres::models::security::{NewSymbol,NewEquityDetailOwned};
+  use av_database_postgres::models::security::{NewEquityDetailOwned, NewSymbol};
+  use av_database_postgres::schema::{equity_details, symbols};
   use diesel::result::DatabaseErrorKind;
 
   let progress = ProgressBar::new(securities.len() as u64);
   progress.set_style(
     ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-        .unwrap()
-        .progress_chars("##-"),
+      .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+      .unwrap()
+      .progress_chars("##-"),
   );
   progress.set_message("Saving symbols to database");
 
@@ -406,8 +388,10 @@ fn save_symbols_to_db(
     // Log if the matched symbol differs from original query
     if let Some(original) = &security_data.original_query {
       if !original.eq_ignore_ascii_case(&security_data.symbol) {
-        info!("Processing symbol {} (from search: {}, score: {:?})",
-              security_data.symbol, original, security_data.match_score);
+        info!(
+          "Processing symbol {} (from search: {}, score: {:?})",
+          security_data.symbol, original, security_data.match_score
+        );
       }
     }
 
@@ -423,17 +407,17 @@ fn save_symbols_to_db(
 
     // Parse market hours from the security data
     let market_open = chrono::NaiveTime::parse_from_str(&security_data.market_open, "%H:%M")
-        .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("09:30", "%H:%M").unwrap());
+      .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("09:30", "%H:%M").unwrap());
     let market_close = chrono::NaiveTime::parse_from_str(&security_data.market_close, "%H:%M")
-        .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("16:00", "%H:%M").unwrap());
+      .unwrap_or_else(|_| chrono::NaiveTime::parse_from_str("16:00", "%H:%M").unwrap());
 
     // Use the timezone from the security data or fall back to Exchange lookup
     let timezone = if !security_data.timezone.is_empty() {
       security_data.timezone.clone()
     } else {
       Exchange::from_str(&security_data.exchange)
-          .map(|ex| ex.timezone().to_string())
-          .unwrap_or_else(|| "US/Eastern".to_string())
+        .map(|ex| ex.timezone().to_string())
+        .unwrap_or_else(|| "US/Eastern".to_string())
     };
 
     // Normalize the region before saving with enhanced mapping
@@ -441,36 +425,41 @@ fn save_symbols_to_db(
 
     // Check if THIS EXACT symbol already exists
     let existing_result = symbols::table
-        .filter(symbols::symbol.eq(&security_data.symbol))
-        .select((symbols::sid, symbols::region))
-        .first::<(i64, String)>(conn)
-        .optional();
+      .filter(symbols::symbol.eq(&security_data.symbol))
+      .select((symbols::sid, symbols::region))
+      .first::<(i64, String)>(conn)
+      .optional();
 
     match existing_result {
       Ok(Some((sid_val, existing_region))) => {
         // Symbol already exists in database
-        debug!("Symbol {} already exists with SID {} in region {}",
-               security_data.symbol, sid_val, existing_region);
+        debug!(
+          "Symbol {} already exists with SID {} in region {}",
+          security_data.symbol, sid_val, existing_region
+        );
 
         // Only update if it's the same region, otherwise skip
         if existing_region == normalized_region {
           // Use Diesel's built-in change detection by comparing all fields
           // This will only execute if at least one field is different
           match diesel::update(symbols::table.find(sid_val))
-              .set((
-                symbols::name.eq(&security_data.name),
-                symbols::currency.eq(&security_data.currency),
-                symbols::m_time.eq(chrono::Utc::now().naive_utc()),
-              ))
-              .execute(conn) {
+            .set((
+              symbols::name.eq(&security_data.name),
+              symbols::currency.eq(&security_data.currency),
+              symbols::m_time.eq(chrono::Utc::now().naive_utc()),
+            ))
+            .execute(conn)
+          {
             Ok(rows_affected) => {
               if rows_affected > 0 {
                 updated_count += 1;
                 info!("Updated symbol {} (SID {}) - data changed", security_data.symbol, sid_val);
               } else {
                 // No rows affected means no changes
-                debug!("No changes for symbol {} (SID {}), skipped update",
-                       security_data.symbol, sid_val);
+                debug!(
+                  "No changes for symbol {} (SID {}), skipped update",
+                  security_data.symbol, sid_val
+                );
                 skipped_count += 1;
               }
             }
@@ -481,8 +470,10 @@ fn save_symbols_to_db(
           }
         } else {
           // Different region for same symbol - this is a problem
-          warn!("Symbol {} already exists with different region (existing: {}, new: {}). Skipping.",
-                security_data.symbol, existing_region, normalized_region);
+          warn!(
+            "Symbol {} already exists with different region (existing: {}, new: {}). Skipping.",
+            security_data.symbol, existing_region, normalized_region
+          );
           skipped_count += 1;
         }
       }
@@ -502,7 +493,7 @@ fn save_symbols_to_db(
         let new_symbol = NewSymbol {
           sid: &new_sid,
           symbol: &security_data.symbol,
-          priority:&9999999,
+          priority: &9999999,
           name: &truncated_name,
           sec_type: &format!("{:?}", security_type),
           region: &normalized_region,
@@ -535,18 +526,21 @@ fn save_symbols_to_db(
         }
 
         // Try to insert
-        match diesel::insert_into(symbols::table)
-            .values(&new_symbol)
-            .execute(conn) {
+        match diesel::insert_into(symbols::table).values(&new_symbol).execute(conn) {
           Ok(_) => {
             saved_count += 1;
-            info!("Saved new symbol {} with SID {} in region {}",
-                  security_data.symbol, new_sid, normalized_region);
+            info!(
+              "Saved new symbol {} with SID {} in region {}",
+              security_data.symbol, new_sid, normalized_region
+            );
           }
           Err(e) => {
             // Check if it's a unique constraint violation
             if let diesel::result::Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) = e {
-              warn!("Symbol {} already exists (concurrent insert?), skipping", security_data.symbol);
+              warn!(
+                "Symbol {} already exists (concurrent insert?), skipping",
+                security_data.symbol
+              );
               skipped_count += 1;
             } else {
               error!("Failed to insert symbol {}: {}", security_data.symbol, e);
@@ -554,7 +548,7 @@ fn save_symbols_to_db(
             }
           }
         }
-        if security_type != SecurityType::Cryptocurrency{
+        if security_type != SecurityType::Cryptocurrency {
           let new_equity_detail = NewEquityDetailOwned {
             sid: new_sid,
             exchange: security_data.exchange.clone(),
@@ -565,9 +559,8 @@ fn save_symbols_to_db(
             m_time: now_t,
           };
 
-          match diesel::insert_into(equity_details::table)
-              .values(&new_equity_detail)
-              .execute(conn) {
+          match diesel::insert_into(equity_details::table).values(&new_equity_detail).execute(conn)
+          {
             Ok(_) => {
               debug!("Created equity details for {} (SID {})", security_data.symbol, new_sid);
             }

@@ -488,4 +488,3 @@ impl EquityDetail {
     equity_details::table.find(sid).first(conn).await
   }
 }
-

@@ -184,7 +184,7 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
   for (sid, symbol, name) in symbols_to_load {
     progress.set_message(format!("Loading {}", symbol));
 
-    match fetch_crypto_overview(&client, sid, &symbol, &name,args.cmc_api_key.as_deref()).await {
+    match fetch_crypto_overview(&client, sid, &symbol, &name, args.cmc_api_key.as_deref()).await {
       Ok(overview) => {
         // Fetch GitHub data if URL is available and GitHub scraping is enabled
         let github_data = if args.include_github {
@@ -412,23 +412,22 @@ async fn fetch_crypto_overview(
   sid: i64,
   symbol: &str,
   name: &str,
-    cmc_api_key: Option<&str>,
+  cmc_api_key: Option<&str>,
 ) -> Result<CryptoOverviewData> {
   // Try multiple sources in order of preference
 
-
-        // 0. Try CoinMarketCap FIRST (if API key is available)
-    if let Some(api_key) = cmc_api_key {
-      match fetch_from_coinmarketcap(client, sid, symbol, name, api_key).await {
-        Ok(data) => {
-          info!("Successfully fetched {} data from CoinMarketCap", symbol);
-          return Ok(data);
-        }
-        Err(e) => {
-          warn!("CoinMarketCap failed for {}: {}", symbol, e);
-        }
+  // 0. Try CoinMarketCap FIRST (if API key is available)
+  if let Some(api_key) = cmc_api_key {
+    match fetch_from_coinmarketcap(client, sid, symbol, name, api_key).await {
+      Ok(data) => {
+        info!("Successfully fetched {} data from CoinMarketCap", symbol);
+        return Ok(data);
+      }
+      Err(e) => {
+        warn!("CoinMarketCap failed for {}: {}", symbol, e);
       }
     }
+  }
   // 1. Try CoinGecko     todo!  Get rid of this !!
   match fetch_from_coingecko_free(client, sid, symbol, name).await {
     Ok(data) => return Ok(data),
@@ -436,14 +435,15 @@ async fn fetch_crypto_overview(
   }
 
   // 2. Try CoinPaprika
-  match fetch_from_coinpaprika(client, sid, symbol, name).await {  //todo: get rid of this
+  match fetch_from_coinpaprika(client, sid, symbol, name).await {
+    //todo: get rid of this
     Ok(data) => return Ok(data),
     Err(e) => debug!("CoinPaprika failed for {}: {}", symbol, e),
   }
 
   // 3. Try CoinCap
   match fetch_from_coincap(client, sid, symbol, name).await {
-    Ok(data) => return Ok(data),  //todo:: Get rid of this
+    Ok(data) => return Ok(data), //todo:: Get rid of this
     Err(e) => debug!("CoinCap failed for {}: {}", symbol, e),
   }
 
@@ -634,15 +634,15 @@ async fn fetch_from_coincap(
 }
 
 async fn fetch_from_coinmarketcap(
-    client: &reqwest::Client,
-    sid: i64,
-    symbol: &str,
-    name: &str,
-    api_key: &str,
+  client: &reqwest::Client,
+  sid: i64,
+  symbol: &str,
+  name: &str,
+  api_key: &str,
 ) -> Result<CryptoOverviewData> {
-    let url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest";
-    
-    let response = client
+  let url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest";
+
+  let response = client
         .get(url)
         .header("X-CMC_PRO_API_KEY", api_key)
         .header("Accept", "application/json")
@@ -655,89 +655,76 @@ async fn fetch_from_coinmarketcap(
         .send()
         .await?;
 
-    if response.status() != 200 {
-        return Err(anyhow!("CoinMarketCap returned status: {}", response.status()));
+  if response.status() != 200 {
+    return Err(anyhow!("CoinMarketCap returned status: {}", response.status()));
+  }
+
+  let cmc_response: serde_json::Value = response.json().await?;
+
+  // Check for API errors
+  if let Some(status) = cmc_response.get("status") {
+    if let Some(error_code) = status.get("error_code").and_then(|v| v.as_i64()) {
+      if error_code != 0 {
+        let error_msg =
+          status.get("error_message").and_then(|v| v.as_str()).unwrap_or("Unknown CMC error");
+        return Err(anyhow!("CoinMarketCap API error: {}", error_msg));
+      }
     }
+  }
 
-    let cmc_response: serde_json::Value = response.json().await?;
+  // Extract cryptocurrency data
+  let crypto_data = cmc_response
+    .get("data")
+    .and_then(|d| d.get(symbol))
+    .and_then(|arr| arr.as_array())
+    .and_then(|arr| arr.first())
+    .ok_or_else(|| anyhow!("No data found for symbol {} in CMC response", symbol))?;
 
-    // Check for API errors
-    if let Some(status) = cmc_response.get("status") {
-        if let Some(error_code) = status.get("error_code").and_then(|v| v.as_i64()) {
-            if error_code != 0 {
-                let error_msg = status.get("error_message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown CMC error");
-                return Err(anyhow!("CoinMarketCap API error: {}", error_msg));
-            }
-        }
-    }
+  let usd_quote = crypto_data
+    .get("quote")
+    .and_then(|q| q.get("USD"))
+    .ok_or_else(|| anyhow!("No USD quote data found for {}", symbol))?;
 
-    // Extract cryptocurrency data
-    let crypto_data = cmc_response
-        .get("data")
-        .and_then(|d| d.get(symbol))
-        .and_then(|arr| arr.as_array())
-        .and_then(|arr| arr.first())
-        .ok_or_else(|| anyhow!("No data found for symbol {} in CMC response", symbol))?;
+  // Extract values with proper error handling
+  let market_cap = usd_quote.get("market_cap").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
 
-    let usd_quote = crypto_data
-        .get("quote")
-        .and_then(|q| q.get("USD"))
-        .ok_or_else(|| anyhow!("No USD quote data found for {}", symbol))?;
+  let current_price = usd_quote.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-    // Extract values with proper error handling
-    let market_cap = usd_quote.get("market_cap")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as i64;
+  let volume_24h = usd_quote.get("volume_24h").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
 
-    let current_price = usd_quote.get("price")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+  let price_change_24h =
+    usd_quote.get("percent_change_24h").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-    let volume_24h = usd_quote.get("volume_24h")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as i64;
+  let circulating_supply =
+    crypto_data.get("circulating_supply").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-    let price_change_24h = usd_quote.get("percent_change_24h")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+  let total_supply = crypto_data.get("total_supply").and_then(|v| v.as_f64());
 
-    let circulating_supply = crypto_data.get("circulating_supply")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+  let max_supply = crypto_data.get("max_supply").and_then(|v| v.as_f64());
 
-    let total_supply = crypto_data.get("total_supply")
-        .and_then(|v| v.as_f64());
+  let rank = crypto_data.get("cmc_rank").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
-    let max_supply = crypto_data.get("max_supply")
-        .and_then(|v| v.as_f64());
-
-    let rank = crypto_data.get("cmc_rank")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-
-    Ok(CryptoOverviewData {
-        sid,
-        symbol: symbol.to_string(),
-        name: name.to_string(),
-        description: "".to_string(), // CMC quotes endpoint doesn't provide descriptions
-        market_cap,
-        circulating_supply,
-        total_supply,
-        max_supply,
-        price_usd: current_price,
-        volume_24h,
-        price_change_24h,
-        ath: 0.0, // Requires separate endpoint
-        ath_date: None,
-        atl: 0.0, // Requires separate endpoint
-        atl_date: None,
-        rank,
-        website: None, // Requires metadata endpoint
-        whitepaper: None,
-        github: None,
-    })
+  Ok(CryptoOverviewData {
+    sid,
+    symbol: symbol.to_string(),
+    name: name.to_string(),
+    description: "".to_string(), // CMC quotes endpoint doesn't provide descriptions
+    market_cap,
+    circulating_supply,
+    total_supply,
+    max_supply,
+    price_usd: current_price,
+    volume_24h,
+    price_change_24h,
+    ath: 0.0, // Requires separate endpoint
+    ath_date: None,
+    atl: 0.0, // Requires separate endpoint
+    atl_date: None,
+    rank,
+    website: None, // Requires metadata endpoint
+    whitepaper: None,
+    github: None,
+  })
 }
 
 /// Fetch GitHub data with authentication support
@@ -899,7 +886,8 @@ async fn check_github_rate_limit(
 }
 
 // Symbol to ID mapping functions
-fn get_coingecko_id(symbol: &str) -> String {// todo: This is for the free access but should delete
+fn get_coingecko_id(symbol: &str) -> String {
+  // todo: This is for the free access but should delete
   match symbol.to_uppercase().as_str() {
     "BTC" => "bitcoin".to_string(),
     "ETH" => "ethereum".to_string(),
@@ -940,7 +928,8 @@ fn get_coingecko_id(symbol: &str) -> String {// todo: This is for the free acces
   }
 }
 
-fn get_coinpaprika_id(symbol: &str) -> String {   //todo:: delete
+fn get_coinpaprika_id(symbol: &str) -> String {
+  //todo:: delete
   match symbol.to_uppercase().as_str() {
     "BTC" => "btc-bitcoin".to_string(),
     "ETH" => "eth-ethereum".to_string(),
@@ -970,7 +959,8 @@ fn get_coinpaprika_id(symbol: &str) -> String {   //todo:: delete
   }
 }
 
-fn get_coincap_id(symbol: &str) -> String { //todo:: This should be deleted
+fn get_coincap_id(symbol: &str) -> String {
+  //todo:: This should be deleted
   match symbol.to_uppercase().as_str() {
     "BTC" => "bitcoin".to_string(),
     "ETH" => "ethereum".to_string(),
@@ -1226,4 +1216,3 @@ fn save_crypto_overviews_with_github_to_db(
 
   Ok(saved_count)
 }
-

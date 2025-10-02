@@ -1,6 +1,6 @@
-use clap::{Args, Subcommand};
-use anyhow::Result;
 use crate::config::Config;
+use anyhow::Result;
+use clap::{Args, Subcommand};
 
 #[derive(Args, Debug)]
 pub struct QueryCommand {

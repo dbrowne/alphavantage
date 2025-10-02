@@ -1,11 +1,11 @@
 #![allow(async_fn_in_trait)] // Add this at the top of the file
 
 pub mod crypto;
+pub mod crypto_social;
 pub mod forex;
 pub mod fundamentals;
 pub mod news;
 pub mod time_series;
-pub mod crypto_social;
 
 use crate::transport::Transport;
 use av_core::Result;

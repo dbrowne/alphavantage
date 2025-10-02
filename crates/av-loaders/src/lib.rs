@@ -19,15 +19,14 @@ pub mod crypto;
 pub mod csv_processor;
 pub mod error;
 pub mod loader;
+pub mod news_loader;
 pub mod overview_loader;
 pub mod process_tracker;
 pub mod security_loader;
-pub mod news_loader;
 
 pub use news_loader::{
-    NewsLoader, NewsLoaderConfig, NewsLoaderInput, NewsLoaderOutput,
-    SymbolInfo as NewsSymbolInfo,
-    load_news_for_equity_symbols,
+  NewsLoader, NewsLoaderConfig, NewsLoaderInput, NewsLoaderOutput, SymbolInfo as NewsSymbolInfo,
+  load_news_for_equity_symbols,
 };
 
 // Re-export commonly used types
@@ -38,43 +37,61 @@ pub use process_tracker::{ProcessState, ProcessTracker};
 
 // Re-export loaders with their data types
 pub use security_loader::{
-    SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode,
+  SecurityData, SecurityLoader, SecurityLoaderInput, SecurityLoaderOutput, SymbolMatchMode,
 };
 
 pub use overview_loader::{
-    OverviewData, OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput, SymbolInfo,
+  OverviewData, OverviewLoader, OverviewLoaderInput, OverviewLoaderOutput, SymbolInfo,
 };
 
 // Re-export crypto module types including markets loader
 pub use crypto::{
-    CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError, CryptoLoaderResult, CryptoSymbol,
-    CryptoSymbolLoader, SourceResult,
-    database::{CryptoDbInput, CryptoDbLoader, CryptoDbOutput, SourceResultSummary},
-    // Export markets loader types
-    markets_loader::{
-        CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
-        CryptoMarketData, CryptoSymbolForMarkets,
-    },
-    // Export social loader types
-    social_loader::{
-        CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader,
-        ProcessedSocialData, CryptoSymbolForSocial,
-    },
-    metadata_loader::{
-        CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader,
-        CryptoMetadataOutput, CryptoSymbolForMetadata, ProcessedCryptoMetadata,
-    },
-    crypto_news_loader::load_crypto_news,
+  CryptoDataSource,
+  CryptoLoaderConfig,
+  CryptoLoaderError,
+  CryptoLoaderResult,
+  CryptoSymbol,
+  CryptoSymbolLoader,
+  SourceResult,
+  crypto_news_loader::load_crypto_news,
+  database::{CryptoDbInput, CryptoDbLoader, CryptoDbOutput, SourceResultSummary},
+  // Export markets loader types
+  markets_loader::{
+    CryptoMarketData, CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
+    CryptoSymbolForMarkets,
+  },
+  metadata_loader::{
+    CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader, CryptoMetadataOutput,
+    CryptoSymbolForMetadata, ProcessedCryptoMetadata,
+  },
+  // Export social loader types
+  social_loader::{
+    CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader, CryptoSymbolForSocial,
+    ProcessedSocialData,
+  },
 };
 
 pub mod prelude {
-    pub use crate::{
-        BatchConfig, BatchProcessor, DataLoader, LoaderConfig, LoaderContext, LoaderError,
-        LoaderResult, ProcessState, ProcessTracker,
-        // Include crypto types in prelude
-        CryptoDataSource, CryptoLoaderConfig, CryptoSymbolLoader,
-        CryptoMarketsLoader, CryptoSocialLoader,CryptoMetadataLoader,
-        NewsLoader, NewsLoaderConfig, load_news_for_equity_symbols,
-        crypto::crypto_news_loader::load_crypto_news,
-    };
+  pub use crate::{
+    BatchConfig,
+    BatchProcessor,
+    // Include crypto types in prelude
+    CryptoDataSource,
+    CryptoLoaderConfig,
+    CryptoMarketsLoader,
+    CryptoMetadataLoader,
+    CryptoSocialLoader,
+    CryptoSymbolLoader,
+    DataLoader,
+    LoaderConfig,
+    LoaderContext,
+    LoaderError,
+    LoaderResult,
+    NewsLoader,
+    NewsLoaderConfig,
+    ProcessState,
+    ProcessTracker,
+    crypto::crypto_news_loader::load_crypto_news,
+    load_news_for_equity_symbols,
+  };
 }
