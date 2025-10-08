@@ -23,6 +23,7 @@ pub mod news_loader;
 pub mod overview_loader;
 pub mod process_tracker;
 pub mod security_loader;
+pub mod summary_price_loader;
 pub mod top_movers_loader;
 
 pub use news_loader::{
@@ -30,9 +31,12 @@ pub use news_loader::{
   load_news_for_equity_symbols,
 };
 
-pub use top_movers_loader::{
-  TopMoversLoader, TopMoversLoaderInput, TopMoversLoaderOutput
+pub use summary_price_loader::{
+  SummaryPriceConfig, SummaryPriceData, SummaryPriceLoader, SummaryPriceLoaderInput,
+  SummaryPriceLoaderOutput,
 };
+
+pub use top_movers_loader::{TopMoversLoader, TopMoversLoaderInput, TopMoversLoaderOutput};
 
 // Re-export commonly used types
 pub use batch_processor::{BatchConfig, BatchProcessor};
@@ -96,6 +100,8 @@ pub mod prelude {
     NewsLoaderConfig,
     ProcessState,
     ProcessTracker,
+    SummaryPriceConfig,
+    SummaryPriceLoader,
     crypto::crypto_news_loader::load_crypto_news,
     load_news_for_equity_symbols,
   };
