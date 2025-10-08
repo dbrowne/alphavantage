@@ -9,6 +9,7 @@ pub mod crypto_metadata;
 pub mod crypto_news;
 pub mod crypto_overview;
 pub mod crypto_social;
+pub mod daily;
 pub mod news;
 pub mod news_utils;
 pub mod overviews;
@@ -62,18 +63,11 @@ enum LoadSubcommands {
     #[arg(short, long, default_value = "5min")]
     interval: String,
   },
-
-  /// Load daily price data
-  Daily {
-    /// Symbol to load (if not specified, loads all active symbols)
-    #[arg(short, long)]
-    symbol: Option<String>,
-  },
-
   /// Load news and sentiment data
   News(news::NewsArgs),
-  
+
   TopMovers(top_movers::TopMoversArgs),
+  Daily(daily::DailyArgs),
 }
 
 // And add to the execute match:
@@ -95,9 +89,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::Intraday { symbol: _, interval: _ } => {
       todo!("Implement intraday loading")
     }
-    LoadSubcommands::Daily { symbol: _ } => {
-      todo!("Implement daily loading")
-    }
+    LoadSubcommands::Daily(args) => daily::execute(args, config).await,
     LoadSubcommands::News(args) => news::execute(args, config).await,
     LoadSubcommands::TopMovers(args) => top_movers::execute(args, config).await,
   }
