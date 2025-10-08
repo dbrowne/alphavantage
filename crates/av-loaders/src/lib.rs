@@ -23,10 +23,15 @@ pub mod news_loader;
 pub mod overview_loader;
 pub mod process_tracker;
 pub mod security_loader;
+pub mod top_movers_loader;
 
 pub use news_loader::{
   NewsLoader, NewsLoaderConfig, NewsLoaderInput, NewsLoaderOutput, SymbolInfo as NewsSymbolInfo,
   load_news_for_equity_symbols,
+};
+
+pub use top_movers_loader::{
+  TopMoversLoader, TopMoversLoaderInput, TopMoversLoaderOutput
 };
 
 // Re-export commonly used types
