@@ -13,6 +13,7 @@ pub mod news;
 pub mod news_utils;
 pub mod overviews;
 pub mod securities;
+pub mod top_movers;
 
 use tracing::info;
 
@@ -71,6 +72,8 @@ enum LoadSubcommands {
 
   /// Load news and sentiment data
   News(news::NewsArgs),
+  
+  TopMovers(top_movers::TopMoversArgs),
 }
 
 // And add to the execute match:
@@ -96,5 +99,6 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
       todo!("Implement daily loading")
     }
     LoadSubcommands::News(args) => news::execute(args, config).await,
+    LoadSubcommands::TopMovers(args) => top_movers::execute(args, config).await,
   }
 }
