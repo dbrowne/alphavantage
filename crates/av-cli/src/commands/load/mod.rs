@@ -3,6 +3,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 pub mod crypto;
+pub mod crypto_intraday;
 pub mod crypto_mapping;
 mod crypto_markets;
 pub mod crypto_metadata;
@@ -27,34 +28,26 @@ pub struct LoadCommand {
 
 #[derive(Subcommand, Debug)]
 enum LoadSubcommands {
-  /// Load securities from CSV files and fetch data from AlphaVantage
   Securities(securities::SecuritiesArgs),
 
-  /// Load company overviews for existing securities
   Overviews(overviews::OverviewsArgs),
 
   Crypto(crypto::CryptoArgs),
 
-  /// Load cryptocurrency overviews (market data)
   CryptoOverview(crypto_overview::CryptoOverviewArgs),
 
-  /// Load cryptocurrency social data from CoinGecko and GitHub
   CryptoSocial(crypto_social::CryptoSocialArgs),
 
-  /// Update GitHub data for cryptocurrencies
   UpdateGithub(crypto_overview::UpdateGitHubArgs),
 
-  /// Load cryptocurrency market data from exchanges
   CryptoMarkets(crypto_markets::CryptoMarketsArgs),
 
-  /// Manage cryptocurrency symbol mappings (discover, stats)
   CryptoMapping(crypto_mapping::MappingArgs),
 
-  // Manage crypto Meta data
   CryptoMetadata(crypto_metadata::CryptoMetadataArgs),
   CryptoNews(crypto_news::CryptoNewsArgs),
+  CryptoIntraday(crypto_intraday::CryptoIntradayArgs),
 
-  /// Load news and sentiment data
   News(news::NewsArgs),
 
   TopMovers(top_movers::TopMoversArgs),
@@ -75,6 +68,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::CryptoMapping(args) => crypto_mapping::execute(args, &config).await,
     LoadSubcommands::CryptoMetadata(args) => crypto_metadata::execute(args, &config).await,
     LoadSubcommands::CryptoNews(args) => crypto_news::execute(args, config).await,
+    LoadSubcommands::CryptoIntraday(args) => crypto_intraday::execute(args, config).await,
     LoadSubcommands::UpdateGithub(args) => {
       info!("Updating GitHub data for cryptocurrencies");
       crypto_overview::update_github_data(args, config).await
