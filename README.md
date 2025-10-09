@@ -5,7 +5,7 @@ A Rust implementation and complete re write of my  Rust [Alphavantage API](https
 
 ## ⚠️ Project Status
 
-**This project is currently under active development.**
+**This project is currently under active development. RELEASE COMING SOON!!!!**
 
 
 A high-performance, async Rust client library and comprehensive data pipeline for financial market data. Built with a modular workspace architecture, it provides robust integration with AlphaVantage API, CoinGecko, and other data sources, featuring advanced caching, TimescaleDB support, and comprehensive cryptocurrency coverage.
@@ -31,19 +31,21 @@ A high-performance, async Rust client library and comprehensive data pipeline fo
 - ✅ Symbol loading and persistence for equities, bonds, and mutual funds
 - ✅ Database schema with TimescaleDB support
 - ✅ AlphaVantage API client endpoints 
-- ✅ Basic project structure and workspace organization
-- ✅ Data loaders for fundamentals, and news
+- ✅Basic project structure and workspace organization
+- ✅ Data loaders for equity price data
+- ✅ Data loaders for fundamentals, news, crypto
 
 ### In Development
-- 🚧 AlphaVantage API client endpoints for equity market price data
+-  🚧AlphaVantage API client endpoints for equity market price data
 - 🚧 CoinGecko API client endpoints
 - 🚧 Data loaders for price data
 - 🚧 CLI commands for data fetching and analysis
 - 🚧 Full integration between API client and database
+- 🚧 Corporate actions
 
 ## Overview
 
-This project aims to provide a complete solution for fetching, storing, and analyzing financial market data from AlphaVantage. Built with Rust's async ecosystem, it will offer high-performance data loading capabilities with proper rate limiting, concurrent processing, and comprehensive error handling.
+This project aims to provide a complete solution for fetching, storing, and analyzing financial market data from AlphaVantage and Coingecko. Built with Rust's async ecosystem, it will offer high-performance data loading capabilities with proper rate limiting, concurrent processing, and comprehensive error handling.
 
 
 
@@ -118,21 +120,21 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
 - Crypto currency symbol loader ✅
 - Crypto Overview loader ✅
 - News loader with sentiment analysis ✅
-- Price data loaders
-- Batch processing with progress tracking
+- Price data loaders 🚧
+- Batch processing with progress tracking 🚧
 
 
  
 ### Phase 3: API Client (In Progress)
-- Time series endpoints
-- Fundamental data endpoints
-- News sentiment endpoints
-- Rate limiting implementation
+- 🚧 Time series endpoints
+- 🚧 Fundamental data endpoints
+- ✅ News sentiment endpoints
+- 🚧 Rate limiting implementation
 
 
 
 ### Phase 4: CLI Enhancement
-- Complete command structure
+- Complete command structure 🚧
 - Query capabilities
 - Analytics commands
 - Process management
