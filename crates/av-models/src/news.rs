@@ -413,7 +413,7 @@ impl NewsSentiment {
   }
 }
 #[cfg(test)]
-use av_core::test_utils::{DEFAULT_TOLERANCE, assert_approx_eq};
+use av_core::test_utils::DEFAULT_TOLERANCE;
 
 #[cfg(test)]
 mod tests {
