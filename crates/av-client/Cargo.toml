@@ -9,6 +9,10 @@ documentation = "https://docs.rs/av-client"
 keywords = ["alphavantage", "finance", "api", "client", "stocks"]
 categories = ["api-bindings", "finance", "web-programming"]
 
+[lints]
+workspace = true
+
+
 [dependencies]
 av-core = { path = "../av-core", version = "0.1.0" }
 av-models = { path = "../av-models", version = "0.1.0" }

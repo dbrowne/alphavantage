@@ -5,7 +5,6 @@
 
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 use async_trait::async_trait;
-use av_core::types::OutputSize;
 use av_models::time_series::IntradayTimeSeries;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use diesel::prelude::*;
@@ -515,7 +514,7 @@ impl DataLoader for IntradayPriceLoader {
     let mut tasks = stream::iter(symbols_owned.into_iter())
       .map(|symbol_info| {
         let loader = self.clone();
-        let context = context.clone();
+        let context = context;
         let symbol = symbol_info.symbol.clone();
         let sid = symbol_info.sid;
         let interval_str = interval.as_str().to_string();

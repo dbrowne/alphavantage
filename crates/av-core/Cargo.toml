@@ -8,6 +8,10 @@ license = "MIT"
 repository = "https://github.com/dbrowne/alphavantage"
 description = "Core types and traits for AlphaVantage Rust client"
 
+[lints]
+workspace = true
+
+
 [dependencies]
 thiserror = { workspace = true}
 serde = {  workspace = true}

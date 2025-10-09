@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
-use av_database_postgres::models::news::ProcessedNewsStats;
 use av_loaders::{
   DataLoader,
   // Remove the SymbolInfo import - we'll use the type from NewsLoader
@@ -12,7 +11,6 @@ use av_loaders::{
 };
 use chrono::{Duration, Utc};
 use clap::Args;
-use diesel::prelude::*;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 

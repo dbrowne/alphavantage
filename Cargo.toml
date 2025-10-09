@@ -20,6 +20,12 @@ keywords = ["alphavantage", "finance", "api", "trading", "market-data"]
 categories = ["api-bindings", "finance"]
 license = "MIT"
 
+[workspace.lints.rust]
+unused_imports = "deny"
+unused_variables = "warn"
+dead_code = "warn"
+
+
 
 [workspace.dependencies]
 # Async runtime

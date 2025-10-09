@@ -7,6 +7,10 @@ description = "Data loaders for AlphaVantage market data"
 license = "MIT"
 repository = "https://github.com/dbrowne/alphavantage.git"
 
+[lints]
+workspace = true
+
+
 
 [dependencies]
 av-core = {path = "../av-core", version = "0.1.0"}
