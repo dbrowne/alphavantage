@@ -5,6 +5,7 @@ use clap::Args;
 use diesel::prelude::*;
 use diesel::upsert::excluded;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -189,32 +190,90 @@ async fn save_summary_prices(
   task::spawn_blocking(move || -> Result<usize> {
     let mut conn = PgConnection::establish(&db_url)?;
 
-    // Convert to database model
-    let new_prices: Vec<NewSummaryPriceOwned> = data
-      .into_iter()
-      .map(|p| NewSummaryPriceOwned {
-        eventid: p.eventid,
-        tstamp: p.tstamp,
-        date: p.date,
-        sid: p.sid,
-        symbol: p.symbol,
-        open: p.open,
-        high: p.high,
-        low: p.low,
-        close: p.close,
-        volume: p.volume,
-      })
-      .collect();
+    // First, check for existing records to avoid duplicates
+    let mut records_to_insert = Vec::new();
+    let mut records_to_update = Vec::new();
+    let mut skipped_count = 0;
+
+    for price_data in data {
+      // Check if record already exists for this (sid, date)
+      // Get the FIRST eventid for this combination (should be unique)
+      let existing: Option<(i64, f32, f32, f32, f32, i64)> = summaryprices::table
+        .filter(summaryprices::sid.eq(price_data.sid))
+        .filter(summaryprices::date.eq(price_data.date))
+        .select((
+          summaryprices::eventid,
+          summaryprices::open,
+          summaryprices::high,
+          summaryprices::low,
+          summaryprices::close,
+          summaryprices::volume,
+        ))
+        .first(&mut conn)
+        .optional()?;
+
+      if let Some((
+        existing_eventid,
+        existing_open,
+        existing_high,
+        existing_low,
+        existing_close,
+        existing_volume,
+      )) = existing
+      {
+        // Check if data actually changed
+        if existing_open != price_data.open
+          || existing_high != price_data.high
+          || existing_low != price_data.low
+          || existing_close != price_data.close
+          || existing_volume != price_data.volume
+        {
+          // Data changed, update the record
+          records_to_update.push(NewSummaryPriceOwned {
+            eventid: existing_eventid, // Use existing eventid
+            tstamp: price_data.tstamp,
+            date: price_data.date,
+            sid: price_data.sid,
+            symbol: price_data.symbol,
+            open: price_data.open,
+            high: price_data.high,
+            low: price_data.low,
+            close: price_data.close,
+            volume: price_data.volume,
+          });
+        } else {
+          // Data unchanged, skip
+          skipped_count += 1;
+          debug!("Skipping unchanged record for {} on {}", price_data.symbol, price_data.date);
+        }
+      } else {
+        // New record - use generated eventid
+        records_to_insert.push(NewSummaryPriceOwned {
+          eventid: price_data.eventid,
+          tstamp: price_data.tstamp,
+          date: price_data.date,
+          sid: price_data.sid,
+          symbol: price_data.symbol,
+          open: price_data.open,
+          high: price_data.high,
+          low: price_data.low,
+          close: price_data.close,
+          volume: price_data.volume,
+        });
+      }
+    }
 
     // Collect unique SIDs for updating symbols table
-    let unique_sids: Vec<i64> = {
-      let mut sids: Vec<i64> = new_prices.iter().map(|p| p.sid).collect();
-      sids.sort_unstable();
-      sids.dedup();
-      sids
-    };
+    let mut unique_sids = std::collections::HashSet::new();
+    for record in &records_to_insert {
+      unique_sids.insert(record.sid);
+    }
+    for record in &records_to_update {
+      unique_sids.insert(record.sid);
+    }
+    let unique_sids: Vec<i64> = unique_sids.into_iter().collect();
 
-    let total_records = new_prices.len();
+    let total_records = records_to_insert.len() + records_to_update.len();
 
     // Set up progress bar for database operations
     let progress = ProgressBar::new(total_records as u64);
@@ -226,29 +285,57 @@ async fn save_summary_prices(
     );
     progress.set_message("Saving to database");
 
-    // Batch insert with UPSERT
-    const BATCH_SIZE: usize = 1000;
     let mut total_inserted = 0;
+    let mut total_updated = 0;
 
-    for chunk in new_prices.chunks(BATCH_SIZE) {
-      let inserted = diesel::insert_into(summaryprices::table)
-        .values(chunk)
-        .on_conflict((summaryprices::tstamp, summaryprices::sid, summaryprices::eventid))
-        .do_update()
-        .set((
-          summaryprices::open.eq(excluded(summaryprices::open)),
-          summaryprices::high.eq(excluded(summaryprices::high)),
-          summaryprices::low.eq(excluded(summaryprices::low)),
-          summaryprices::close.eq(excluded(summaryprices::close)),
-          summaryprices::volume.eq(excluded(summaryprices::volume)),
-        ))
-        .execute(&mut conn)?;
+    // Insert new records in batches
+    const BATCH_SIZE: usize = 1000;
+    if !records_to_insert.is_empty() {
+      info!("Inserting {} new price records", records_to_insert.len());
+      for chunk in records_to_insert.chunks(BATCH_SIZE) {
+        let inserted =
+          diesel::insert_into(summaryprices::table).values(chunk).execute(&mut conn)?;
 
-      total_inserted += inserted;
-      progress.inc(chunk.len() as u64);
+        total_inserted += inserted;
+        progress.inc(chunk.len() as u64);
+      }
     }
 
-    progress.finish_with_message(format!("Saved {} price records", total_inserted));
+    // Update existing records - use the composite primary key for precise updates
+    if !records_to_update.is_empty() {
+      info!("Updating {} existing price records", records_to_update.len());
+      for record in records_to_update {
+        // Use the composite primary key (tstamp, sid, eventid) for precise update
+        let updated = diesel::update(summaryprices::table)
+          .filter(summaryprices::tstamp.eq(record.tstamp))
+          .filter(summaryprices::sid.eq(record.sid))
+          .filter(summaryprices::eventid.eq(record.eventid))
+          .set((
+            summaryprices::open.eq(record.open),
+            summaryprices::high.eq(record.high),
+            summaryprices::low.eq(record.low),
+            summaryprices::close.eq(record.close),
+            summaryprices::volume.eq(record.volume),
+          ))
+          .execute(&mut conn)?;
+
+        if updated > 1 {
+          warn!("Updated {} records for single price point - this shouldn't happen!", updated);
+        }
+        total_updated += updated;
+        progress.inc(1);
+      }
+    }
+
+    progress.finish_with_message(format!(
+      "Saved {} new, updated {} existing, skipped {} unchanged price records",
+      total_inserted, total_updated, skipped_count
+    ));
+
+    info!(
+      "Database operation complete: {} inserted, {} updated, {} skipped",
+      total_inserted, total_updated, skipped_count
+    );
 
     // Update symbols table to mark summary data as loaded
     if update_symbols && !unique_sids.is_empty() {
@@ -260,7 +347,7 @@ async fn save_summary_prices(
         .execute(&mut conn)?;
     }
 
-    Ok(total_inserted)
+    Ok(total_inserted + total_updated)
   })
   .await?
 }
