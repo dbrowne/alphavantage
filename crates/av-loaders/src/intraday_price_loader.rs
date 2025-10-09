@@ -1,12 +1,9 @@
-//! Intraday price loader for TIME_SERIES_INTRADAY data
-//!
-//! This loader fetches intraday OHLCV data from AlphaVantage and prepares it
-//! for insertion into the intradayprices table.
+//! Intraday price loader for TIME_SERIES_INTRADAY data using CSV format
 
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 use async_trait::async_trait;
-use av_models::time_series::IntradayTimeSeries;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use csv::Reader;
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types;
@@ -104,14 +101,14 @@ impl Default for IntradayPriceConfig {
   fn default() -> Self {
     Self {
       interval: IntradayInterval::Min1, // Default to 1-minute
-      extended_hours: true,             // Default to include extended hours
+      extended_hours: true,
       adjusted: true,
       month: None,
       max_concurrent: 5,
       update_existing: true,
-      api_delay_ms: 800, // 800ms for premium tier (75 calls/minute)
+      api_delay_ms: 800,
       enable_cache: true,
-      cache_ttl_hours: 2, // 2-hour cache for intraday data
+      cache_ttl_hours: 2,
       force_refresh: false,
       database_url: String::new(),
     }
@@ -211,6 +208,21 @@ impl IntradayPriceLoader {
     self
   }
 
+  /// Clean up expired cache entries
+  pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, LoaderError> {
+    let mut conn = diesel::PgConnection::establish(database_url)
+      .map_err(|e| LoaderError::DatabaseError(format!("Failed to connect: {}", e)))?;
+
+    let deleted = sql_query(
+      "DELETE FROM api_response_cache
+             WHERE expires_at < NOW() AND api_source = 'alphavantage'",
+    )
+    .execute(&mut conn)
+    .map_err(|e| LoaderError::DatabaseError(format!("Failed to cleanup cache: {}", e)))?;
+
+    Ok(deleted)
+  }
+
   /// Generate cache key for intraday price requests
   fn generate_cache_key(&self, symbol: &str, interval: &str, month: Option<&str>) -> String {
     let mut hasher = DefaultHasher::new();
@@ -221,20 +233,20 @@ impl IntradayPriceLoader {
     } else {
       "current".hash(&mut hasher);
     }
-    "intraday".hash(&mut hasher);
+    "equity_intraday_csv".hash(&mut hasher);
 
     let month_str = month.unwrap_or("current");
-    format!("intraday_{}_{}_{}_{:x}", symbol, interval, month_str, hasher.finish())
+    format!("equity_intraday_csv_{}_{}_{}_{:x}", symbol, interval, month_str, hasher.finish())
   }
 
-  /// Get cached response if available and not expired
-  async fn get_cached_response(&self, cache_key: &str) -> Option<IntradayTimeSeries> {
+  /// Get cached CSV response if available and not expired
+  async fn get_cached_csv(&self, cache_key: &str) -> Option<String> {
     if !self.config.enable_cache || self.config.force_refresh || self.config.database_url.is_empty()
     {
       return None;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
+    let mut conn = match diesel::PgConnection::establish(&self.config.database_url) {
       Ok(conn) => conn,
       Err(e) => {
         debug!("Failed to connect for cache check: {}", e);
@@ -254,162 +266,144 @@ impl IntradayPriceLoader {
     if let Some(cache_result) = cached_entry {
       info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
 
-      match serde_json::from_value::<IntradayTimeSeries>(cache_result.response_data) {
-        Ok(intraday_data) => {
-          debug!("Successfully parsed cached intraday time series");
-          return Some(intraday_data);
-        }
-        Err(e) => {
-          warn!("Failed to parse cached intraday time series: {}", e);
-          return None;
+      // Extract CSV data from JSON wrapper
+      if let Some(csv_data) = cache_result.response_data.get("csv_data") {
+        if let Some(csv_str) = csv_data.as_str() {
+          return Some(csv_str.to_string());
         }
       }
     }
 
-    debug!("Cache miss for key: {}", cache_key);
+    debug!("Cache miss for {}", cache_key);
     None
   }
 
-  /// Cache the API response
-  async fn cache_response(
-    &self,
-    cache_key: &str,
-    intraday_data: &IntradayTimeSeries,
-    symbol: &str,
-  ) {
+  /// Cache the CSV response
+  async fn cache_csv_response(&self, cache_key: &str, csv_data: &str, symbol: &str) {
     if !self.config.enable_cache || self.config.database_url.is_empty() {
       return;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
+    let mut conn = match diesel::PgConnection::establish(&self.config.database_url) {
       Ok(conn) => conn,
       Err(e) => {
-        warn!("Failed to connect for caching: {}", e);
+        debug!("Failed to connect for caching: {}", e);
         return;
       }
     };
 
-    let response_json = match serde_json::to_value(intraday_data) {
-      Ok(json) => json,
-      Err(e) => {
-        warn!("Failed to serialize intraday data for caching: {}", e);
-        return;
-      }
-    };
+    // Wrap CSV data in JSON for storage
+    let cache_value = serde_json::json!({
+        "format": "csv",
+        "csv_data": csv_data,
+        "symbol": symbol,
+        "cached_at": Utc::now()
+    });
 
-    let expires_at =
-      chrono::Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
+    let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
 
-    let result = sql_query(
-            "INSERT INTO api_response_cache (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
-             VALUES ($1, 'alphavantage', $2, $3, $4, $5)
-             ON CONFLICT (cache_key)
-             DO UPDATE SET
-                response_data = EXCLUDED.response_data,
-                expires_at = EXCLUDED.expires_at,
-                cached_at = NOW()",
+    // Try to insert, if it fails due to duplicate, update instead
+    let insert_result = sql_query(
+      "INSERT INTO api_response_cache
+             (cache_key, api_source, endpoint_url, response_data, status_code, expires_at, cached_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW())",
+    )
+        .bind::<sql_types::Text, _>(cache_key)
+        .bind::<sql_types::Text, _>("alphavantage")
+        .bind::<sql_types::Text, _>(format!("TIME_SERIES_INTRADAY_CSV:{}", symbol))
+        .bind::<sql_types::Jsonb, _>(cache_value.clone())
+        .bind::<sql_types::Integer, _>(200)
+        .bind::<sql_types::Timestamptz, _>(expires_at)
+        .execute(&mut conn);
+
+    match insert_result {
+      Ok(_) => debug!("✅ Cached equity intraday CSV for {} (expires: {})", symbol, expires_at),
+      Err(_) => {
+        // If insert failed, try update
+        let update_result = sql_query(
+          "UPDATE api_response_cache
+                     SET response_data = $3, status_code = $4, expires_at = $5, cached_at = NOW()
+                     WHERE cache_key = $1 AND api_source = $2",
         )
-            .bind::<sql_types::Text, _>(cache_key)
-            .bind::<sql_types::Text, _>("")  // endpoint_url (we can leave empty for now)
-            .bind::<sql_types::Jsonb, _>(&response_json)
-            .bind::<sql_types::Integer, _>(200)  // status_code
-            .bind::<sql_types::Timestamptz, _>(&expires_at)
-            .execute(&mut conn);
+        .bind::<sql_types::Text, _>(cache_key)
+        .bind::<sql_types::Text, _>("alphavantage")
+        .bind::<sql_types::Jsonb, _>(cache_value)
+        .bind::<sql_types::Integer, _>(200)
+        .bind::<sql_types::Timestamptz, _>(expires_at)
+        .execute(&mut conn);
 
-    match result {
-      Ok(_) => info!("💾 Cached intraday response for {} (expires: {})", symbol, expires_at),
-      Err(e) => warn!("Failed to cache intraday response: {}", e),
+        match update_result {
+          Ok(_) => {
+            debug!("✅ Updated cached equity intraday CSV for {} (expires: {})", symbol, expires_at)
+          }
+          Err(e) => warn!("Failed to cache equity intraday CSV: {}", e),
+        }
+      }
     }
   }
 
-  /// Clean up expired cache entries
-  pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, LoaderError> {
-    tokio::task::spawn_blocking({
-      let db_url = database_url.to_string();
-      move || -> Result<usize, LoaderError> {
-        let mut conn = PgConnection::establish(&db_url)
-          .map_err(|e| LoaderError::DatabaseError(format!("Failed to connect: {}", e)))?;
-
-        let deleted_count = sql_query(
-          "DELETE FROM api_response_cache
-                     WHERE expires_at < NOW() AND api_source = 'alphavantage'
-                     AND cache_key LIKE 'intraday_%'",
-        )
-        .execute(&mut conn)
-        .map_err(|e| LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e)))?;
-
-        if deleted_count > 0 {
-          info!("🧹 Cleaned up {} expired intraday cache entries", deleted_count);
-        }
-
-        Ok(deleted_count)
-      }
-    })
-    .await
-    .map_err(|e| LoaderError::DatabaseError(format!("Task join error: {}", e)))?
-  }
-
-  /// Parse timestamp string from API response
-  fn parse_timestamp(timestamp_str: &str) -> Result<DateTime<Utc>, LoaderError> {
-    // AlphaVantage returns timestamps in format: "YYYY-MM-DD HH:MM:SS"
-    // These are in US/Eastern time zone
-    let naive_dt =
-      NaiveDateTime::parse_from_str(timestamp_str, "%Y-%m-%d %H:%M:%S").map_err(|e| {
-        LoaderError::InvalidData(format!("Failed to parse timestamp '{}': {}", timestamp_str, e))
-      })?;
-
-    // Convert from Eastern time to UTC
-    // Note: This is a simplified conversion. In production, you'd want to handle DST properly
-    // using a timezone library like chrono-tz
-    let eastern_offset = chrono::FixedOffset::west_opt(5 * 3600).unwrap(); // EST is UTC-5
-    let dt_eastern = eastern_offset.from_local_datetime(&naive_dt).unwrap();
-
-    Ok(dt_eastern.with_timezone(&Utc))
-  }
-
-  /// Convert API response to internal data structure
-  async fn process_symbol_data(
+  /// Parse CSV data into price records
+  fn parse_csv_data(
     &self,
+    csv_data: &str,
     sid: i64,
-    symbol: String,
-    intraday_data: IntradayTimeSeries,
+    symbol: &str,
   ) -> Result<Vec<IntradayPriceData>, LoaderError> {
+    let mut reader = Reader::from_reader(csv_data.as_bytes());
     let mut prices = Vec::new();
 
-    for (timestamp_str, ohlcv) in intraday_data.time_series.iter() {
-      // Parse the timestamp
-      let tstamp = Self::parse_timestamp(timestamp_str)?;
+    // Skip header row and process records
+    for result in reader.records() {
+      let record =
+        result.map_err(|e| LoaderError::InvalidData(format!("Failed to parse CSV: {}", e)))?;
 
-      // Parse price values
-      let open = ohlcv
-        .open
+      // CSV columns for TIME_SERIES_INTRADAY: time, open, high, low, close, volume
+      let timestamp_str =
+        record.get(0).ok_or_else(|| LoaderError::InvalidData("Missing timestamp".to_string()))?;
+
+      // Parse timestamp
+      let tstamp = NaiveDateTime::parse_from_str(timestamp_str, "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse timestamp: {}", e)))?;
+      let tstamp = Utc.from_utc_datetime(&tstamp);
+
+      // Parse OHLCV values
+      let open = record
+        .get(1)
+        .ok_or_else(|| LoaderError::InvalidData("Missing open price".to_string()))?
         .parse::<f32>()
-        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse open price: {}", e)))?;
-      let high = ohlcv
-        .high
+        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse open: {}", e)))?;
+
+      let high = record
+        .get(2)
+        .ok_or_else(|| LoaderError::InvalidData("Missing high price".to_string()))?
         .parse::<f32>()
-        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse high price: {}", e)))?;
-      let low = ohlcv
-        .low
+        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse high: {}", e)))?;
+
+      let low = record
+        .get(3)
+        .ok_or_else(|| LoaderError::InvalidData("Missing low price".to_string()))?
         .parse::<f32>()
-        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse low price: {}", e)))?;
-      let close = ohlcv
-        .close
+        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse low: {}", e)))?;
+
+      let close = record
+        .get(4)
+        .ok_or_else(|| LoaderError::InvalidData("Missing close price".to_string()))?
         .parse::<f32>()
-        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse close price: {}", e)))?;
-      let volume = ohlcv
-        .volume
+        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse close: {}", e)))?;
+
+      let volume = record
+        .get(5)
+        .ok_or_else(|| LoaderError::InvalidData("Missing volume".to_string()))?
         .parse::<i64>()
-        .map_err(|e| LoaderError::InvalidData(format!("Failed to parse volume: {}", e)))?;
+        .unwrap_or(0);
 
-      // Generate event ID
       let eventid = self.next_eventid.fetch_add(1, Ordering::SeqCst);
 
       prices.push(IntradayPriceData {
         eventid,
         tstamp,
         sid,
-        symbol: symbol.clone(),
+        symbol: symbol.to_string(),
         open,
         high,
         low,
@@ -418,25 +412,26 @@ impl IntradayPriceLoader {
       });
     }
 
-    debug!("Processed {} intraday price points for {}", prices.len(), symbol);
+    debug!("Parsed {} price records from CSV for {}", prices.len(), symbol);
     Ok(prices)
   }
 
-  /// Fetch intraday data from API or cache
-  async fn fetch_intraday_data(
+  /// Fetch intraday data in CSV format from API or cache
+  async fn fetch_intraday_csv(
     &self,
     context: &LoaderContext,
     symbol: &str,
     interval: &str,
     month: Option<&str>,
-  ) -> Result<IntradayTimeSeries, LoaderError> {
+    sid: i64,
+  ) -> Result<Vec<IntradayPriceData>, LoaderError> {
     // Generate cache key
     let cache_key = self.generate_cache_key(symbol, interval, month);
 
     // Check cache first
-    if let Some(cached_data) = self.get_cached_response(&cache_key).await {
-      debug!("Using cached data for {}", symbol);
-      return Ok(cached_data);
+    if let Some(cached_csv) = self.get_cached_csv(&cache_key).await {
+      debug!("Using cached CSV data for {}", symbol);
+      return self.parse_csv_data(&cached_csv, sid, symbol);
     }
 
     // Acquire permit for rate limiting
@@ -451,19 +446,65 @@ impl IntradayPriceLoader {
       sleep(Duration::from_millis(self.config.api_delay_ms)).await;
     }
 
-    // Call the API
-    info!("📡 Fetching intraday data for {} (interval: {}, month: {:?})", symbol, interval, month);
+    // Build request URL with CSV format
+    info!(
+      "📡 Fetching equity intraday CSV data for {} (interval: {}, month: {:?})",
+      symbol, interval, month
+    );
 
-    // For now, use the regular intraday method since intraday_extended might have issues
-    let intraday_data =
-      context.client.time_series().intraday(symbol, interval).await.map_err(|e| {
-        LoaderError::ApiError(format!("Failed to fetch intraday data for {}: {}", symbol, e))
-      })?;
+    // Get the API key from environment
+    let api_key = std::env::var("ALPHA_VANTAGE_API_KEY")
+      .map_err(|_| LoaderError::ApiError("ALPHA_VANTAGE_API_KEY not set".to_string()))?;
 
-    // Cache the response
-    self.cache_response(&cache_key, &intraday_data, symbol).await;
+    let mut url = format!(
+      "https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol={}&interval={}&datatype=csv&apikey={}",
+      symbol, interval, api_key
+    );
 
-    Ok(intraday_data)
+    // Add optional parameters
+    if let Some(m) = month {
+      url.push_str(&format!("&month={}", m));
+    }
+
+    if self.config.adjusted {
+      url.push_str("&adjusted=true");
+    }
+
+    if self.config.extended_hours {
+      url.push_str("&extended_hours=true");
+    }
+
+    // Add output size
+    url.push_str(&format!("&outputsize={}", if month.is_some() { "full" } else { "compact" }));
+
+    // Make the request
+    let response = reqwest::get(&url)
+      .await
+      .map_err(|e| LoaderError::ApiError(format!("Failed to fetch CSV data: {}", e)))?;
+
+    if !response.status().is_success() {
+      return Err(LoaderError::ApiError(format!(
+        "API returned status {} for {}",
+        response.status(),
+        symbol
+      )));
+    }
+
+    let csv_data = response
+      .text()
+      .await
+      .map_err(|e| LoaderError::ApiError(format!("Failed to read response: {}", e)))?;
+
+    // Check for API error messages
+    if csv_data.contains("Error Message") || csv_data.contains("Invalid API call") {
+      return Err(LoaderError::ApiError(format!("API error for {}: {}", symbol, csv_data)));
+    }
+
+    // Cache the CSV response
+    self.cache_csv_response(&cache_key, &csv_data, symbol).await;
+
+    // Parse and return the data
+    self.parse_csv_data(&csv_data, sid, symbol)
   }
 }
 
@@ -477,7 +518,7 @@ impl DataLoader for IntradayPriceLoader {
   }
 
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
-    info!("Starting intraday price loader for {} symbols", input.symbols.len());
+    info!("Starting intraday price loader for {} symbols (CSV format)", input.symbols.len());
     info!(
       "Configuration: interval={}, extended_hours={}, adjusted={}, month={:?}",
       input.interval, input.extended_hours, input.adjusted, input.month
@@ -509,7 +550,7 @@ impl DataLoader for IntradayPriceLoader {
     let symbols_skipped = 0;
     let mut failed_symbols = Vec::new();
 
-    // Process symbols concurrently - convert iterator to owned values to avoid lifetime issues
+    // Process symbols concurrently
     let symbols_owned: Vec<_> = input.symbols.into_iter().collect();
     let mut tasks = stream::iter(symbols_owned.into_iter())
       .map(|symbol_info| {
@@ -524,21 +565,14 @@ impl DataLoader for IntradayPriceLoader {
         async move {
           progress.set_message(format!("Loading {}", symbol));
 
-          match loader.fetch_intraday_data(&context, &symbol, &interval_str, month.as_deref()).await
+          match loader
+            .fetch_intraday_csv(&context, &symbol, &interval_str, month.as_deref(), sid)
+            .await
           {
-            Ok(intraday_data) => {
-              match loader.process_symbol_data(sid, symbol.clone(), intraday_data).await {
-                Ok(prices) => {
-                  let count = prices.len();
-                  progress.inc(1);
-                  Ok((symbol, prices, count))
-                }
-                Err(e) => {
-                  error!("Failed to process data for {}: {}", symbol, e);
-                  progress.inc(1);
-                  Err((symbol, e))
-                }
-              }
+            Ok(prices) => {
+              let count = prices.len();
+              progress.inc(1);
+              Ok((symbol, prices, count))
             }
             Err(e) => {
               error!("Failed to fetch data for {}: {}", symbol, e);
@@ -558,29 +592,31 @@ impl DataLoader for IntradayPriceLoader {
           all_prices.extend(prices);
           symbols_loaded += 1;
         }
-        Err((symbol, _error)) => {
+        Err((symbol, _e)) => {
           failed_symbols.push(symbol);
           symbols_failed += 1;
         }
       }
     }
 
-    progress.finish_with_message(format!(
-      "Completed: {} loaded, {} failed, {} skipped",
-      symbols_loaded, symbols_failed, symbols_skipped
-    ));
+    progress.finish_with_message("Intraday loading complete");
 
     // Update process tracking
     if context.config.track_process {
       if let Some(tracker) = &context.process_tracker {
-        let state = if symbols_failed > 0 {
-          ProcessState::CompletedWithErrors
+        let state = if symbols_failed > 0 && symbols_loaded == 0 {
+          ProcessState::Failed
         } else {
           ProcessState::Success
         };
         tracker.complete(state).await?;
       }
     }
+
+    info!(
+      "Intraday loading complete: {} symbols loaded, {} failed, {} skipped",
+      symbols_loaded, symbols_failed, symbols_skipped
+    );
 
     Ok(IntradayPriceLoaderOutput {
       data: all_prices,
@@ -591,3 +627,6 @@ impl DataLoader for IntradayPriceLoader {
     })
   }
 }
+
+// Re-export type alias for compatibility
+pub use SymbolInfo as IntradaySymbolInfo;

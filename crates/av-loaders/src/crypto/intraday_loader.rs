@@ -234,28 +234,43 @@ impl CryptoIntradayLoader {
 
     let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
 
+    // Try to insert, if it fails due to duplicate, update instead
     let insert_result = sql_query(
       "INSERT INTO api_response_cache
-             (cache_key, api_source, request_url, response_data, status_code, expires_at, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())
-             ON CONFLICT (cache_key, api_source)
-             DO UPDATE SET
-                response_data = EXCLUDED.response_data,
-                status_code = EXCLUDED.status_code,
-                expires_at = EXCLUDED.expires_at,
-                created_at = NOW()",
+             (cache_key, api_source, endpoint_url, response_data, status_code, expires_at, cached_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW())",
     )
         .bind::<sql_types::Text, _>(cache_key)
         .bind::<sql_types::Text, _>("alphavantage")
         .bind::<sql_types::Text, _>(format!("CRYPTO_INTRADAY_CSV:{}", symbol))
-        .bind::<sql_types::Jsonb, _>(cache_value)
+        .bind::<sql_types::Jsonb, _>(cache_value.clone())
         .bind::<sql_types::Integer, _>(200)
         .bind::<sql_types::Timestamptz, _>(expires_at)
         .execute(&mut conn);
 
     match insert_result {
       Ok(_) => debug!("✅ Cached crypto CSV response for {} (expires: {})", symbol, expires_at),
-      Err(e) => warn!("Failed to cache crypto CSV response: {}", e),
+      Err(_) => {
+        // If insert failed, try update
+        let update_result = sql_query(
+          "UPDATE api_response_cache
+                     SET response_data = $3, status_code = $4, expires_at = $5, cached_at = NOW()
+                     WHERE cache_key = $1 AND api_source = $2",
+        )
+        .bind::<sql_types::Text, _>(cache_key)
+        .bind::<sql_types::Text, _>("alphavantage")
+        .bind::<sql_types::Jsonb, _>(cache_value)
+        .bind::<sql_types::Integer, _>(200)
+        .bind::<sql_types::Timestamptz, _>(expires_at)
+        .execute(&mut conn);
+
+        match update_result {
+          Ok(_) => {
+            debug!("✅ Updated cached crypto CSV response for {} (expires: {})", symbol, expires_at)
+          }
+          Err(e) => warn!("Failed to cache crypto CSV response: {}", e),
+        }
+      }
     }
   }
 
@@ -336,7 +351,7 @@ impl CryptoIntradayLoader {
   /// Fetch crypto intraday data in CSV format from API or cache
   async fn fetch_crypto_intraday_csv(
     &self,
-    context: &LoaderContext,
+    _context: &LoaderContext,
     symbol: &str,
     market: &str,
     interval: &str,

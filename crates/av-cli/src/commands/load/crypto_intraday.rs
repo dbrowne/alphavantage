@@ -1,5 +1,4 @@
 //! Crypto intraday price loading command
-//! Location: av-cli/src/commands/load/crypto_intraday.rs
 
 use anyhow::Result;
 use clap::Parser;
