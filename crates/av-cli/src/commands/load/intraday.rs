@@ -1,9 +1,10 @@
-//! Intraday price loading command
+// Optimized equity intraday loader with timestamp-based deduplication
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use diesel::prelude::*;
-use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -14,21 +15,13 @@ use av_database_postgres::{
   schema::{intradayprices, symbols},
 };
 use av_loaders::{
-  DataLoader,
-  IntradayPriceConfig,
-  IntradayPriceData,
-  IntradayPriceLoader,
-  IntradayPriceLoaderInput,
-  IntradaySymbolInfo, // Use the correct type alias
-  LoaderConfig,
-  LoaderContext,
-  ProcessTracker,
+  DataLoader, IntradayInterval, IntradayPriceConfig, IntradayPriceData, IntradayPriceLoader,
+  IntradayPriceLoaderInput, IntradaySymbolInfo, LoaderConfig, LoaderContext, ProcessTracker,
 };
 
-// Use the CLI's own Config type
 use crate::config::Config;
 
-/// Symbol info for the loader - local type without exchange field
+/// Symbol info for the loader
 #[derive(Debug, Clone)]
 struct LoaderSymbolInfo {
   pub sid: i64,
@@ -75,7 +68,7 @@ pub struct IntradayArgs {
   #[clap(long)]
   dry_run: bool,
 
-  /// Force refresh - bypass cache
+  /// Force refresh - bypass cache and timestamp checks
   #[clap(long)]
   force_refresh: bool,
 
@@ -91,9 +84,13 @@ pub struct IntradayArgs {
   #[clap(long, default_value = "true")]
   update_symbols: bool,
 
-  /// Maximum number of symbols to process (for testing)
+  /// Maximum number of symbols to process
   #[clap(long)]
   limit: Option<usize>,
+
+  /// Check each record individually for duplicates (use for historical/backfill data)
+  #[clap(long)]
+  check_each_record: bool,
 }
 
 /// Get symbols to load based on command arguments
@@ -139,31 +136,51 @@ async fn get_max_eventid(config: &Config) -> Result<i64> {
   Ok(max_id.unwrap_or(0))
 }
 
-/// Check for existing data to avoid duplicates
-async fn check_existing_data(
+/// Get the latest timestamp for each symbol from the database
+async fn get_latest_timestamps(
   config: &Config,
-  sid: i64,
-  start_time: chrono::DateTime<chrono::Utc>,
-  end_time: chrono::DateTime<chrono::Utc>,
-) -> Result<bool> {
-  let mut conn = establish_connection(&config.database_url)?;
+  sids: &[i64],
+) -> Result<HashMap<i64, DateTime<Utc>>> {
+  tokio::task::spawn_blocking({
+    let database_url = config.database_url.clone();
+    let sids = sids.to_vec();
 
-  let count: i64 = intradayprices::table
-    .filter(intradayprices::sid.eq(sid))
-    .filter(intradayprices::tstamp.ge(start_time))
-    .filter(intradayprices::tstamp.le(end_time))
-    .count()
-    .get_result(&mut conn)?;
+    move || -> Result<HashMap<i64, DateTime<Utc>>> {
+      use diesel::prelude::*;
 
-  Ok(count > 0)
+      let mut conn = establish_connection(&database_url)?;
+
+      // Get the maximum timestamp for each sid
+      let mut timestamp_map = HashMap::new();
+
+      for sid in sids {
+        let latest: Option<DateTime<Utc>> = intradayprices::table
+          .select(diesel::dsl::max(intradayprices::tstamp))
+          .filter(intradayprices::sid.eq(sid))
+          .first(&mut conn)?;
+
+        if let Some(ts) = latest {
+          timestamp_map.insert(sid, ts);
+        }
+      }
+
+      info!("Retrieved latest timestamps for {} symbols", timestamp_map.len());
+
+      Ok(timestamp_map)
+    }
+  })
+  .await?
+  .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Save intraday prices to the database
-async fn save_intraday_prices(
+/// Save intraday prices with optimized timestamp-based deduplication
+async fn save_intraday_prices_optimized(
   config: &Config,
   prices: Vec<IntradayPriceData>,
   update_existing: bool,
   update_symbols: bool,
+  check_each_record: bool,
+  latest_timestamps: HashMap<i64, DateTime<Utc>>,
 ) -> Result<usize> {
   if prices.is_empty() {
     info!("No prices to save");
@@ -172,9 +189,6 @@ async fn save_intraday_prices(
 
   tokio::task::spawn_blocking({
     let database_url = config.database_url.clone();
-    let update_existing = update_existing;
-    let update_symbols = update_symbols;
-    let prices = prices;
 
     move || -> Result<usize> {
       use diesel::prelude::*;
@@ -182,117 +196,120 @@ async fn save_intraday_prices(
 
       let mut conn = establish_connection(&database_url)?;
 
-      info!("Saving {} intraday price records to database", prices.len());
+      info!("💾 Processing {} intraday price records", prices.len());
 
-      // Set up progress bar
-      let progress = ProgressBar::new(prices.len() as u64);
-      progress.set_style(
-        ProgressStyle::default_bar()
-          .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-          .unwrap()
-          .progress_chars("#>-"),
-      );
-
-      let mut total_inserted = 0;
-      let mut total_updated = 0;
+      let mut saved_count = 0;
       let mut skipped_count = 0;
       let mut unique_sids = HashSet::new();
 
-      // Process in batches for better performance
-      const BATCH_SIZE: usize = 1000;
-
-      for chunk in prices.chunks(BATCH_SIZE) {
-        let mut batch_insert = Vec::new();
-        let mut batch_update = Vec::new();
-
-        for price in chunk {
-          unique_sids.insert(price.sid);
-
-          let new_price = NewIntradayPrice {
-            eventid: &price.eventid,
-            tstamp: &price.tstamp,
-            sid: &price.sid,
-            symbol: &price.symbol,
-            open: &price.open,
-            high: &price.high,
-            low: &price.low,
-            close: &price.close,
-            volume: &price.volume,
-          };
-
-          // Check if record exists
-          let exists = intradayprices::table
-            .filter(intradayprices::tstamp.eq(&price.tstamp))
-            .filter(intradayprices::sid.eq(&price.sid))
-            .count()
-            .get_result::<i64>(&mut conn)?
-            > 0;
-
-          if exists {
-            if update_existing {
-              batch_update.push(new_price);
-            } else {
-              skipped_count += 1;
-            }
-          } else {
-            batch_insert.push(new_price);
-          }
-
-          progress.inc(1);
-        }
-
-        // Batch insert new records
-        if !batch_insert.is_empty() {
-          let inserted = diesel::insert_into(intradayprices::table)
-            .values(&batch_insert)
-            .on_conflict_do_nothing()
-            .execute(&mut conn)?;
-          total_inserted += inserted;
-        }
-
-        // Update existing records if requested
-        if update_existing && !batch_update.is_empty() {
-          for record in batch_update {
-            let updated = diesel::update(intradayprices::table)
-              .filter(intradayprices::tstamp.eq(record.tstamp))
-              .filter(intradayprices::sid.eq(record.sid))
-              .set((
-                intradayprices::open.eq(record.open),
-                intradayprices::high.eq(record.high),
-                intradayprices::low.eq(record.low),
-                intradayprices::close.eq(record.close),
-                intradayprices::volume.eq(record.volume),
-              ))
-              .execute(&mut conn)?;
-            total_updated += updated;
-          }
-        }
+      // Group prices by symbol for efficient processing
+      let mut prices_by_symbol: HashMap<i64, Vec<IntradayPriceData>> = HashMap::new();
+      for price in prices {
+        prices_by_symbol.entry(price.sid).or_insert_with(Vec::new).push(price);
       }
 
-      progress.finish_with_message(format!(
-        "Saved {} new, updated {} existing, skipped {} unchanged price records",
-        total_inserted, total_updated, skipped_count
-      ));
+      for (sid, mut symbol_prices) in prices_by_symbol {
+        unique_sids.insert(sid);
+        let original_count = symbol_prices.len();
+        let latest_existing = latest_timestamps.get(&sid);
 
-      info!(
-        "Database operation complete: {} inserted, {} updated, {} skipped",
-        total_inserted, total_updated, skipped_count
-      );
+        // Get the symbol string from the first price record
+        let symbol_str = symbol_prices.first().map(|p| p.symbol.clone()).unwrap_or_default();
+
+        // Filter prices based on timestamp
+        let new_prices: Vec<IntradayPriceData> = if check_each_record {
+          // For historical data, check each record individually
+          info!("Checking {} records for {} (historical mode)", original_count, symbol_str);
+
+          let timestamps: Vec<DateTime<Utc>> = symbol_prices.iter().map(|p| p.tstamp).collect();
+
+          let existing: Vec<DateTime<Utc>> = intradayprices::table
+            .select(intradayprices::tstamp)
+            .filter(intradayprices::sid.eq(sid))
+            .filter(intradayprices::tstamp.eq_any(&timestamps))
+            .load::<DateTime<Utc>>(&mut conn)?;
+
+          let existing_set: HashSet<DateTime<Utc>> = existing.into_iter().collect();
+
+          symbol_prices.into_iter().filter(|p| !existing_set.contains(&p.tstamp)).collect()
+        } else if let Some(&latest_ts) = latest_existing {
+          // For real-time data, only keep records newer than the latest we have
+          symbol_prices.into_iter().filter(|p| p.tstamp > latest_ts).collect()
+        } else {
+          // No existing data for this symbol, all records are new
+          symbol_prices
+        };
+
+        let filtered_count = new_prices.len();
+        skipped_count += original_count - filtered_count;
+
+        if !new_prices.is_empty() {
+          // Sort by timestamp to maintain order
+          let mut sorted_prices = new_prices;
+          sorted_prices.sort_by_key(|p| p.tstamp);
+
+          // Convert to insert format
+          let new_records: Vec<NewIntradayPrice> = sorted_prices
+            .iter()
+            .map(|p| NewIntradayPrice {
+              eventid: &p.eventid,
+              tstamp: &p.tstamp,
+              sid: &p.sid,
+              symbol: &symbol_str,
+              open: &p.open,
+              high: &p.high,
+              low: &p.low,
+              close: &p.close,
+              volume: &p.volume,
+            })
+            .collect();
+
+          // Batch insert new records
+          for chunk in new_records.chunks(500) {
+            let inserted = diesel::insert_into(intradayprices::table)
+              .values(chunk)
+              .on_conflict_do_nothing() // Safety net
+              .execute(&mut conn)?;
+
+            saved_count += inserted;
+          }
+
+          info!(
+            "Symbol {} ({}): saved {} new records, skipped {} existing",
+            symbol_str,
+            sid,
+            filtered_count,
+            original_count - filtered_count
+          );
+        } else if original_count > 0 {
+          info!(
+            "Symbol {} ({}): all {} records already exist (latest: {:?})",
+            symbol_str, sid, original_count, latest_existing
+          );
+        }
+      }
 
       // Update symbols table to mark intraday data as loaded
       if update_symbols && !unique_sids.is_empty() {
-        info!("Updating {} symbols to mark intraday data as loaded", unique_sids.len());
-
+        let sids: Vec<i64> = unique_sids.into_iter().collect();
         diesel::update(symbols::table)
-          .filter(symbols::sid.eq_any(&unique_sids))
+          .filter(symbols::sid.eq_any(&sids))
           .set((symbols::intraday.eq(true), symbols::m_time.eq(diesel::dsl::now)))
           .execute(&mut conn)?;
+
+        info!("Updated symbols table for {} symbols", sids.len());
       }
 
-      Ok(total_inserted + total_updated)
+      info!(
+        "✅ Database operation complete: {} new records saved, {} skipped (already existed)",
+        saved_count, skipped_count
+      );
+
+      Ok(saved_count)
     }
   })
   .await?
+  .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Main execute function
@@ -322,37 +339,37 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
     ));
   }
 
-  // Validate month format if provided
-  if let Some(ref month) = args.month {
-    if !month.chars().all(|c| c.is_ascii_digit() || c == '-') || month.len() != 7 {
-      return Err(anyhow::anyhow!("Invalid month format '{}'. Must be in format YYYY-MM", month));
-    }
-  }
-
   // Get symbols to load
   let symbols = get_symbols_to_load(&args, &config).await?;
 
   if symbols.is_empty() {
-    warn!("No symbols to load. Ensure symbols have sec_type='Equity' and overview=true");
+    warn!("No symbols found to load");
     return Ok(());
   }
 
-  info!("Loading intraday prices for {} equity symbols", symbols.len());
-  info!(
-    "Configuration: interval={}, extended_hours={}, adjusted={}, month={:?}, concurrent={}, api_delay={}ms",
-    args.interval, args.extended_hours, args.adjusted, args.month, args.concurrent, args.api_delay
-  );
+  info!("Found {} symbols to load", symbols.len());
 
-  // Calculate estimated time
-  if args.api_delay > 0 {
-    let estimated_seconds =
-      (symbols.len() as u64 * args.api_delay) / 1000 / args.concurrent.max(1) as u64;
-    let hours = estimated_seconds / 3600;
-    let minutes = (estimated_seconds % 3600) / 60;
-    info!("Estimated time: {}h {}m (assuming no failures)", hours, minutes);
+  // Get latest timestamps for all symbols upfront (unless force refresh or checking each record)
+  let latest_timestamps = if !args.force_refresh && !args.dry_run && !args.check_each_record {
+    let sids: Vec<i64> = symbols.iter().map(|s| s.sid).collect();
+    get_latest_timestamps(&config, &sids).await?
+  } else {
+    HashMap::new()
+  };
+
+  // Log symbols that already have data
+  if !latest_timestamps.is_empty() {
+    info!(
+      "{} symbols already have intraday data and will be updated incrementally",
+      latest_timestamps.len()
+    );
   }
 
-  // Create API client with the correct configuration
+  if args.check_each_record {
+    warn!("Running in historical mode - will check each record individually for duplicates");
+  }
+
+  // Create API client
   let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
 
   // Create loader configuration
@@ -368,7 +385,7 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
   // Create loader context
   let mut context = LoaderContext::new(client, loader_config);
 
-  // Set up process tracking (unless dry run)
+  // Set up process tracking
   if !args.dry_run {
     let tracker = ProcessTracker::new();
     context = context.with_process_tracker(tracker);
@@ -377,10 +394,9 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
   // Get the current max event ID
   let max_eventid = if args.dry_run { 0 } else { get_max_eventid(&config).await? };
 
-  // Create and configure the loader
+  // Configure the loader
   let loader_cfg = IntradayPriceConfig {
-    interval: av_loaders::IntradayInterval::from_str(&args.interval)
-      .ok_or_else(|| anyhow::anyhow!("Invalid interval"))?,
+    interval: IntradayInterval::from_str(args.interval.as_str()).unwrap(),
     extended_hours: args.extended_hours,
     adjusted: args.adjusted,
     month: args.month.clone(),
@@ -388,7 +404,7 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
     update_existing: args.update,
     api_delay_ms: args.api_delay,
     enable_cache: !args.force_refresh,
-    cache_ttl_hours: 2, // Shorter cache for intraday data
+    cache_ttl_hours: 24, // Longer cache for equity data
     force_refresh: args.force_refresh,
     database_url: config.database_url.clone(),
   };
@@ -397,9 +413,9 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
     .with_config(loader_cfg)
     .with_starting_eventid(max_eventid + 1);
 
-  // Convert symbols to the loader's expected type
+  // Convert to loader format
   let loader_symbols: Vec<IntradaySymbolInfo> =
-    symbols.into_iter().map(|s| IntradaySymbolInfo { sid: s.sid, symbol: s.symbol }).collect();
+    symbols.iter().map(|s| IntradaySymbolInfo { sid: s.sid, symbol: s.symbol.clone() }).collect();
 
   // Prepare input
   let input = IntradayPriceLoaderInput {
@@ -408,7 +424,7 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
     extended_hours: args.extended_hours,
     adjusted: args.adjusted,
     month: args.month.clone(),
-    output_size: args.outputsize,
+    output_size: args.outputsize.clone(),
   };
 
   // Execute the loader
@@ -419,49 +435,48 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
       if !args.continue_on_error {
         return Err(e.into());
       }
-      // Return empty output if continuing on error
       return Ok(());
     }
   };
 
   // Display summary
   println!("\n╔════════════════════════════════════════════╗");
-  println!("║        INTRADAY PRICE LOADING SUMMARY       ║");
+  println!("║      INTRADAY PRICE LOADING SUMMARY         ║");
   println!("╠════════════════════════════════════════════╣");
   println!("║ Interval:           {:<24} ║", args.interval);
   println!("║ Extended Hours:     {:<24} ║", args.extended_hours);
+  println!("║ Adjusted:           {:<24} ║", args.adjusted);
   println!("║ Symbols Loaded:     {:<24} ║", output.symbols_loaded);
   println!("║ Symbols Failed:     {:<24} ║", output.symbols_failed);
   println!("║ Symbols Skipped:    {:<24} ║", output.symbols_skipped);
   println!("║ Total Records:      {:<24} ║", output.data.len());
   println!("╚════════════════════════════════════════════╝");
 
+  // Show failed symbols if any
   if !output.failed_symbols.is_empty() {
-    println!("\n❌ Failed symbols:");
-    for symbol in &output.failed_symbols {
-      println!("   - {}", symbol);
-    }
+    warn!("Failed symbols: {:?}", output.failed_symbols);
   }
 
   // Save to database unless dry run
   if !args.dry_run && !output.data.is_empty() {
     info!("Saving {} intraday price records to database", output.data.len());
 
-    match save_intraday_prices(&config, output.data, args.update, args.update_symbols).await {
-      Ok(saved) => info!("Successfully saved {} records", saved),
-      Err(e) => {
-        error!("Failed to save prices to database: {}", e);
-        if !args.continue_on_error {
-          return Err(e);
-        }
-      }
-    }
+    let saved = save_intraday_prices_optimized(
+      &config,
+      output.data,
+      args.update,
+      args.update_symbols,
+      args.check_each_record,
+      latest_timestamps,
+    )
+    .await?;
+
+    info!("Successfully processed {} records", saved);
   } else if args.dry_run {
-    info!("Dry run - skipping database save");
-  } else {
-    info!("No data to save");
+    info!("Dry run - would have saved {} records", output.data.len());
   }
 
   info!("Intraday price loader completed");
+
   Ok(())
 }
