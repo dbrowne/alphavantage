@@ -47,6 +47,10 @@ pub struct DailyArgs {
   #[arg(long)]
   pub update: bool,
 
+  /// Force refresh (bypass cache)
+  #[arg(long)]
+  pub force_refresh: bool,
+
   /// Dry run - don't save to database
   #[arg(long)]
   pub dry_run: bool,
@@ -93,7 +97,7 @@ async fn get_or_create_sid(symbol: &str, config: &Config) -> Result<i64> {
             .first(&mut conn)
             .optional()?;
 
-        if let Some((sid, sec_type, has_overview)) = existing {
+        if let Some((sid, _sec_type, has_overview)) = existing {
             if !has_overview {
                 return Err(anyhow::anyhow!(
                     "Symbol {} exists but does not have overview data. Please run 'av load overviews' first",
@@ -144,28 +148,6 @@ async fn load_active_symbols(config: &Config) -> Result<Vec<(i64, String)>> {
       .filter(symbols::overview.eq(true))
       .select((symbols::sid, symbols::symbol))
       .order(symbols::priority.asc())
-      .load(&mut conn)?;
-
-    Ok(symbols)
-  })
-  .await?
-}
-
-/// Load top priority symbols
-async fn load_priority_symbols(config: &Config, limit: i64) -> Result<Vec<(i64, String)>> {
-  use tokio::task;
-
-  let db_url = config.database_url.clone();
-
-  task::spawn_blocking(move || -> Result<Vec<(i64, String)>> {
-    let mut conn = PgConnection::establish(&db_url)?;
-
-    let symbols: Vec<(i64, String)> = symbols::table
-      .filter(symbols::sec_type.eq("Equity"))
-      .filter(symbols::overview.eq(true))
-      .select((symbols::sid, symbols::symbol))
-      .order(symbols::priority.asc())
-      .limit(limit)
       .load(&mut conn)?;
 
     Ok(symbols)
@@ -287,6 +269,15 @@ async fn save_summary_prices(
 pub async fn execute(args: DailyArgs, config: Config) -> Result<()> {
   info!("Starting daily price loader");
 
+  // Clean up expired cache entries periodically
+  if !args.dry_run {
+    match SummaryPriceLoader::cleanup_expired_cache(&config.database_url).await {
+      Ok(deleted) if deleted > 0 => info!("Cleaned up {} expired cache entries", deleted),
+      Err(e) => warn!("Failed to cleanup expired cache: {}", e),
+      _ => {}
+    }
+  }
+
   if args.dry_run {
     info!("DRY RUN MODE - No database updates will be performed");
   }
@@ -353,6 +344,10 @@ pub async fn execute(args: DailyArgs, config: Config) -> Result<()> {
     update_existing: args.update,
     skip_non_trading_days: true,
     api_delay_ms: args.api_delay,
+    enable_cache: !args.force_refresh,
+    cache_ttl_hours: 24,
+    force_refresh: args.force_refresh,
+    database_url: config.database_url.clone(),
   };
 
   let loader = SummaryPriceLoader::new(args.concurrent)
