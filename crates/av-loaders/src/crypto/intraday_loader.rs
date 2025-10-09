@@ -54,7 +54,7 @@ pub struct CryptoIntradayConfig {
 impl Default for CryptoIntradayConfig {
   fn default() -> Self {
     Self {
-      interval: IntradayInterval::Min5,
+      interval: IntradayInterval::Min1, // Default to 1-minute intervals
       market: "USD".to_string(),
       outputsize: "compact".to_string(),
       max_concurrent: 5,

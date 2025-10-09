@@ -1,4 +1,5 @@
 //! Crypto intraday price loading command
+//! Location: av-cli/src/commands/load/crypto_intraday.rs
 
 use anyhow::Result;
 use clap::Parser;
@@ -33,7 +34,7 @@ pub struct CryptoIntradayArgs {
   market: String,
 
   /// Time interval between data points (1min, 5min, 15min, 30min, 60min)
-  #[clap(short, long, default_value = "5min")]
+  #[clap(short, long, default_value = "1min")]
   interval: String,
 
   /// Output size (compact=100 data points, full=full available history)
@@ -44,6 +45,14 @@ pub struct CryptoIntradayArgs {
   /// This is always true unless explicitly set to false
   #[clap(long, default_value = "true")]
   primary_only: bool,
+
+  /// Skip symbols that already have intraday data (symbols.intraday = true)
+  #[clap(long)]
+  skip_existing: bool,
+
+  /// Only load symbols that already have intraday data (useful for updates/refreshing)
+  #[clap(long, conflicts_with = "skip_existing")]
+  only_existing: bool,
 
   /// Number of concurrent API requests
   #[clap(long, default_value = "5")]
@@ -97,28 +106,38 @@ async fn get_crypto_symbols_to_load(
       .select((symbols::sid, symbols::symbol, symbols::priority))
       .load::<(i64, String, i32)>(&mut conn)?
   } else {
-    // Default: Load top 500 cryptocurrencies by priority
+    // Build base query for cryptocurrencies
     let mut query = symbols::table
       .filter(symbols::sec_type.eq("Cryptocurrency"))
       .filter(symbols::priority.ne(9999999)) // Exclude unranked
-      .select((symbols::sid, symbols::symbol, symbols::priority))
-      .order(symbols::priority.asc())
-      .limit(500)
       .into_boxed();
 
-    // Apply custom limit if specified
-    if let Some(limit) = args.limit {
-      query = symbols::table
-        .filter(symbols::sec_type.eq("Cryptocurrency"))
-        .filter(symbols::priority.ne(9999999))
-        .select((symbols::sid, symbols::symbol, symbols::priority))
-        .order(symbols::priority.asc())
-        .limit(limit as i64)
-        .into_boxed();
+    // Apply intraday data filters
+    if args.skip_existing {
+      // Skip symbols that already have intraday data
+      query = query.filter(symbols::intraday.eq(false).or(symbols::intraday.is_null()));
+      info!("Filtering to symbols WITHOUT existing intraday data");
+    } else if args.only_existing {
+      // Only load symbols that already have intraday data (for updates/refreshing)
+      query = query.filter(symbols::intraday.eq(true));
+      info!("Filtering to symbols WITH existing intraday data (refresh mode)");
     }
 
-    query.load::<(i64, String, i32)>(&mut conn)?
+    // Order by priority and apply limit
+    query = query.order(symbols::priority.asc());
+
+    let limit = args.limit.unwrap_or(500);
+    query = query.limit(limit as i64);
+
+    query
+      .select((symbols::sid, symbols::symbol, symbols::priority))
+      .load::<(i64, String, i32)>(&mut conn)?
   };
+
+  // Log filtering results
+  if args.skip_existing || args.only_existing {
+    info!("Found {} symbols matching intraday data filter", symbols.len());
+  }
 
   // Convert to CryptoSymbolInfo
   Ok(
@@ -153,8 +172,6 @@ async fn save_crypto_intraday_prices(
 
   tokio::task::spawn_blocking({
     let database_url = config.database_url.clone();
-    let update_existing = update_existing;
-    let update_symbols = update_symbols;
     let prices = prices;
 
     move || -> Result<usize> {
@@ -237,7 +254,7 @@ pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   // Clean up expired cache if not forcing refresh
   if !args.force_refresh && !args.dry_run {
     info!("Cleaning up expired cache entries...");
-    // Cache cleanup query could be added here
+    // Cache cleanup could be implemented here
   }
 
   if args.dry_run {
@@ -267,9 +284,12 @@ pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   let symbols = get_crypto_symbols_to_load(&args, &config).await?;
 
   if symbols.is_empty() {
-    warn!(
-      "No cryptocurrency symbols found. Ensure symbols have sec_type='Cryptocurrency' and priority != 9999999"
-    );
+    warn!("No cryptocurrency symbols found matching criteria");
+    if args.skip_existing {
+      info!("All symbols may already have intraday data. Use --force-refresh to reload.");
+    } else if args.only_existing {
+      info!("No symbols have been previously loaded. Run without --only-existing first.");
+    }
     return Ok(());
   }
 
@@ -388,7 +408,7 @@ pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   println!("║ Total Records:      {:<24} ║", output.data.len());
   println!("╚════════════════════════════════════════════╝");
 
-  if !output.failed_symbols.is_empty() {
+  if !output.failed_symbols.is_empty() && args.verbose {
     println!("\n❌ Failed symbols:");
     for symbol in &output.failed_symbols {
       println!("   - {}", symbol);
