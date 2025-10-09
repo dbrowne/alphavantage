@@ -10,6 +10,7 @@ pub mod crypto_news;
 pub mod crypto_overview;
 pub mod crypto_social;
 pub mod daily;
+pub mod intraday;
 pub mod news;
 pub mod news_utils;
 pub mod overviews;
@@ -53,21 +54,13 @@ enum LoadSubcommands {
   CryptoMetadata(crypto_metadata::CryptoMetadataArgs),
   CryptoNews(crypto_news::CryptoNewsArgs),
 
-  /// Load intraday price data
-  Intraday {
-    /// Symbol to load (if not specified, loads all active symbols)
-    #[arg(short, long)]
-    symbol: Option<String>,
-
-    /// Time interval (1min, 5min, 15min, 30min, 60min)
-    #[arg(short, long, default_value = "5min")]
-    interval: String,
-  },
   /// Load news and sentiment data
   News(news::NewsArgs),
 
   TopMovers(top_movers::TopMoversArgs),
   Daily(daily::DailyArgs),
+  #[clap(name = "intraday")]
+  Intraday(intraday::IntradayArgs),
 }
 
 // And add to the execute match:
@@ -86,9 +79,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
       info!("Updating GitHub data for cryptocurrencies");
       crypto_overview::update_github_data(args, config).await
     }
-    LoadSubcommands::Intraday { symbol: _, interval: _ } => {
-      todo!("Implement intraday loading")
-    }
+    LoadSubcommands::Intraday(args) => intraday::execute(args, config).await,
     LoadSubcommands::Daily(args) => daily::execute(args, config).await,
     LoadSubcommands::News(args) => news::execute(args, config).await,
     LoadSubcommands::TopMovers(args) => top_movers::execute(args, config).await,
