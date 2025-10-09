@@ -3,21 +3,45 @@
 use crate::common::{
   MarketInfo, Metadata, OhlcvAdjustedData, OhlcvData, SymbolMatch, TimeSeriesData,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
 /// Intraday time series response
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IntradayTimeSeries {
-  /// Metadata about the time series
-  #[serde(rename = "Meta Data")]
   pub meta_data: IntradayMetadata,
 
-  /// Time series data points
-  #[serde(flatten)]
   pub time_series: TimeSeriesData<OhlcvData>,
 }
+impl<'de> Deserialize<'de> for IntradayTimeSeries {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let mut map = serde_json::Map::deserialize(deserializer)?;
 
+    // Extract metadata
+    let meta_data: IntradayMetadata = map
+      .remove("Meta Data")
+      .ok_or_else(|| serde::de::Error::missing_field("Meta Data"))
+      .and_then(|v| serde_json::from_value(v).map_err(serde::de::Error::custom))?;
+
+    // Find the time series field - it could be any interval
+    let time_series_key = map
+      .keys()
+      .find(|k| k.starts_with("Time Series"))
+      .cloned()
+      .ok_or_else(|| serde::de::Error::custom("No time series data found in response"))?;
+
+    // Extract time series data
+    let time_series: TimeSeriesData<OhlcvData> = map
+      .remove(&time_series_key)
+      .ok_or_else(|| serde::de::Error::missing_field("Time Series"))
+      .and_then(|v| serde_json::from_value(v).map_err(serde::de::Error::custom))?;
+
+    Ok(IntradayTimeSeries { meta_data, time_series })
+  }
+}
 /// Metadata for intraday time series
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IntradayMetadata {

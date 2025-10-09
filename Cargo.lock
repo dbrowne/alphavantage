@@ -191,6 +191,7 @@ name = "av-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "av-client",
  "av-core",
  "av-database-postgres",
@@ -202,6 +203,7 @@ dependencies = [
  "csv",
  "diesel",
  "dotenvy",
+ "futures",
  "indicatif 0.17.11",
  "regex",
  "reqwest",
