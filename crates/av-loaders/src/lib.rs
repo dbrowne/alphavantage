@@ -70,6 +70,12 @@ pub use crypto::{
   SourceResult,
   crypto_news_loader::load_crypto_news,
   database::{CryptoDbInput, CryptoDbLoader, CryptoDbOutput, SourceResultSummary},
+
+  intraday_loader::{
+    CryptoIntradayConfig, CryptoIntradayInput, CryptoIntradayLoader, CryptoIntradayLoaderInput,
+    CryptoIntradayLoaderOutput, CryptoIntradayOutput, CryptoIntradayPriceData,
+    CryptoSymbolInfo as CryptoIntradaySymbolInfo,
+  },
   // Export markets loader types
   markets_loader::{
     CryptoMarketData, CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
@@ -92,6 +98,10 @@ pub mod prelude {
     BatchProcessor,
     // Include crypto types in prelude
     CryptoDataSource,
+    CryptoIntradayConfig,
+    CryptoIntradayInput,
+    CryptoIntradayLoader,
+    CryptoIntradayOutput,
     CryptoLoaderConfig,
     CryptoMarketsLoader,
     CryptoMetadataLoader,
