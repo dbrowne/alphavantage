@@ -408,7 +408,7 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
     extended_hours: args.extended_hours,
     adjusted: args.adjusted,
     month: args.month.clone(),
-    outputsize: args.outputsize,
+    output_size: args.outputsize,
   };
 
   // Execute the loader

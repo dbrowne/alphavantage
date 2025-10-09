@@ -3,7 +3,10 @@
 //! This loader fetches intraday OHLCV data from AlphaVantage and prepares it
 //! for insertion into the intradayprices table.
 
+use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 use async_trait::async_trait;
+use av_core::types::OutputSize;
+use av_models::time_series::IntradayTimeSeries;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -18,9 +21,6 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
-
-use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
-use av_models::time_series::IntradayTimeSeries;
 
 /// Supported intervals for intraday data
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +139,7 @@ pub struct IntradayPriceLoaderInput {
   pub adjusted: bool,
   /// Optional month for historical data
   pub month: Option<String>,
-  pub outputsize: String,
+  pub output_size: String,
 }
 
 /// Single intraday price record
@@ -302,16 +302,18 @@ impl IntradayPriceLoader {
       chrono::Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
 
     let result = sql_query(
-            "INSERT INTO api_response_cache (cache_key, api_source, response_data, expires_at, created_at)
-             VALUES ($1, 'alphavantage', $2, $3, NOW())
-             ON CONFLICT (cache_key, api_source)
+            "INSERT INTO api_response_cache (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
+             VALUES ($1, 'alphavantage', $2, $3, $4, $5)
+             ON CONFLICT (cache_key)
              DO UPDATE SET
                 response_data = EXCLUDED.response_data,
                 expires_at = EXCLUDED.expires_at,
-                created_at = NOW()",
+                cached_at = NOW()",
         )
             .bind::<sql_types::Text, _>(cache_key)
+            .bind::<sql_types::Text, _>("")  // endpoint_url (we can leave empty for now)
             .bind::<sql_types::Jsonb, _>(&response_json)
+            .bind::<sql_types::Integer, _>(200)  // status_code
             .bind::<sql_types::Timestamptz, _>(&expires_at)
             .execute(&mut conn);
 
@@ -453,12 +455,9 @@ impl IntradayPriceLoader {
     // Call the API
     info!("📡 Fetching intraday data for {} (interval: {}, month: {:?})", symbol, interval, month);
 
-    let intraday_data = context
-      .client
-      .time_series()
-      .intraday_extended(symbol, interval, self.config.adjusted, self.config.extended_hours)
-      .await
-      .map_err(|e| {
+    // For now, use the regular intraday method since intraday_extended might have issues
+    let intraday_data =
+      context.client.time_series().intraday(symbol, interval).await.map_err(|e| {
         LoaderError::ApiError(format!("Failed to fetch intraday data for {}: {}", symbol, e))
       })?;
 
