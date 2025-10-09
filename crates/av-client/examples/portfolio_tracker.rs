@@ -12,11 +12,7 @@ use av_core::{Config, Error};
 use colored::*;
 use std::io::{self, Write};
 
-use av_models::{
-  fundamentals::{CompanyOverview, TopGainersLosers},
-  news::NewsSentiment,
-  time_series::{DailyTimeSeries, GlobalQuote},
-};
+use av_models::{fundamentals::TopGainersLosers, time_series::GlobalQuote};
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
