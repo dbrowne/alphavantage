@@ -189,7 +189,6 @@ impl CryptoDataProvider for CoinMarketCapProvider {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use tokio_test;
 
   #[tokio::test]
   async fn test_coinmarketcap_provider_creation() {

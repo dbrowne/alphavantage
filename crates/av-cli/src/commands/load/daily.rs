@@ -3,9 +3,7 @@
 use anyhow::Result;
 use clap::Args;
 use diesel::prelude::*;
-use diesel::upsert::excluded;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -493,7 +491,6 @@ pub async fn execute(args: DailyArgs, config: Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
 
   #[test]
   fn test_outputsize_validation() {

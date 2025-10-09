@@ -9,6 +9,10 @@ description = "TimescaleDB integration for AlphaVantage time-series data using d
 keywords = ["alphavantage", "timescaledb", "postgresql", "diesel", "async"]
 categories = ["database", "finance"]
 
+[lints]
+workspace = true
+
+
 [dependencies]
 chrono = {workspace = true}
 diesel = {workspace = true}

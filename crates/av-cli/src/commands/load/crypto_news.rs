@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use diesel::{ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
