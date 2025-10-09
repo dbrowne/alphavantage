@@ -1,5 +1,6 @@
 pub mod crypto_news_loader;
 pub mod database;
+pub mod intraday_loader;
 pub mod loader;
 pub mod mapping_service;
 pub mod markets_loader;
@@ -23,6 +24,12 @@ pub use types::*;
 pub use metadata_loader::{
   CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader, CryptoMetadataOutput,
   CryptoSymbolForMetadata, MetadataSourceResult, ProcessedCryptoMetadata,
+};
+
+pub use intraday_loader::{
+  CryptoIntradayConfig, CryptoIntradayInput, CryptoIntradayLoader, CryptoIntradayLoaderInput,
+  CryptoIntradayLoaderOutput, CryptoIntradayOutput, CryptoIntradayPriceData,
+  CryptoSymbolInfo as CryptoIntradaySymbolInfo,
 };
 
 use thiserror::Error;
