@@ -1,5 +1,4 @@
 //! Crypto intraday price loading command
-//! Location: av-cli/src/commands/load/crypto_intraday.rs
 
 use anyhow::Result;
 use clap::Parser;
@@ -25,7 +24,7 @@ use crate::config::Config;
 #[derive(Parser, Debug)]
 #[clap(about = "Load crypto intraday price data from AlphaVantage")]
 pub struct CryptoIntradayArgs {
-  /// Specific symbol to load (loads all crypto symbols if not specified)
+  /// Specific symbol to load (defaults to top 500 cryptocurrencies if not specified)
   #[clap(short, long)]
   symbol: Option<String>,
 
@@ -42,6 +41,7 @@ pub struct CryptoIntradayArgs {
   outputsize: String,
 
   /// Only load primary crypto symbols (priority != 9999999)
+  /// This is always true unless explicitly set to false
   #[clap(long, default_value = "true")]
   primary_only: bool,
 
@@ -49,7 +49,7 @@ pub struct CryptoIntradayArgs {
   #[clap(long, default_value = "5")]
   concurrent: usize,
 
-  /// Delay between API calls in milliseconds
+  /// Delay between API calls in milliseconds (800ms = 75 calls/minute for premium)
   #[clap(long, default_value = "800")]
   api_delay: u64,
 
@@ -65,7 +65,7 @@ pub struct CryptoIntradayArgs {
   #[clap(long)]
   update: bool,
 
-  /// Continue on error
+  /// Continue on error (don't stop if one symbol fails)
   #[clap(long)]
   continue_on_error: bool,
 
@@ -73,7 +73,7 @@ pub struct CryptoIntradayArgs {
   #[clap(long, default_value = "true")]
   update_symbols: bool,
 
-  /// Maximum number of symbols to process (for testing)
+  /// Maximum number of symbols to process (default: 500, use for smaller batches)
   #[clap(long)]
   limit: Option<usize>,
 
@@ -90,30 +90,31 @@ async fn get_crypto_symbols_to_load(
   let mut conn = establish_connection(&config.database_url)?;
 
   let symbols = if let Some(ref symbol) = args.symbol {
-    // Load specific symbol
+    // Load specific symbol if provided
     symbols::table
       .filter(symbols::symbol.eq(symbol))
       .filter(symbols::sec_type.eq("Cryptocurrency"))
       .select((symbols::sid, symbols::symbol, symbols::priority))
       .load::<(i64, String, i32)>(&mut conn)?
   } else {
-    // Build query for all crypto symbols
+    // Default: Load top 500 cryptocurrencies by priority
     let mut query = symbols::table
       .filter(symbols::sec_type.eq("Cryptocurrency"))
+      .filter(symbols::priority.ne(9999999)) // Exclude unranked
       .select((symbols::sid, symbols::symbol, symbols::priority))
+      .order(symbols::priority.asc())
+      .limit(500)
       .into_boxed();
 
-    // Filter by priority if primary_only is set
-    if args.primary_only {
-      query = query.filter(symbols::priority.ne(9999999));
-    }
-
-    // Order by priority to load most important symbols first
-    query = query.order(symbols::priority.asc());
-
-    // Apply limit if specified
+    // Apply custom limit if specified
     if let Some(limit) = args.limit {
-      query = query.limit(limit as i64);
+      query = symbols::table
+        .filter(symbols::sec_type.eq("Cryptocurrency"))
+        .filter(symbols::priority.ne(9999999))
+        .select((symbols::sid, symbols::symbol, symbols::priority))
+        .order(symbols::priority.asc())
+        .limit(limit as i64)
+        .into_boxed();
     }
 
     query.load::<(i64, String, i32)>(&mut conn)?
@@ -266,26 +267,46 @@ pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   let symbols = get_crypto_symbols_to_load(&args, &config).await?;
 
   if symbols.is_empty() {
-    warn!("No cryptocurrency symbols found. Ensure symbols have sec_type='Cryptocurrency'");
+    warn!(
+      "No cryptocurrency symbols found. Ensure symbols have sec_type='Cryptocurrency' and priority != 9999999"
+    );
     return Ok(());
   }
 
-  info!("Loading crypto intraday prices for {} symbols", symbols.len());
-  if args.primary_only {
-    info!("Filtering to primary symbols only (priority != 9999999)");
-  }
+  let symbol_count = symbols.len();
+  info!(
+    "Loading crypto intraday prices for {} symbols (top {} by priority)",
+    symbol_count,
+    if args.symbol.is_some() {
+      "single".to_string()
+    } else if args.limit.is_some() {
+      format!("{}", args.limit.unwrap())
+    } else {
+      "500".to_string()
+    }
+  );
+
   info!(
     "Configuration: market={}, interval={}, outputsize={}, concurrent={}, api_delay={}ms",
     args.market, args.interval, args.outputsize, args.concurrent, args.api_delay
   );
 
-  // Calculate estimated time
+  // Calculate estimated time for rate limiting
   if args.api_delay > 0 {
     let estimated_seconds =
       (symbols.len() as u64 * args.api_delay) / 1000 / args.concurrent.max(1) as u64;
     let hours = estimated_seconds / 3600;
     let minutes = (estimated_seconds % 3600) / 60;
-    info!("Estimated time: {}h {}m (assuming no failures)", hours, minutes);
+    info!("Estimated minimum time: {}h {}m (based on API rate limiting)", hours, minutes);
+
+    // Warning for large batches
+    if symbol_count > 100 {
+      warn!(
+        "⚠️  Loading {} symbols will take significant time due to API rate limits",
+        symbol_count
+      );
+      warn!("Consider using --limit flag to process in smaller batches");
+    }
   }
 
   // Create API client
