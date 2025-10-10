@@ -6,7 +6,10 @@ A Rust implementation and complete re write of my  Rust [Alphavantage API](https
 ## ⚠️ Project Status
 
 **This project is currently under active development. RELEASE COMING SOON!!!!**
+# AlphaVantage Rust Client
 
+[![Build Status](https://github.com/dbrowne/alphavantage/actions/workflows/rust.yml/badge.svg)](https://github.com/dbrowne/alphavantage/actions/workflows/rust.yml)
+[![Tests](https://github.com/dbrowne/alphavantage/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/dbrowne/alphavantage/actions/workflows/rust.yml)
 
 A high-performance, async Rust client library and comprehensive data pipeline for financial market data. Built with a modular workspace architecture, it provides robust integration with AlphaVantage API, CoinGecko, and other data sources, featuring advanced caching, TimescaleDB support, and comprehensive cryptocurrency coverage.
 
