@@ -213,6 +213,7 @@ async fn save_crypto_intraday_prices_optimized(
               low: &p.low,
               close: &p.close,
               volume: &p.volume,
+              price_source_id: &p.price_source_id,
             })
             .collect();
 

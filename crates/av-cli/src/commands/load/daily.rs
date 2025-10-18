@@ -238,6 +238,7 @@ async fn save_summary_prices(
             low: price_data.low,
             close: price_data.close,
             volume: price_data.volume,
+            price_source_id: 1,
           });
         } else {
           // Data unchanged, skip
@@ -257,6 +258,7 @@ async fn save_summary_prices(
           low: price_data.low,
           close: price_data.close,
           volume: price_data.volume,
+          price_source_id: 1,
         });
       }
     }

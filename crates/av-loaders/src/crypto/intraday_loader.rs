@@ -102,6 +102,7 @@ pub struct CryptoIntradayPriceData {
   pub low: f32,
   pub close: f32,
   pub volume: i64,
+  pub price_source_id: i32,
 }
 
 /// Output from the crypto intraday price loader
@@ -280,6 +281,7 @@ impl CryptoIntradayLoader {
     csv_data: &str,
     sid: i64,
     symbol: &str,
+    price_source: i32,
   ) -> Result<Vec<CryptoIntradayPriceData>, LoaderError> {
     let mut reader = Reader::from_reader(csv_data.as_bytes());
     let mut prices = Vec::new();
@@ -341,6 +343,7 @@ impl CryptoIntradayLoader {
         low,
         close,
         volume,
+        price_source_id: price_source,
       });
     }
 
@@ -363,7 +366,7 @@ impl CryptoIntradayLoader {
     // Check cache first
     if let Some(cached_csv) = self.get_cached_csv(&cache_key).await {
       debug!("Using cached CSV data for {} in {}", symbol, market);
-      return self.parse_csv_data(&cached_csv, sid, symbol);
+      return self.parse_csv_data(&cached_csv, sid, symbol, 1);
     }
 
     // Acquire permit for rate limiting
@@ -420,7 +423,7 @@ impl CryptoIntradayLoader {
     self.cache_csv_response(&cache_key, &csv_data, symbol).await;
 
     // Parse and return the data
-    self.parse_csv_data(&csv_data, sid, symbol)
+    self.parse_csv_data(&csv_data, sid, symbol, 1) //Alpha vantage is source 1
   }
 }
 

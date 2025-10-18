@@ -98,15 +98,12 @@ impl CryptoSidGenerator {
   fn new(conn: &mut PgConnection) -> Result<Self> {
     use av_database_postgres::schema::symbols::dsl::*;
 
-    info!("Initializing crypto SID generator using existing SecurityType system");
-
     // Get all existing cryptocurrency SIDs
     let crypto_sids: Vec<i64> =
       symbols.filter(sec_type.eq("Cryptocurrency")).select(sid).load(conn)?;
 
     let mut max_raw_id: u32 = 0;
 
-    // Use existing SecurityIdentifier::decode to find max raw_id
     for sid_val in crypto_sids {
       if let Some(identifier) = SecurityIdentifier::decode(sid_val) {
         if identifier.security_type == SecurityType::Cryptocurrency
