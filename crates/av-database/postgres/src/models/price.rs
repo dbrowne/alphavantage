@@ -19,6 +19,7 @@ pub struct IntradayPrice {
   pub low: f32,
   pub close: f32,
   pub volume: i64,
+  pub price_source_id: i32,
 }
 
 #[derive(Insertable, Debug, Clone)]
@@ -33,6 +34,7 @@ pub struct NewIntradayPrice<'a> {
   pub low: &'a f32,
   pub close: &'a f32,
   pub volume: &'a i64,
+  pub price_source_id: &'a i32,
 }
 
 impl<'a> NewIntradayPrice<'a> {
@@ -128,6 +130,7 @@ pub struct SummaryPrice {
   pub low: f32,
   pub close: f32,
   pub volume: i64,
+  pub price_source_id: i32,
 }
 
 #[derive(Insertable, Debug)]
@@ -143,6 +146,7 @@ pub struct NewSummaryPrice<'a> {
   pub low: &'a f32,
   pub close: &'a f32,
   pub volume: &'a i64,
+  pub price_source_id: &'a i32,
 }
 
 // Add owned variant for API responses
@@ -159,6 +163,7 @@ pub struct NewSummaryPriceOwned {
   pub low: f32,
   pub close: f32,
   pub volume: i64,
+  pub price_source_id: i32,
 }
 
 #[derive(QueryableByName, Debug, Serialize)]
@@ -205,6 +210,7 @@ impl NewSummaryPriceOwned {
       low: &self.low,
       close: &self.close,
       volume: &self.volume,
+      price_source_id: &self.price_source_id,
     }
   }
 
