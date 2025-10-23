@@ -25,18 +25,18 @@ check-conflicts:
 
 # Start services
 up: check-conflicts
-	$(DOCKER_ENV) docker compose up -d
+	$(DOCKER_ENV) docker-compose up -d
 	@echo "=== Services started ==="
 	@echo "PostgreSQL: localhost:$$($(DOCKER_ENV) sh -c 'echo $$DB_PORT')"
 	@echo "PgAdmin: http://localhost:$$($(DOCKER_ENV) sh -c 'echo $$PGADMIN_PORT')"
 
 # Stop services
 down:
-	$(DOCKER_ENV) docker compose down
+	$(DOCKER_ENV) docker-compose down
 
 # View logs
 logs:
-	$(DOCKER_ENV) docker compose logs -f av_timescaledb
+	$(DOCKER_ENV) docker-compose logs -f av_timescaledb
 
 # Connect to database
 psql:
@@ -44,7 +44,7 @@ psql:
 
 # Clean up everything (including volumes)
 clean:
-	$(DOCKER_ENV) docker compose down -v
+	$(DOCKER_ENV) docker-compose down -v
 	@echo "✅ All containers, networks, and volumes removed"
 
 delete:
