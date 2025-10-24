@@ -32,6 +32,12 @@ DROP INDEX IF EXISTS idx_crypto_markets_active;
 DROP INDEX IF EXISTS idx_crypto_markets_volume;
 DROP INDEX IF EXISTS idx_crypto_markets_exchange;
 DROP INDEX IF EXISTS idx_crypto_markets_sid;
+DROP INDEX IF EXISTS idx_crypto_social_blockchain_sites;
+DROP INDEX IF EXISTS idx_crypto_social_coingecko_score;
+DROP INDEX IF EXISTS idx_crypto_social_developer_score;
+DROP INDEX IF EXISTS idx_intradayprices_source;
+DROP INDEX IF EXISTS idx_summaryprices_source;
+
 
 -- Drop constraints from crypto_markets before dropping it
 ALTER TABLE IF EXISTS crypto_markets DROP CONSTRAINT IF EXISTS crypto_markets_spread_valid;
@@ -70,6 +76,18 @@ DROP TABLE IF EXISTS newsoverviews CASCADE;
 DROP TABLE IF EXISTS articles CASCADE;
 DROP TABLE IF EXISTS sources CASCADE;
 DROP TABLE IF EXISTS authors CASCADE;
+
+
+-- Drop foreign key constraints and columns from hypertables
+ALTER TABLE intradayprices DROP CONSTRAINT IF EXISTS intradayprices_price_source_id_fkey;
+ALTER TABLE intradayprices DROP COLUMN IF EXISTS price_source_id;
+
+ALTER TABLE summaryprices DROP CONSTRAINT IF EXISTS summaryprices_price_source_id_fkey;
+ALTER TABLE summaryprices DROP COLUMN IF EXISTS price_source_id;
+
+DROP TRIGGER IF EXISTS update_price_sources_modtime ON price_sources;
+DROP INDEX IF EXISTS idx_price_sources_name;
+DROP TABLE IF EXISTS price_sources CASCADE;
 
 -- Drop price data tables (hypertables) - TimescaleDB will handle chunks automatically
 DROP TABLE IF EXISTS topstats CASCADE;

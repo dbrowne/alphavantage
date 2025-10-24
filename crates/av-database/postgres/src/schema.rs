@@ -281,9 +281,9 @@ diesel::table! {
         public_interest_score -> Nullable<Numeric>,
         sentiment_votes_up_pct -> Nullable<Numeric>,
         sentiment_votes_down_pct -> Nullable<Numeric>,
+        blockchain_sites -> Nullable<Jsonb>,
         c_time -> Timestamptz,
         m_time -> Timestamptz,
-        blockchain_sites -> Nullable<Jsonb>,
     }
 }
 
@@ -376,6 +376,7 @@ diesel::table! {
         low -> Float4,
         close -> Float4,
         volume -> Int8,
+        price_source_id -> Int4,
     }
 }
 
@@ -467,6 +468,18 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
+    price_sources (sourceid) {
+        sourceid -> Int4,
+        #[max_length = 20]
+        name -> Varchar,
+        ctime -> Timestamptz,
+        mtime -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     procstates (spid) {
         spid -> Int4,
         proc_id -> Nullable<Int4>,
@@ -521,6 +534,7 @@ diesel::table! {
         low -> Float4,
         close -> Float4,
         volume -> Int8,
+        price_source_id -> Int4,
     }
 }
 
@@ -619,12 +633,14 @@ diesel::joinable!(crypto_social -> symbols (sid));
 diesel::joinable!(crypto_technical -> symbols (sid));
 diesel::joinable!(equity_details -> symbols (sid));
 diesel::joinable!(feeds -> symbols (sid));
+diesel::joinable!(intradayprices -> price_sources (price_source_id));
 diesel::joinable!(intradayprices -> symbols (sid));
 diesel::joinable!(newsoverviews -> symbols (sid));
 diesel::joinable!(overviewexts -> symbols (sid));
 diesel::joinable!(overviews -> symbols (sid));
 diesel::joinable!(procstates -> proctypes (proc_id));
 diesel::joinable!(procstates -> states (end_state));
+diesel::joinable!(summaryprices -> price_sources (price_source_id));
 diesel::joinable!(summaryprices -> symbols (sid));
 diesel::joinable!(tickersentiments -> feeds (feedid));
 diesel::joinable!(tickersentiments -> symbols (sid));
@@ -656,6 +672,7 @@ diesel::allow_tables_to_appear_in_same_query!(
   newsoverviews,
   overviewexts,
   overviews,
+  price_sources,
   procstates,
   proctypes,
   sources,
