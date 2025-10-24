@@ -109,6 +109,27 @@ CREATE TABLE overviewexts (
 );
 
 -- =====================================================
+-- PRICE SOURCES TABLE (for tracking data providers)
+-- =====================================================
+-- This table tracks the source of price data (AlphaVantage, CoinGecko, etc.)
+CREATE TABLE price_sources (
+                               sourceid SERIAL PRIMARY KEY,
+                               name VARCHAR(20) NOT NULL UNIQUE,
+                               ctime TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                               mtime TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Create index for faster lookups
+CREATE INDEX idx_price_sources_name ON price_sources(name);
+
+-- Insert initial price source values
+INSERT INTO price_sources (sourceid, name) VALUES
+                                               (1, 'Alphavantage'),
+                                               (2, 'CoinGecko');
+
+
+
+-- =====================================================
 -- PRICE DATA TABLES (TimescaleDB Hypertables)
 -- =====================================================
 
@@ -123,6 +144,7 @@ CREATE TABLE intradayprices (
                                 low     REAL NOT NULL,
                                 close   REAL NOT NULL,
                                 volume  BIGINT NOT NULL,
+                                price_source_id INTEGER NOT NULL DEFAULT 1 REFERENCES price_sources(sourceid),
                                 PRIMARY KEY (tstamp, sid, eventid)
 );
 
@@ -131,6 +153,7 @@ SELECT create_hypertable('intradayprices', 'tstamp', chunk_time_interval => INTE
 CREATE INDEX idx_intradayprices_sid_time ON intradayprices (sid, tstamp DESC);
 CREATE INDEX idx_intradayprices_symbol_time ON intradayprices (symbol, tstamp DESC);
 CREATE INDEX idx_intradayprices_eventid ON intradayprices (eventid);
+CREATE INDEX idx_intradayprices_source ON intradayprices(price_source_id);
 
 -- Summary prices
 CREATE TABLE summaryprices (
@@ -144,6 +167,7 @@ CREATE TABLE summaryprices (
                                low     REAL NOT NULL,
                                close   REAL NOT NULL,
                                volume  BIGINT NOT NULL,
+                               price_source_id INTEGER NOT NULL REFERENCES price_sources(sourceid),
                                PRIMARY KEY (tstamp, sid, eventid)
 );
 
@@ -152,6 +176,8 @@ SELECT create_hypertable('summaryprices', 'tstamp', chunk_time_interval => INTER
 CREATE INDEX idx_summaryprices_sid_date ON summaryprices (sid, date DESC);
 CREATE INDEX idx_summaryprices_symbol_date ON summaryprices (symbol, date DESC);
 CREATE INDEX idx_summaryprices_eventid ON summaryprices (eventid);
+CREATE INDEX idx_summaryprices_source ON summaryprices(price_source_id);
+
 
 -- Top stats
 CREATE TABLE topstats (
@@ -453,6 +479,7 @@ CREATE TABLE crypto_technical (
 );
 
 -- Crypto social
+
 CREATE TABLE crypto_social (
                                sid                      BIGINT PRIMARY KEY REFERENCES symbols(sid) ON DELETE CASCADE,
                                website_url              TEXT,
@@ -475,9 +502,16 @@ CREATE TABLE crypto_social (
                                public_interest_score    NUMERIC(5,2),
                                sentiment_votes_up_pct   NUMERIC(5,2),
                                sentiment_votes_down_pct NUMERIC(5,2),
+                               blockchain_sites         JSONB,  -- NEW: Stores blockchain explorer URLs and related data
                                c_time                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                                m_time                   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX idx_crypto_social_blockchain_sites ON crypto_social USING GIN(blockchain_sites);
+
+-- Create additional indexes for common queries
+CREATE INDEX idx_crypto_social_coingecko_score ON crypto_social(coingecko_score);
+CREATE INDEX idx_crypto_social_developer_score ON crypto_social(developer_score);
 
 -- Crypto markets
 CREATE TABLE crypto_markets (
@@ -641,6 +675,11 @@ CREATE TRIGGER prevent_procstate_update
     FOR EACH ROW
     EXECUTE FUNCTION prevent_completed_update();
 
+CREATE TRIGGER update_price_sources_modtime
+    BEFORE UPDATE ON price_sources
+    FOR EACH ROW
+    EXECUTE FUNCTION update_modified_time();
+
 -- =====================================================
 -- COMPRESSION POLICIES
 -- =====================================================
@@ -648,13 +687,13 @@ CREATE TRIGGER prevent_procstate_update
 -- Add compression settings
 ALTER TABLE intradayprices SET (
     timescaledb.compress,
-    timescaledb.compress_segmentby = 'sid',
+    timescaledb.compress_segmentby = 'sid,price_source_id',
     timescaledb.compress_orderby = 'tstamp DESC'
     );
 
 ALTER TABLE summaryprices SET (
     timescaledb.compress,
-    timescaledb.compress_segmentby = 'sid',
+    timescaledb.compress_segmentby = 'sid, price_source_id',
     timescaledb.compress_orderby = 'tstamp DESC'
     );
 
@@ -694,7 +733,7 @@ SELECT
     sum(volume) AS volume,
     count(*) AS tick_count
 FROM intradayprices
-GROUP BY hour, sid, symbol
+GROUP BY hour, sid, symbol, price_source_id
 WITH NO DATA;
 
 -- Add refresh policy
@@ -714,6 +753,7 @@ COMMENT ON TABLE summaryprices IS 'Daily summary price data - TimescaleDB hypert
 COMMENT ON TABLE topstats IS 'Top gainers/losers - TimescaleDB hypertable with 1-week chunks';
 COMMENT ON TABLE newsoverviews IS 'News overview data - TimescaleDB hypertable with 1-month chunks';
 COMMENT ON TABLE crypto_api_map IS 'Maps cryptocurrencies to various API providers';
+COMMENT ON TABLE overviews is 'Details on mostly Alphvantage equities';
 COMMENT ON VIEW crypto_overviews IS 'Compatibility view combining crypto_overview_basic and crypto_overview_metrics';
 
 CREATE TABLE article_translations (
@@ -775,13 +815,15 @@ CREATE TABLE crypto_metadata (
                                  source VARCHAR(50) NOT NULL,
                                  source_id TEXT NOT NULL,
                                  market_cap_rank INTEGER,
-                                 base_currency VARCHAR(10),
-                                 quote_currency VARCHAR(10),
+                                 base_currency VARCHAR(64),
+                                 quote_currency VARCHAR(64),
                                  is_active BOOLEAN NOT NULL DEFAULT true,
                                  additional_data JSONB,
                                  last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                                  UNIQUE(source, source_id)
 );
+
+CREATE INDEX idx_crypto_metadata_source ON crypto_metadata(source);
 
 ALTER TABLE crypto_markets
     ADD CONSTRAINT crypto_markets_unique_market
