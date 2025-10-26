@@ -165,17 +165,15 @@ impl NewsLoader {
     time_to: Option<&str>,
     topics: Option<&str>,
   ) -> String {
-    let mut hasher = DefaultHasher::new();
-
-    // Include all parameters that affect the API response
-    symbol.hash(&mut hasher);
-    time_from.unwrap_or("").hash(&mut hasher);
-    time_to.unwrap_or("").hash(&mut hasher);
-    topics.unwrap_or("").hash(&mut hasher);
-    self.config.sort_order.as_deref().unwrap_or("").hash(&mut hasher);
-    self.config.limit.unwrap_or(0).hash(&mut hasher);
-
-    format!("news_sentiment_{:x}", hasher.finish())
+    format!(
+      "news_sentiment_{}_{}_{}_{}_{}_{}",
+      symbol.to_uppercase(),
+      time_from.unwrap_or(""),
+      time_to.unwrap_or(""),
+      topics.unwrap_or(""),
+      self.config.sort_order.as_deref().unwrap_or(""),
+      self.config.limit.unwrap_or(0)
+    )
   }
 
   /// Get cached response if available and not expired
