@@ -1,16 +1,16 @@
 use anyhow::Result;
+use av_client::AlphaVantageClient;
+use av_core::types::market::{Exchange, SecurityIdentifier, SecurityType};
+use av_loaders::SecurityLoaderConfig;
+use av_loaders::{
+  DataLoader, LoaderConfig, LoaderContext, SecurityLoader, SecurityLoaderInput, SymbolMatchMode,
+  process_tracker::ProcessTracker,
+};
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
-
-use av_client::AlphaVantageClient;
-use av_core::types::market::{Exchange, SecurityIdentifier, SecurityType};
-use av_loaders::{
-  DataLoader, LoaderConfig, LoaderContext, SecurityLoader, SecurityLoaderInput, SymbolMatchMode,
-  process_tracker::ProcessTracker,
-};
 
 // Import diesel types
 use diesel::PgConnection;
@@ -47,6 +47,18 @@ pub struct SecuritiesArgs {
   /// Number of top matches to accept (only used with --match-mode=top)
   #[arg(long, default_value = "3")]
   top_matches: usize,
+
+  /// Disable caching
+  #[arg(long)]
+  no_cache: bool,
+
+  /// Force refresh (bypass cache)
+  #[arg(long)]
+  force_refresh: bool,
+
+  /// Cache TTL in hours
+  #[arg(long, default_value = "168")]
+  cache_ttl_hours: u32,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -183,8 +195,15 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     MatchMode::All => SymbolMatchMode::AllMatches,
     MatchMode::Top => SymbolMatchMode::TopMatches(args.top_matches),
   };
+  let security_config = SecurityLoaderConfig {
+    enable_cache: !args.no_cache,
+    cache_ttl_hours: args.cache_ttl_hours,
+    force_refresh: args.force_refresh,
+    database_url: config.database_url.clone(),
+  };
 
-  let loader = SecurityLoader::new(args.concurrent).with_match_mode(match_mode);
+  let loader =
+    SecurityLoader::new(args.concurrent).with_match_mode(match_mode).with_config(security_config);
 
   // Collect all securities first, then save in one transaction
   let mut all_securities = Vec::new();
@@ -199,8 +218,12 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     match loader.load(&context, input).await {
       Ok(output) => {
         info!(
-          "NASDAQ API calls complete: {} loaded, {} errors, {} skipped",
-          output.loaded_count, output.errors, output.skipped_count
+          "NASDAQ API calls complete: {} loaded, {} errors, {} skipped, {} cache hits, {} API calls",
+          output.loaded_count,
+          output.errors,
+          output.skipped_count,
+          output.cache_hits,
+          output.api_calls
         );
 
         // Collect securities for later saving
@@ -227,10 +250,13 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     match loader.load(&context, input).await {
       Ok(output) => {
         info!(
-          "NYSE API calls complete: {} loaded, {} errors, {} skipped",
-          output.loaded_count, output.errors, output.skipped_count
+          "NYSE API calls complete: {} loaded, {} errors, {} skipped, {} cache hits, {} API calls",
+          output.loaded_count,
+          output.errors,
+          output.skipped_count,
+          output.cache_hits,
+          output.api_calls
         );
-
         // Collect securities for later saving
         all_securities.extend(output.data);
       }
@@ -299,9 +325,15 @@ async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
     MatchMode::All => SymbolMatchMode::AllMatches,
     MatchMode::Top => SymbolMatchMode::TopMatches(args.top_matches),
   };
+  let security_config = SecurityLoaderConfig {
+    enable_cache: false, // Disable for dry run
+    cache_ttl_hours: 168,
+    force_refresh: false,
+    database_url: String::new(),
+  };
 
-  let loader = SecurityLoader::new(args.concurrent).with_match_mode(match_mode);
-
+  let loader =
+    SecurityLoader::new(args.concurrent).with_match_mode(match_mode).with_config(security_config);
   let mut total_loaded = 0;
   let mut total_errors = 0;
   let mut total_skipped = 0;
@@ -319,9 +351,14 @@ async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
       match loader.load(&context, input).await {
         Ok(output) => {
           info!(
-            "{} API calls complete (DRY RUN): {} loaded, {} errors, {} skipped",
-            exchange, output.loaded_count, output.errors, output.skipped_count
+            "API calls complete (DRY RUN): {} loaded, {} errors, {} skipped, {} cache hits, {} API calls",
+            output.loaded_count,
+            output.errors,
+            output.skipped_count,
+            output.cache_hits,
+            output.api_calls
           );
+
           total_loaded += output.loaded_count;
           total_errors += output.errors;
           total_skipped += output.skipped_count;
