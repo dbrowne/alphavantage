@@ -10,8 +10,6 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -100,11 +98,7 @@ impl SummaryPriceLoader {
 
   /// Generate cache key for daily price requests
   fn generate_cache_key(&self, symbol: &str, outputsize: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    symbol.hash(&mut hasher);
-    outputsize.hash(&mut hasher);
-    "daily_csv".hash(&mut hasher); // Add function type to make it unique
-    format!("daily_prices_csv_{:x}", hasher.finish())
+    format!("daily_prices_csv_{}_{}", symbol.to_uppercase(), outputsize.to_lowercase())
   }
 
   /// Get cached CSV response if available and not expired

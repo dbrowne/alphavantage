@@ -15,8 +15,6 @@ use diesel::sql_query;
 use diesel::sql_types;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -163,13 +161,12 @@ impl CryptoIntradayLoader {
 
   /// Generate cache key for crypto intraday price requests
   fn generate_cache_key(&self, symbol: &str, market: &str, interval: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    symbol.hash(&mut hasher);
-    market.hash(&mut hasher);
-    interval.hash(&mut hasher);
-    "crypto_intraday_csv".hash(&mut hasher);
-
-    format!("crypto_intraday_csv_{}_{}_{}_compact_{:x}", symbol, market, interval, hasher.finish())
+    format!(
+      "crypto_intraday_csv_{}_{}_{}_compact",
+      symbol.to_uppercase(),
+      market.to_uppercase(),
+      interval.to_lowercase()
+    )
   }
 
   /// Get cached CSV response if available and not expired
