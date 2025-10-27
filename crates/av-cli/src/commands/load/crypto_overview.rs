@@ -1,23 +1,26 @@
+// crates/av-cli/src/commands/load/crypto_overview.rs
+
 use anyhow::{Result, anyhow};
 use av_database_postgres::models::crypto::{
   NewCryptoOverviewBasic, NewCryptoOverviewMetrics, NewCryptoSocial, NewCryptoTechnical,
 };
-use bigdecimal::BigDecimal;
 use chrono::NaiveDate;
 use chrono::{DateTime, Utc};
 use clap::Args;
 use diesel::PgConnection;
 use diesel::prelude::*;
+use diesel::sql_query;
+use diesel::sql_types;
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::str::FromStr;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use crate::commands::load::numeric_helpers::{f64_to_price_bigdecimal, f64_to_supply_bigdecimal};
 use crate::config::Config;
 
 #[derive(Args, Debug)]
@@ -57,6 +60,22 @@ pub struct CryptoOverviewArgs {
   /// CoinMarketCap API key (overrides environment variable)
   #[arg(long, env = "CMC_API_KEY")]
   pub cmc_api_key: Option<String>,
+
+  /// Enable response caching to reduce API costs
+  #[arg(long, default_value = "true")]
+  enable_cache: bool,
+
+  /// Cache TTL in hours (default: 24 hours for overview data)
+  #[arg(long, default_value = "24")]
+  cache_ttl_hours: u32,
+
+  /// Force refresh - ignore cache and fetch fresh data
+  #[arg(long)]
+  force_refresh: bool,
+
+  /// Include all symbols (including those with priority >= 9999999)
+  #[arg(long)]
+  no_priority_filter: bool,
 }
 
 #[derive(Args, Debug)]
@@ -119,9 +138,168 @@ pub struct GitHubData {
   pub last_commit_date: Option<NaiveDate>,
 }
 
+// Cache query result structure for SQL queries
+#[derive(QueryableByName, Debug)]
+struct CacheQueryResult {
+  #[diesel(sql_type = diesel::sql_types::Jsonb)]
+  response_data: serde_json::Value,
+  #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+  expires_at: DateTime<Utc>,
+}
+
+/// Configuration for caching
+struct CacheConfig {
+  enable_cache: bool,
+  cache_ttl_hours: u32,
+  force_refresh: bool,
+  database_url: String,
+}
+
+/// Generate cache key for overview requests
+fn generate_cache_key(sid: i64, symbol: &str) -> String {
+  format!("crypto_overview_{}_{}", sid, symbol)
+}
+
+/// Get cached response if available and not expired
+async fn get_cached_overview(
+  cache_config: &CacheConfig,
+  cache_key: &str,
+) -> Option<CryptoOverviewData> {
+  if !cache_config.enable_cache || cache_config.force_refresh {
+    return None;
+  }
+
+  let mut conn = match diesel::PgConnection::establish(&cache_config.database_url) {
+    Ok(conn) => conn,
+    Err(e) => {
+      debug!("Failed to connect for cache check: {}", e);
+      return None;
+    }
+  };
+
+  let cached_entry: Option<CacheQueryResult> = sql_query(
+    "SELECT response_data, expires_at FROM api_response_cache
+         WHERE cache_key = $1 AND expires_at > NOW()",
+  )
+  .bind::<sql_types::Text, _>(cache_key)
+  .get_result(&mut conn)
+  .optional()
+  .unwrap_or(None);
+
+  if let Some(cache_result) = cached_entry {
+    info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
+
+    // Deserialize cached overview data
+    if let Ok(overview) = serde_json::from_value::<CryptoOverviewData>(cache_result.response_data) {
+      return Some(overview);
+    }
+  }
+
+  debug!("Cache miss for {}", cache_key);
+  None
+}
+
+/// Store overview data in cache
+async fn store_cached_overview(
+  cache_config: &CacheConfig,
+  cache_key: &str,
+  overview: &CryptoOverviewData,
+) -> Result<()> {
+  if !cache_config.enable_cache {
+    return Ok(());
+  }
+
+  let mut conn = diesel::PgConnection::establish(&cache_config.database_url)
+    .map_err(|e| anyhow!("Cache connection failed: {}", e))?;
+
+  let overview_json = serde_json::to_value(overview)?;
+  let now = Utc::now();
+  let expires_at = now + chrono::Duration::hours(cache_config.cache_ttl_hours as i64);
+
+  // Dummy values for required fields
+  let endpoint_url = format!("crypto_overview/{}", cache_key);
+  let status_code = 200;
+
+  sql_query(
+    "INSERT INTO api_response_cache
+     (cache_key, api_source, endpoint_url, response_data, status_code, cached_at, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (cache_key)
+     DO UPDATE SET response_data = $4, cached_at = $6, expires_at = $7",
+  )
+  .bind::<sql_types::Text, _>(cache_key)
+  .bind::<sql_types::Text, _>("crypto_overview")
+  .bind::<sql_types::Text, _>(&endpoint_url)
+  .bind::<sql_types::Jsonb, _>(&overview_json)
+  .bind::<sql_types::Int4, _>(status_code)
+  .bind::<sql_types::Timestamptz, _>(now)
+  .bind::<sql_types::Timestamptz, _>(expires_at)
+  .execute(&mut conn)?;
+
+  debug!("💾 Cached overview for {} (TTL: {}h)", cache_key, cache_config.cache_ttl_hours);
+
+  Ok(())
+}
+
+/// Clean expired cache entries
+pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize> {
+  let mut conn = diesel::PgConnection::establish(database_url)
+    .map_err(|e| anyhow!("Connection failed: {}", e))?;
+
+  let deleted_count = sql_query(
+    "DELETE FROM api_response_cache WHERE expires_at < NOW() AND api_source = 'crypto_overview'",
+  )
+  .execute(&mut conn)?;
+
+  if deleted_count > 0 {
+    info!("🧹 Cleaned up {} expired crypto overview cache entries", deleted_count);
+  }
+
+  Ok(deleted_count)
+}
+
 /// Main execute function
 pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
   info!("Starting cryptocurrency overview loader");
+
+  // Debug: Check if CMC API key is present
+  if let Some(ref key) = args.cmc_api_key {
+    info!("✅ CoinMarketCap API key detected (length: {} chars)", key.len());
+    if key.len() < 20 {
+      warn!("⚠️  CMC API key seems too short - might be invalid");
+    }
+  } else {
+    warn!("❌ No CoinMarketCap API key provided - will use free sources only");
+    warn!("   Set CMC_API_KEY environment variable or use --cmc-api-key flag");
+  }
+
+  // Create cache configuration
+  let cache_config = CacheConfig {
+    enable_cache: args.enable_cache,
+    cache_ttl_hours: args.cache_ttl_hours,
+    force_refresh: args.force_refresh,
+    database_url: config.database_url.clone(),
+  };
+
+  // Log cache status
+  if cache_config.enable_cache {
+    if cache_config.force_refresh {
+      info!("🔄 Cache enabled but FORCE REFRESH is on - will bypass cache");
+    } else {
+      info!("💾 Cache ENABLED (TTL: {} hours)", cache_config.cache_ttl_hours);
+    }
+  } else {
+    info!("⚠️  Cache DISABLED - all requests will hit API");
+  }
+
+  // Clean up expired cache entries at start
+  if cache_config.enable_cache {
+    match cleanup_expired_cache(&cache_config.database_url).await {
+      Ok(count) if count > 0 => info!("🧹 Cleaned up {} expired cache entries", count),
+      Ok(_) => debug!("No expired cache entries to clean"),
+      Err(e) => warn!("Failed to clean up cache: {}", e),
+    }
+  }
 
   // Create HTTP client
   let client = reqwest::Client::builder()
@@ -146,7 +324,8 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
     let database_url = config.database_url.clone();
     let symbols = args.symbols.clone();
     let limit = args.limit;
-    move || get_crypto_symbols_to_load(&database_url, symbols, limit)
+    let no_priority_filter = args.no_priority_filter;
+    move || get_crypto_symbols_to_load(&database_url, symbols, limit, no_priority_filter)
   })
   .await??;
 
@@ -156,6 +335,22 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
   }
 
   info!("Found {} cryptocurrency symbols to load overviews for", symbols_to_load.len());
+
+  if !args.no_priority_filter {
+    info!("📊 Loading only primary symbols (priority < 9999999)");
+  } else {
+    info!("📊 Loading ALL symbols (including non-primary)");
+  }
+
+  if cache_config.enable_cache {
+    info!("💾 Caching enabled (TTL: {}h)", cache_config.cache_ttl_hours);
+    if cache_config.force_refresh {
+      info!("🔄 Force refresh mode - bypassing cache");
+    }
+  } else {
+    info!("⚠️  Caching disabled");
+  }
+
   if args.github_token.is_some() {
     info!("GitHub authentication detected - increased rate limits active");
   } else if args.include_github {
@@ -181,60 +376,99 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
       .progress_chars("##-"),
   );
 
+  let mut cache_hits = 0;
+  let mut api_calls = 0;
+
   for (sid, symbol, name) in symbols_to_load {
     progress.set_message(format!("Loading {}", symbol));
 
-    match fetch_crypto_overview(&client, sid, &symbol, &name, args.cmc_api_key.as_deref()).await {
-      Ok(overview) => {
-        // Fetch GitHub data if URL is available and GitHub scraping is enabled
-        let github_data = if args.include_github {
-          if let Some(ref github_url) = overview.github {
-            debug!("Fetching GitHub data for {}", symbol);
-            let gh_data =
-              fetch_github_data(&client, Some(github_url), args.github_token.as_ref()).await;
+    // Try to get from cache first
+    let cache_key = generate_cache_key(sid, &symbol);
+    let (overview, made_api_call) = if let Some(cached) =
+      get_cached_overview(&cache_config, &cache_key).await
+    {
+      cache_hits += 1;
+      (Some(cached), false)
+    } else {
+      // Fetch from API
+      match fetch_crypto_overview(&client, sid, &symbol, &name, args.cmc_api_key.as_deref()).await {
+        Ok(overview) => {
+          api_calls += 1;
 
-            if let Some(ref gh) = gh_data {
-              info!(
-                "GitHub stats for {}: {} stars, {} forks, {} contributors",
-                symbol,
-                gh.stars.unwrap_or(0),
-                gh.forks.unwrap_or(0),
-                gh.contributors.unwrap_or(0)
-              );
+          // Store in cache
+          if cache_config.enable_cache {
+            if let Err(e) = store_cached_overview(&cache_config, &cache_key, &overview).await {
+              warn!("Failed to cache overview for {}: {}", symbol, e);
             }
-
-            // Add GitHub-specific delay
-            sleep(Duration::from_millis(github_delay_ms)).await;
-
-            gh_data
-          } else {
-            None
           }
+
+          (Some(overview), true)
+        }
+        Err(e) => {
+          error!("Failed to fetch overview for {}: {}", symbol, e);
+          progress.inc(1);
+          continue;
+        }
+      }
+    };
+
+    if let Some(overview) = overview {
+      // Fetch GitHub data if URL is available and GitHub scraping is enabled
+      let github_data = if args.include_github {
+        if let Some(ref github_url) = overview.github {
+          debug!("Fetching GitHub data for {}", symbol);
+          let gh_data =
+            fetch_github_data(&client, Some(github_url), args.github_token.as_ref()).await;
+
+          if let Some(ref gh) = gh_data {
+            info!(
+              "GitHub stats for {}: {} stars, {} forks, {} contributors",
+              symbol,
+              gh.stars.unwrap_or(0),
+              gh.forks.unwrap_or(0),
+              gh.contributors.unwrap_or(0)
+            );
+          }
+
+          // Add GitHub-specific delay
+          sleep(Duration::from_millis(github_delay_ms)).await;
+
+          gh_data
         } else {
           None
-        };
+        }
+      } else {
+        None
+      };
 
-        info!(
-          "Successfully loaded overview for {}: Market Cap ${}, Rank #{}",
-          symbol, overview.market_cap, overview.rank
-        );
+      info!(
+        "Successfully loaded overview for {}: Market Cap ${}, Rank #{}",
+        symbol, overview.market_cap, overview.rank
+      );
 
-        all_overviews_with_github.push((overview, github_data));
-      }
-      Err(e) => {
-        error!("Failed to fetch overview for {}: {}", symbol, e);
-        progress.inc(1);
-        continue; // skip the failure for now
-      }
+      all_overviews_with_github.push((overview, github_data));
     }
 
     progress.inc(1);
 
-    // Rate limiting for crypto APIs
-    sleep(Duration::from_millis(args.delay_ms)).await;
+    // Rate limiting for crypto APIs - sleep after EVERY API call
+    if made_api_call {
+      sleep(Duration::from_millis(args.delay_ms)).await;
+    }
   }
 
   progress.finish_with_message("Loading complete");
+
+  info!(
+    "📊 Load statistics: {} cache hits, {} API calls ({:.1}% cache hit rate)",
+    cache_hits,
+    api_calls,
+    if (cache_hits + api_calls) > 0 {
+      (cache_hits as f64 / (cache_hits + api_calls) as f64) * 100.0
+    } else {
+      0.0
+    }
+  );
 
   if !all_overviews_with_github.is_empty() {
     // Save to database
@@ -244,19 +478,22 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
     })
     .await??;
 
-    info!("Saved {} cryptocurrency overviews to database", saved_count);
+    info!("Successfully saved {} cryptocurrency overviews to database", saved_count);
+  } else {
+    warn!("No overviews to save");
   }
 
   Ok(())
 }
 
-/// Update only GitHub data for existing cryptocurrencies
+/// Update GitHub data for existing cryptocurrency overviews
 pub async fn update_github_data(args: UpdateGitHubArgs, config: Config) -> Result<()> {
-  info!("Updating GitHub data for cryptocurrencies");
+  info!("Starting GitHub data update for cryptocurrencies");
 
+  // Create HTTP client
   let client = reqwest::Client::builder()
     .timeout(Duration::from_secs(30))
-    .user_agent("Mozilla/5.0 (compatible; CryptoGitHubBot/1.0)")
+    .user_agent("Mozilla/5.0 (compatible; CryptoOverviewBot/1.0)")
     .build()?;
 
   // Check rate limit if requested
@@ -264,46 +501,23 @@ pub async fn update_github_data(args: UpdateGitHubArgs, config: Config) -> Resul
     check_github_rate_limit(&client, args.github_token.as_ref()).await?;
   }
 
-  // Query for cryptos with GitHub URLs
-  let cryptos_with_github = tokio::task::spawn_blocking({
+  // Get symbols with GitHub URLs
+  let symbols_with_github = tokio::task::spawn_blocking({
     let database_url = config.database_url.clone();
     let symbols = args.symbols.clone();
     let limit = args.limit;
-    move || {
-      use av_database_postgres::schema::{crypto_social, symbols};
-
-      let mut conn = PgConnection::establish(&database_url)?;
-
-      let mut query = symbols::table
-        .inner_join(crypto_social::table)
-        .filter(symbols::sec_type.eq("Cryptocurrency"))
-        .filter(crypto_social::github_url.is_not_null())
-        .select((symbols::sid, symbols::symbol, crypto_social::github_url))
-        .into_boxed();
-
-      if let Some(ref symbol_list) = symbols {
-        query = query.filter(symbols::symbol.eq_any(symbol_list));
-      }
-
-      if let Some(limit_val) = limit {
-        query = query.limit(limit_val as i64);
-      }
-
-      Ok::<Vec<(i64, String, Option<String>)>, anyhow::Error>(
-        query.load::<(i64, String, Option<String>)>(&mut conn)?,
-      )
-    }
+    move || get_symbols_with_github(&database_url, symbols, limit)
   })
   .await??;
 
-  if cryptos_with_github.is_empty() {
-    info!("No cryptocurrencies found with GitHub URLs");
+  if symbols_with_github.is_empty() {
+    info!("No symbols found with GitHub URLs");
     return Ok(());
   }
 
-  info!("Found {} cryptocurrencies with GitHub URLs", cryptos_with_github.len());
+  info!("Found {} symbols with GitHub URLs to update", symbols_with_github.len());
 
-  let progress = ProgressBar::new(cryptos_with_github.len() as u64);
+  let progress = ProgressBar::new(symbols_with_github.len() as u64);
   progress.set_style(
     ProgressStyle::default_bar()
       .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
@@ -313,7 +527,7 @@ pub async fn update_github_data(args: UpdateGitHubArgs, config: Config) -> Resul
 
   let mut updated_count = 0;
 
-  for (sid, symbol, github_url) in cryptos_with_github {
+  for (sid, symbol, github_url) in symbols_with_github {
     progress.set_message(format!("Updating GitHub data for {}", symbol));
 
     if let Some(github_data) =
@@ -371,6 +585,7 @@ fn get_crypto_symbols_to_load(
   database_url: &str,
   specific_symbols: Option<Vec<String>>,
   limit: Option<usize>,
+  no_priority_filter: bool,
 ) -> Result<Vec<(i64, String, String)>> {
   use av_database_postgres::schema::symbols::dsl::*;
 
@@ -383,6 +598,14 @@ fn get_crypto_symbols_to_load(
     .filter(overview.eq(false))
     .select((sid, symbol, name))
     .into_boxed();
+
+  // Apply priority filter by default (only load primary symbols)
+  if !no_priority_filter {
+    query = query.filter(priority.lt(9999999));
+    info!("Filtering to symbols with priority < 9999999 (primary symbols only)");
+  } else {
+    info!("Loading all symbols (no priority filter applied)");
+  }
 
   // Filter by specific symbols if provided
   if let Some(ref symbol_list) = specific_symbols {
@@ -406,6 +629,36 @@ fn get_crypto_symbols_to_load(
   Ok(results)
 }
 
+/// Get symbols with GitHub URLs for updating
+fn get_symbols_with_github(
+  database_url: &str,
+  specific_symbols: Option<Vec<String>>,
+  limit: Option<usize>,
+) -> Result<Vec<(i64, String, Option<String>)>> {
+  use av_database_postgres::schema::{crypto_social, symbols};
+
+  let mut conn = PgConnection::establish(database_url)?;
+
+  let mut query = symbols::table
+    .inner_join(crypto_social::table)
+    .filter(symbols::sec_type.eq("Cryptocurrency"))
+    .select((symbols::sid, symbols::symbol, crypto_social::github_url))
+    .into_boxed();
+
+  if let Some(ref symbol_list) = specific_symbols {
+    query = query.filter(symbols::symbol.eq_any(symbol_list));
+  }
+
+  if let Some(limit_val) = limit {
+    query = query.limit(limit_val as i64);
+  }
+
+  let results = query.load::<(i64, String, Option<String>)>(&mut conn)?;
+
+  // Filter out None GitHub URLs
+  Ok(results.into_iter().filter(|(_, _, github)| github.is_some()).collect())
+}
+
 /// Fetch cryptocurrency overview from multiple sources
 async fn fetch_crypto_overview(
   client: &reqwest::Client,
@@ -425,20 +678,29 @@ async fn fetch_crypto_overview(
       }
       Err(e) => {
         warn!("CoinMarketCap failed for {}: {}", symbol, e);
+        // Small delay before trying next source
+        sleep(Duration::from_millis(500)).await;
       }
     }
   }
+
   // 1. Try CoinGecko     todo!  Get rid of this !!
   match fetch_from_coingecko_free(client, sid, symbol, name).await {
     Ok(data) => return Ok(data),
-    Err(e) => debug!("CoinGecko failed for {}: {}", symbol, e),
+    Err(e) => {
+      debug!("CoinGecko failed for {}: {}", symbol, e);
+      sleep(Duration::from_millis(500)).await;
+    }
   }
 
   // 2. Try CoinPaprika
   match fetch_from_coinpaprika(client, sid, symbol, name).await {
     //todo: get rid of this
     Ok(data) => return Ok(data),
-    Err(e) => debug!("CoinPaprika failed for {}: {}", symbol, e),
+    Err(e) => {
+      debug!("CoinPaprika failed for {}: {}", symbol, e);
+      sleep(Duration::from_millis(500)).await;
+    }
   }
 
   // 3. Try CoinCap
@@ -544,43 +806,38 @@ async fn fetch_from_coinpaprika(
 
   let ticker_data: Value = ticker_response.json().await?;
 
-  let quotes = &ticker_data["quotes"]["USD"];
-
   Ok(CryptoOverviewData {
     sid,
     symbol: symbol.to_string(),
     name: name.to_string(),
     description: coin_data["description"].as_str().unwrap_or("").to_string(),
-    market_cap: quotes["market_cap"].as_f64().unwrap_or(0.0) as i64,
+    market_cap: ticker_data["quotes"]["USD"]["market_cap"].as_f64().unwrap_or(0.0) as i64,
     circulating_supply: ticker_data["circulating_supply"].as_f64().unwrap_or(0.0),
     total_supply: ticker_data["total_supply"].as_f64(),
     max_supply: ticker_data["max_supply"].as_f64(),
-    price_usd: quotes["price"].as_f64().unwrap_or(0.0),
-    volume_24h: quotes["volume_24h"].as_f64().unwrap_or(0.0) as i64,
-    price_change_24h: quotes["percent_change_24h"].as_f64().unwrap_or(0.0),
-    ath: quotes["ath_price"].as_f64().unwrap_or(0.0),
-    ath_date: quotes["ath_date"]
+    price_usd: ticker_data["quotes"]["USD"]["price"].as_f64().unwrap_or(0.0),
+    volume_24h: ticker_data["quotes"]["USD"]["volume_24h"].as_f64().unwrap_or(0.0) as i64,
+    price_change_24h: ticker_data["quotes"]["USD"]["percent_change_24h"].as_f64().unwrap_or(0.0),
+    ath: ticker_data["quotes"]["USD"]["ath_price"].as_f64().unwrap_or(0.0),
+    ath_date: ticker_data["quotes"]["USD"]["ath_date"]
       .as_str()
       .and_then(|d| NaiveDate::parse_from_str(&d[..10], "%Y-%m-%d").ok()),
-    atl: 0.0, // CoinPaprika doesn't provide ATL in free tier
+    atl: 0.0, // Not provided by CoinPaprika
     atl_date: None,
-    rank: ticker_data["rank"].as_u64().unwrap_or(0) as u32,
+    rank: ticker_data["rank"].as_u64().unwrap_or(9999999) as u32,
     website: coin_data["links"]["website"]
       .as_array()
       .and_then(|arr| arr.first())
       .and_then(|v| v.as_str())
       .map(|s| s.to_string())
       .filter(|s| !s.is_empty()),
-    whitepaper: coin_data["whitepaper"]["link"]
-      .as_str()
-      .map(|s| s.to_string())
-      .filter(|s| !s.is_empty()),
+    whitepaper: coin_data["whitepaper"]["link"].as_str().map(|s| s.to_string()),
     github: coin_data["links"]["source_code"]
       .as_array()
       .and_then(|arr| arr.first())
       .and_then(|v| v.as_str())
       .map(|s| s.to_string())
-      .filter(|s| !s.is_empty()),
+      .filter(|s| !s.is_empty() && s.contains("github")),
   })
 }
 
@@ -591,7 +848,6 @@ async fn fetch_from_coincap(
   symbol: &str,
   name: &str,
 ) -> Result<CryptoOverviewData> {
-  // Get asset ID
   let asset_id = get_coincap_id(symbol);
 
   let url = format!("https://api.coincap.io/v2/assets/{}", asset_id);
@@ -642,18 +898,22 @@ async fn fetch_from_coinmarketcap(
 ) -> Result<CryptoOverviewData> {
   let url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest";
 
+  debug!("Calling CMC API for {} with key: {}...", symbol, &api_key[..8.min(api_key.len())]);
+
   let response = client
-        .get(url)
-        .header("X-CMC_PRO_API_KEY", api_key)
-        .header("Accept", "application/json")
-        .query(&[
-            ("symbol", symbol),
-            ("convert", "USD"),
-            ("aux", "num_market_pairs,cmc_rank,date_added,tags,platform,max_supply,circulating_supply,total_supply"),
-        ])
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await?;
+      .get(url)
+      .header("X-CMC_PRO_API_KEY", api_key)
+      .header("Accept", "application/json")
+      .query(&[
+        ("symbol", symbol),
+        ("convert", "USD"),
+        ("aux", "num_market_pairs,cmc_rank,date_added,tags,platform,max_supply,circulating_supply,total_supply"),
+      ])
+      .timeout(Duration::from_secs(10))
+      .send()
+      .await?;
+
+  debug!("CMC API response status for {}: {}", symbol, response.status());
 
   if response.status() != 200 {
     return Err(anyhow!("CoinMarketCap returned status: {}", response.status()));
@@ -678,214 +938,41 @@ async fn fetch_from_coinmarketcap(
     .and_then(|d| d.get(symbol))
     .and_then(|arr| arr.as_array())
     .and_then(|arr| arr.first())
-    .ok_or_else(|| anyhow!("No data found for symbol {} in CMC response", symbol))?;
+    .ok_or_else(|| anyhow!("CoinMarketCap response missing data for {}", symbol))?;
 
   let usd_quote = crypto_data
     .get("quote")
     .and_then(|q| q.get("USD"))
-    .ok_or_else(|| anyhow!("No USD quote data found for {}", symbol))?;
-
-  // Extract values with proper error handling
-  let market_cap = usd_quote.get("market_cap").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
-
-  let current_price = usd_quote.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-  let volume_24h = usd_quote.get("volume_24h").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
-
-  let price_change_24h =
-    usd_quote.get("percent_change_24h").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-  let circulating_supply =
-    crypto_data.get("circulating_supply").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-  let total_supply = crypto_data.get("total_supply").and_then(|v| v.as_f64());
-
-  let max_supply = crypto_data.get("max_supply").and_then(|v| v.as_f64());
-
-  let rank = crypto_data.get("cmc_rank").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    .ok_or_else(|| anyhow!("Missing USD quote data for {}", symbol))?;
 
   Ok(CryptoOverviewData {
     sid,
     symbol: symbol.to_string(),
-    name: name.to_string(),
-    description: "".to_string(), // CMC quotes endpoint doesn't provide descriptions
-    market_cap,
-    circulating_supply,
-    total_supply,
-    max_supply,
-    price_usd: current_price,
-    volume_24h,
-    price_change_24h,
-    ath: 0.0, // Requires separate endpoint
+    name: crypto_data.get("name").and_then(|n| n.as_str()).unwrap_or(name).to_string(),
+    description: format!("{} cryptocurrency", name),
+    market_cap: usd_quote.get("market_cap").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64,
+    circulating_supply: crypto_data
+      .get("circulating_supply")
+      .and_then(|v| v.as_f64())
+      .unwrap_or(0.0),
+    total_supply: crypto_data.get("total_supply").and_then(|v| v.as_f64()),
+    max_supply: crypto_data.get("max_supply").and_then(|v| v.as_f64()),
+    price_usd: usd_quote.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    volume_24h: usd_quote.get("volume_24h").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64,
+    price_change_24h: usd_quote.get("percent_change_24h").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    ath: 0.0, // Not in basic API response
     ath_date: None,
-    atl: 0.0, // Requires separate endpoint
+    atl: 0.0,
     atl_date: None,
-    rank,
-    website: None, // Requires metadata endpoint
+    rank: crypto_data.get("cmc_rank").and_then(|v| v.as_u64()).unwrap_or(9999999) as u32,
+    website: None, // Need metadata endpoint for this
     whitepaper: None,
     github: None,
   })
 }
 
-/// Fetch GitHub data with authentication support
-async fn fetch_github_data(
-  client: &reqwest::Client,
-  github_url: Option<&String>,
-  github_token: Option<&String>,
-) -> Option<GitHubData> {
-  let github_url = github_url?;
+// Helper functions for API ID mapping
 
-  // Extract owner and repo from GitHub URL
-  let re = Regex::new(r"github\.com/([^/]+)/([^/\s]+)").ok()?;
-  let captures = re.captures(github_url)?;
-  let owner = captures.get(1)?.as_str();
-  let repo = captures.get(2)?.as_str().trim_end_matches(".git");
-
-  debug!("Fetching GitHub data for {}/{}", owner, repo);
-
-  // Build request with optional authentication
-  let mut request = client
-    .get(&format!("https://api.github.com/repos/{}/{}", owner, repo))
-    .header("Accept", "application/vnd.github.v3+json");
-
-  // Add authentication if token provided
-  if let Some(token) = github_token {
-    request = request.header("Authorization", format!("Bearer {}", token));
-    debug!("Using GitHub authentication");
-  } else {
-    debug!("No GitHub authentication - limited to 60 requests/hour");
-  }
-
-  let repo_response = request.send().await.ok()?;
-
-  // Check rate limit headers
-  if let Some(remaining) = repo_response.headers().get("x-ratelimit-remaining") {
-    if let Ok(remaining_str) = remaining.to_str() {
-      if let Ok(remaining_count) = remaining_str.parse::<i32>() {
-        if remaining_count < 10 {
-          warn!("GitHub API rate limit low: {} requests remaining", remaining_count);
-        }
-      }
-    }
-  }
-
-  if repo_response.status() == 401 {
-    error!("GitHub authentication failed - check your token");
-    return None;
-  } else if repo_response.status() == 403 {
-    error!("GitHub rate limit exceeded or forbidden");
-    return None;
-  } else if repo_response.status() != 200 {
-    warn!("GitHub API returned status {} for {}/{}", repo_response.status(), owner, repo);
-    return None;
-  }
-
-  let repo_data: Value = repo_response.json().await.ok()?;
-
-  // Get contributor count (separate API call)
-  let contributors_url =
-    format!("https://api.github.com/repos/{}/{}/contributors?per_page=1", owner, repo);
-  let mut contributors_request =
-    client.get(&contributors_url).header("Accept", "application/vnd.github.v3+json");
-
-  if let Some(token) = github_token {
-    contributors_request =
-      contributors_request.header("Authorization", format!("Bearer {}", token));
-  }
-
-  let contributors_response = contributors_request.send().await.ok()?;
-
-  let contributor_count = if let Some(link_header) = contributors_response.headers().get("link") {
-    // Parse the Link header to get the last page number
-    let link_str = link_header.to_str().ok()?;
-    let re = Regex::new(r#"page=(\d+)>; rel="last""#).ok()?;
-    re.captures(link_str).and_then(|cap| cap.get(1)).and_then(|m| m.as_str().parse::<i32>().ok())
-  } else {
-    // If no pagination, count the results
-    let contributors: Vec<Value> = contributors_response.json().await.ok()?;
-    Some(contributors.len() as i32)
-  };
-
-  // Get recent commit activity (last 30 days)
-  let since_date = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
-  let commits_url = format!(
-    "https://api.github.com/repos/{}/{}/commits?since={}&per_page=1",
-    owner, repo, since_date
-  );
-
-  let mut commits_request =
-    client.get(&commits_url).header("Accept", "application/vnd.github.v3+json");
-
-  if let Some(token) = github_token {
-    commits_request = commits_request.header("Authorization", format!("Bearer {}", token));
-  }
-
-  let commits_response = commits_request.send().await.ok()?;
-
-  let commits_30d = if let Some(link_header) = commits_response.headers().get("link") {
-    let link_str = link_header.to_str().ok()?;
-    let re = Regex::new(r#"page=(\d+)>; rel="last""#).ok()?;
-    re.captures(link_str).and_then(|cap| cap.get(1)).and_then(|m| m.as_str().parse::<i32>().ok())
-  } else {
-    let commits: Vec<Value> = commits_response.json().await.ok().unwrap_or_default();
-    Some(commits.len() as i32)
-  };
-
-  Some(GitHubData {
-    forks: repo_data["forks_count"].as_i64().map(|v| v as i32),
-    stars: repo_data["stargazers_count"].as_i64().map(|v| v as i32),
-    watchers: repo_data["subscribers_count"].as_i64().map(|v| v as i32),
-    open_issues: repo_data["open_issues_count"].as_i64().map(|v| v as i32),
-    contributors: contributor_count,
-    commits_30d,
-    pull_requests: None, // Skip PR count to save API calls
-    last_commit_date: repo_data["pushed_at"]
-      .as_str()
-      .and_then(|d| NaiveDate::parse_from_str(&d[..10], "%Y-%m-%d").ok()),
-  })
-}
-
-/// Check GitHub API rate limit status
-async fn check_github_rate_limit(
-  client: &reqwest::Client,
-  github_token: Option<&String>,
-) -> Result<()> {
-  let mut request = client
-    .get("https://api.github.com/rate_limit")
-    .header("Accept", "application/vnd.github.v3+json");
-
-  if let Some(token) = github_token {
-    request = request.header("Authorization", format!("Bearer {}", token));
-  }
-
-  let response = request.send().await?;
-  let data: Value = response.json().await?;
-
-  let core = &data["rate"];
-  let _limit = core["limit"].as_i64().unwrap_or(0);
-  let remaining = core["remaining"].as_i64().unwrap_or(0);
-  let reset = core["reset"].as_i64().unwrap_or(0);
-
-  let reset_time = DateTime::<Utc>::from_timestamp(reset, 0).map(|dt| dt.naive_utc());
-
-  if let Some(time) = reset_time {
-    info!("  Resets at: {}", time);
-  } else {
-    info!("  Resets at: unknown");
-  }
-
-  if remaining == 0 {
-    if let Some(time) = reset_time {
-      return Err(anyhow!("GitHub rate limit exceeded. Resets at {}", time));
-    } else {
-      return Err(anyhow!("GitHub rate limit exceeded. Reset time unknown"));
-    }
-  }
-
-  Ok(())
-}
-
-// Symbol to ID mapping functions
 fn get_coingecko_id(symbol: &str) -> String {
   // todo: This is for the free access but should delete
   match symbol.to_uppercase().as_str() {
@@ -988,6 +1075,137 @@ fn get_coincap_id(symbol: &str) -> String {
   }
 }
 
+/// Fetch GitHub repository data
+async fn fetch_github_data(
+  client: &reqwest::Client,
+  github_url: Option<&String>,
+  github_token: Option<&String>,
+) -> Option<GitHubData> {
+  let github_url = github_url?;
+
+  // Extract owner and repo from GitHub URL
+  let re = Regex::new(r"github\.com/([^/]+)/([^/]+)").ok()?;
+  let caps = re.captures(github_url)?;
+  let owner = caps.get(1)?.as_str();
+  let repo = caps.get(2)?.as_str().trim_end_matches(".git");
+
+  // Fetch repository data
+  let repo_url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+
+  let mut req = client.get(&repo_url).header("User-Agent", "CryptoOverviewBot");
+
+  if let Some(token) = github_token {
+    req = req.header("Authorization", format!("token {}", token));
+  }
+
+  let repo_response = req.send().await.ok()?;
+
+  if repo_response.status() != 200 {
+    warn!("GitHub API returned status {} for {}/{}", repo_response.status(), owner, repo);
+    return None;
+  }
+
+  let repo_data: Value = repo_response.json().await.ok()?;
+
+  // Fetch contributors count
+  let contributors_url =
+    format!("https://api.github.com/repos/{}/{}/contributors?per_page=1", owner, repo);
+
+  let mut contrib_req = client.get(&contributors_url).header("User-Agent", "CryptoOverviewBot");
+
+  if let Some(token) = github_token {
+    contrib_req = contrib_req.header("Authorization", format!("token {}", token));
+  }
+
+  let contrib_response = contrib_req.send().await.ok()?;
+  let contributors = if contrib_response.status() == 200 {
+    contrib_response
+      .headers()
+      .get("Link")
+      .and_then(|v| v.to_str().ok())
+      .and_then(|link| {
+        let re = Regex::new(r#"page=(\d+)>; rel="last""#).ok()?;
+        let caps = re.captures(link)?;
+        caps.get(1)?.as_str().parse::<i32>().ok()
+      })
+      .or_else(|| Some(1))
+  } else {
+    None
+  };
+
+  // Fetch commits in last 30 days
+  let since = Utc::now() - chrono::Duration::days(30);
+  let commits_url = format!(
+    "https://api.github.com/repos/{}/{}/commits?since={}&per_page=1",
+    owner,
+    repo,
+    since.to_rfc3339()
+  );
+
+  let mut commits_req = client.get(&commits_url).header("User-Agent", "CryptoOverviewBot");
+
+  if let Some(token) = github_token {
+    commits_req = commits_req.header("Authorization", format!("token {}", token));
+  }
+
+  let commits_response = commits_req.send().await.ok()?;
+  let commits_30d = if commits_response.status() == 200 {
+    commits_response
+      .headers()
+      .get("Link")
+      .and_then(|v| v.to_str().ok())
+      .and_then(|link| {
+        let re = Regex::new(r#"page=(\d+)>; rel="last""#).ok()?;
+        let caps = re.captures(link)?;
+        caps.get(1)?.as_str().parse::<i32>().ok()
+      })
+      .or_else(|| Some(1))
+  } else {
+    None
+  };
+
+  Some(GitHubData {
+    forks: repo_data["forks_count"].as_i64().map(|v| v as i32),
+    stars: repo_data["stargazers_count"].as_i64().map(|v| v as i32),
+    watchers: repo_data["subscribers_count"].as_i64().map(|v| v as i32),
+    open_issues: repo_data["open_issues_count"].as_i64().map(|v| v as i32),
+    contributors,
+    commits_30d,
+    pull_requests: None, // Would need separate API call
+    last_commit_date: repo_data["pushed_at"]
+      .as_str()
+      .and_then(|d| NaiveDate::parse_from_str(&d[..10], "%Y-%m-%d").ok()),
+  })
+}
+
+/// Check GitHub rate limit
+async fn check_github_rate_limit(
+  client: &reqwest::Client,
+  github_token: Option<&String>,
+) -> Result<()> {
+  let url = "https://api.github.com/rate_limit";
+  let mut req = client.get(url).header("User-Agent", "CryptoOverviewBot");
+
+  if let Some(token) = github_token {
+    req = req.header("Authorization", format!("token {}", token));
+  }
+
+  let response = req.send().await?;
+  let rate_limit: Value = response.json().await?;
+
+  let core_limit = &rate_limit["resources"]["core"];
+  let remaining = core_limit["remaining"].as_u64().unwrap_or(0);
+  let limit = core_limit["limit"].as_u64().unwrap_or(0);
+
+  info!("GitHub API rate limit: {}/{} remaining", remaining, limit);
+
+  if remaining < 10 {
+    warn!("GitHub API rate limit is low. Consider waiting before continuing.");
+  }
+
+  Ok(())
+}
+
 /// Save cryptocurrency overviews with GitHub data to database
 fn save_crypto_overviews_with_github_to_db(
   database_url: &str,
@@ -1001,29 +1219,58 @@ fn save_crypto_overviews_with_github_to_db(
     .map_err(|e| anyhow!("Failed to connect to database: {}", e))?;
 
   let mut saved_count = 0;
-  let now_t = Utc::now().naive_utc();
+  let _now_t = Utc::now().naive_utc();
 
   // Use transaction for all inserts
   conn.transaction::<_, anyhow::Error, _>(|conn| {
     for (overview, github_data) in overviews {
-      // Convert numeric values to BigDecimal
-      let current_price_bd = BigDecimal::from_str(&overview.price_usd.to_string()).ok();
-      let price_change_pct = BigDecimal::from_str(&overview.price_change_24h.to_string()).ok();
-      let circulating_supply_bd =
-        BigDecimal::from_str(&overview.circulating_supply.to_string()).ok();
-      let total_supply_bd =
-        overview.total_supply.and_then(|ts| BigDecimal::from_str(&ts.to_string()).ok());
-      let max_supply_bd =
-        overview.max_supply.and_then(|ms| BigDecimal::from_str(&ms.to_string()).ok());
-      let ath_bd = BigDecimal::from_str(&overview.ath.to_string()).ok();
-      let atl_bd = BigDecimal::from_str(&overview.atl.to_string()).ok();
+      // helper for f64 to I 64 conversion with overflow protection
+      let safe_f64_to_i64 = |value: f64, field_name: &str, symbol: &str| -> Option<i64> {
+        if value.is_nan() || value.is_infinite() {
+          warn!("{} for {} is invalid (NaN or Infinite), setting to None", field_name, symbol);
+          return None;
+        }
 
-      // Calculate fully diluted valuation
+        // Check if value exceeds i64 range
+        if value > i64::MAX as f64 {
+          warn!("{} for {} exceeds i64::MAX ({}), capping to i64::MAX", field_name, symbol, value);
+          Some(i64::MAX)
+        } else if value < i64::MIN as f64 {
+          warn!("{} for {} is below i64::MIN ({}), capping to i64::MIN", field_name, symbol, value);
+          Some(i64::MIN)
+        } else {
+          Some(value as i64)
+        }
+      };
+
+      // Convert numeric values to BigDecimal
+      let current_price_bd =
+        f64_to_price_bigdecimal(overview.price_usd, "current_price", overview.sid);
+      let price_change_pct =
+        f64_to_price_bigdecimal(overview.price_change_24h, "price_change_24h", overview.sid);
+      let circulating_supply_bd =
+        f64_to_supply_bigdecimal(overview.circulating_supply, "circulating_supply", overview.sid);
+      let total_supply_bd = overview
+        .total_supply
+        .and_then(|ts| f64_to_supply_bigdecimal(ts, "total_supply", overview.sid));
+      let max_supply_bd =
+        overview.max_supply.and_then(|ms| f64_to_supply_bigdecimal(ms, "max_supply", overview.sid));
+      let ath_bd = f64_to_price_bigdecimal(overview.ath, "ath", overview.sid);
+      let atl_bd = f64_to_price_bigdecimal(overview.atl, "atl", overview.sid);
+
+      // Safely convert market_cap and volume_24h with overflow protection
+      let market_cap_safe =
+        safe_f64_to_i64(overview.market_cap as f64, "market_cap", &overview.symbol);
+      let volume_24h_safe =
+        safe_f64_to_i64(overview.volume_24h as f64, "volume_24h", &overview.symbol);
+
+      // Calculate fully diluted valuation with overflow protection
       let fully_diluted_valuation = match (&current_price_bd, &max_supply_bd) {
         (Some(_), Some(_)) => {
           let price_f64 = overview.price_usd;
           let max_supply_f64 = overview.max_supply.unwrap_or(0.0);
-          Some((price_f64 * max_supply_f64) as i64)
+          let fdv = price_f64 * max_supply_f64;
+          safe_f64_to_i64(fdv, "fully_diluted_valuation", &overview.symbol)
         }
         _ => None,
       };
@@ -1045,9 +1292,9 @@ fn save_crypto_overviews_with_github_to_db(
         slug: Some(&slug),
         description: Some(overview.description.as_str()),
         market_cap_rank: market_cap_rank.as_ref(),
-        market_cap: Some(&overview.market_cap),
+        market_cap: market_cap_safe.as_ref(),
         fully_diluted_valuation: fully_diluted_valuation.as_ref(),
-        volume_24h: Some(&overview.volume_24h),
+        volume_24h: volume_24h_safe.as_ref(),
         volume_change_24h: None,
         current_price: current_price_bd.as_ref(),
         circulating_supply: circulating_supply_bd.as_ref(),
@@ -1063,14 +1310,17 @@ fn save_crypto_overviews_with_github_to_db(
         .do_nothing()
         .execute(conn)?;
 
-      // Convert dates for metrics
-      let ath_datetime = overview.ath_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
-      let atl_datetime = overview.atl_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+      // Create overview metrics
+      let ath_date_dt = overview.ath_date.map(|d| {
+        DateTime::<Utc>::from_naive_utc_and_offset(d.and_hms_opt(0, 0, 0).unwrap_or_default(), Utc)
+      });
+      let atl_date_dt = overview.atl_date.map(|d| {
+        DateTime::<Utc>::from_naive_utc_and_offset(d.and_hms_opt(0, 0, 0).unwrap_or_default(), Utc)
+      });
 
-      // Create metrics overview
       let new_overview_metrics = NewCryptoOverviewMetrics {
         sid: &overview.sid,
-        price_change_24h: current_price_bd.as_ref(),
+        price_change_24h: None,
         price_change_pct_24h: price_change_pct.as_ref(),
         price_change_pct_7d: None,
         price_change_pct_14d: None,
@@ -1079,97 +1329,23 @@ fn save_crypto_overviews_with_github_to_db(
         price_change_pct_200d: None,
         price_change_pct_1y: None,
         ath: ath_bd.as_ref(),
-        ath_date: ath_datetime.as_ref(),
+        ath_date: ath_date_dt.as_ref(),
         ath_change_percentage: None,
         atl: atl_bd.as_ref(),
-        atl_date: atl_datetime.as_ref(),
+        atl_date: atl_date_dt.as_ref(),
         atl_change_percentage: None,
         roi_times: None,
         roi_currency: None,
         roi_percentage: None,
       };
 
-      // Insert metrics overview
       diesel::insert_into(crypto_overview_metrics::table)
         .values(&new_overview_metrics)
         .on_conflict(crypto_overview_metrics::sid)
         .do_nothing()
         .execute(conn)?;
 
-      let mut new_technical = NewCryptoTechnical {
-        sid: overview.sid,
-        blockchain_platform: None,
-        token_standard: None,
-        consensus_mechanism: None,
-        hashing_algorithm: None,
-        block_time_minutes: None,
-        block_reward: None,
-        block_height: None,
-        hash_rate: None,
-        difficulty: None,
-        github_forks: None,
-        github_stars: None,
-        github_subscribers: None,
-        github_total_issues: None,
-        github_closed_issues: None,
-        github_pull_requests: None,
-        github_contributors: None,
-        github_commits_4_weeks: None,
-        is_defi: false,
-        is_stablecoin: overview.symbol.contains("USD")
-          || overview.symbol.contains("USDT")
-          || overview.symbol.contains("USDC"),
-        is_nft_platform: false,
-        is_exchange_token: overview.symbol == "BNB"
-          || overview.symbol == "CRO"
-          || overview.symbol == "OKB",
-        is_gaming: false,
-        is_metaverse: false,
-        is_privacy_coin: overview.symbol == "XMR" || overview.symbol == "ZEC",
-        is_layer2: false,
-        is_wrapped: overview.symbol.starts_with("W"),
-        genesis_date: None,
-        ico_price: None,
-        ico_date: None,
-        c_time: chrono::Utc::now(),
-        m_time: chrono::Utc::now(),
-      };
-
-      // Add GitHub data if available
-      if let Some(gh) = &github_data {
-        new_technical.github_forks = gh.forks;
-        new_technical.github_stars = gh.stars;
-        new_technical.github_subscribers = gh.watchers;
-        new_technical.github_total_issues = gh.open_issues;
-        new_technical.github_pull_requests = gh.pull_requests;
-        new_technical.github_contributors = gh.contributors;
-        new_technical.github_commits_4_weeks = gh.commits_30d;
-      }
-      // Check if technical record already exists
-      let technical_exists: bool = diesel::select(diesel::dsl::exists(
-        crypto_technical::table.filter(crypto_technical::sid.eq(overview.sid)),
-      ))
-      .get_result(conn)?;
-
-      if technical_exists && github_data.is_some() {
-        // Update only if we have new GitHub data
-        diesel::update(crypto_technical::table.filter(crypto_technical::sid.eq(overview.sid)))
-          .set((
-            crypto_technical::github_forks.eq(new_technical.github_forks),
-            crypto_technical::github_stars.eq(new_technical.github_stars),
-            crypto_technical::github_subscribers.eq(new_technical.github_subscribers),
-            crypto_technical::github_total_issues.eq(new_technical.github_total_issues),
-            crypto_technical::github_pull_requests.eq(new_technical.github_pull_requests),
-            crypto_technical::github_contributors.eq(new_technical.github_contributors),
-            crypto_technical::github_commits_4_weeks.eq(new_technical.github_commits_4_weeks),
-            crypto_technical::m_time.eq(now_t),
-          ))
-          .execute(conn)?;
-      } else if !technical_exists {
-        diesel::insert_into(crypto_technical::table).values(&new_technical).execute(conn)?;
-      }
-
-      // Insert into crypto_social
+      // Create social data entry
       let new_social = NewCryptoSocial {
         sid: overview.sid,
         website_url: overview.website.clone(),
@@ -1192,27 +1368,68 @@ fn save_crypto_overviews_with_github_to_db(
         public_interest_score: None,
         sentiment_votes_up_pct: None,
         sentiment_votes_down_pct: None,
-        c_time: chrono::Utc::now(),
-        m_time: chrono::Utc::now(),
+        c_time: now,
+        m_time: now,
       };
 
       diesel::insert_into(crypto_social::table)
         .values(&new_social)
         .on_conflict(crypto_social::sid)
-        .do_nothing() // Changed from .do_update().set()
+        .do_nothing()
         .execute(conn)?;
 
-      // Update symbols table to mark overview as loaded
+      // Create technical data with GitHub info
+      if let Some(gh) = github_data {
+        let new_technical = NewCryptoTechnical {
+          sid: overview.sid,
+          blockchain_platform: None,
+          token_standard: None,
+          consensus_mechanism: None,
+          hashing_algorithm: None,
+          block_time_minutes: None,
+          block_reward: None,
+          block_height: None,
+          hash_rate: None,
+          difficulty: None,
+          github_forks: gh.forks,
+          github_stars: gh.stars,
+          github_subscribers: gh.watchers,
+          github_total_issues: gh.open_issues,
+          github_closed_issues: None,
+          github_pull_requests: gh.pull_requests,
+          github_contributors: gh.contributors,
+          github_commits_4_weeks: gh.commits_30d,
+          is_defi: false,
+          is_stablecoin: false,
+          is_nft_platform: false,
+          is_exchange_token: false,
+          is_gaming: false,
+          is_metaverse: false,
+          is_privacy_coin: false,
+          is_layer2: false,
+          is_wrapped: false,
+          genesis_date: None,
+          ico_price: None,
+          ico_date: None,
+          c_time: now,
+          m_time: now,
+        };
+
+        diesel::insert_into(crypto_technical::table)
+          .values(&new_technical)
+          .on_conflict(crypto_technical::sid)
+          .do_nothing()
+          .execute(conn)?;
+      }
+
+      // Mark symbol as having overview
       diesel::update(symbols::table.filter(symbols::sid.eq(overview.sid)))
         .set(symbols::overview.eq(true))
         .execute(conn)?;
 
       saved_count += 1;
-      debug!("Saved crypto overview for {} (SID {})", overview.symbol, overview.sid);
     }
 
-    Ok(())
-  })?;
-
-  Ok(saved_count)
+    Ok(saved_count)
+  })
 }
