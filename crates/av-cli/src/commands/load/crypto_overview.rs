@@ -4,7 +4,6 @@ use anyhow::{Result, anyhow};
 use av_database_postgres::models::crypto::{
   NewCryptoOverviewBasic, NewCryptoOverviewMetrics, NewCryptoSocial, NewCryptoTechnical,
 };
-use bigdecimal::BigDecimal;
 use chrono::NaiveDate;
 use chrono::{DateTime, Utc};
 use clap::Args;
@@ -17,11 +16,11 @@ use regex::Regex;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::str::FromStr;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use crate::commands::load::numeric_helpers::{f64_to_price_bigdecimal, f64_to_supply_bigdecimal};
 use crate::config::Config;
 
 #[derive(Args, Debug)]
@@ -1225,24 +1224,53 @@ fn save_crypto_overviews_with_github_to_db(
   // Use transaction for all inserts
   conn.transaction::<_, anyhow::Error, _>(|conn| {
     for (overview, github_data) in overviews {
-      // Convert numeric values to BigDecimal
-      let current_price_bd = BigDecimal::from_str(&overview.price_usd.to_string()).ok();
-      let price_change_pct = BigDecimal::from_str(&overview.price_change_24h.to_string()).ok();
-      let circulating_supply_bd =
-        BigDecimal::from_str(&overview.circulating_supply.to_string()).ok();
-      let total_supply_bd =
-        overview.total_supply.and_then(|ts| BigDecimal::from_str(&ts.to_string()).ok());
-      let max_supply_bd =
-        overview.max_supply.and_then(|ms| BigDecimal::from_str(&ms.to_string()).ok());
-      let ath_bd = BigDecimal::from_str(&overview.ath.to_string()).ok();
-      let atl_bd = BigDecimal::from_str(&overview.atl.to_string()).ok();
+      // helper for f64 to I 64 conversion with overflow protection
+      let safe_f64_to_i64 = |value: f64, field_name: &str, symbol: &str| -> Option<i64> {
+        if value.is_nan() || value.is_infinite() {
+          warn!("{} for {} is invalid (NaN or Infinite), setting to None", field_name, symbol);
+          return None;
+        }
 
-      // Calculate fully diluted valuation
+        // Check if value exceeds i64 range
+        if value > i64::MAX as f64 {
+          warn!("{} for {} exceeds i64::MAX ({}), capping to i64::MAX", field_name, symbol, value);
+          Some(i64::MAX)
+        } else if value < i64::MIN as f64 {
+          warn!("{} for {} is below i64::MIN ({}), capping to i64::MIN", field_name, symbol, value);
+          Some(i64::MIN)
+        } else {
+          Some(value as i64)
+        }
+      };
+
+      // Convert numeric values to BigDecimal
+      let current_price_bd =
+        f64_to_price_bigdecimal(overview.price_usd, "current_price", overview.sid);
+      let price_change_pct =
+        f64_to_price_bigdecimal(overview.price_change_24h, "price_change_24h", overview.sid);
+      let circulating_supply_bd =
+        f64_to_supply_bigdecimal(overview.circulating_supply, "circulating_supply", overview.sid);
+      let total_supply_bd = overview
+        .total_supply
+        .and_then(|ts| f64_to_supply_bigdecimal(ts, "total_supply", overview.sid));
+      let max_supply_bd =
+        overview.max_supply.and_then(|ms| f64_to_supply_bigdecimal(ms, "max_supply", overview.sid));
+      let ath_bd = f64_to_price_bigdecimal(overview.ath, "ath", overview.sid);
+      let atl_bd = f64_to_price_bigdecimal(overview.atl, "atl", overview.sid);
+
+      // Safely convert market_cap and volume_24h with overflow protection
+      let market_cap_safe =
+        safe_f64_to_i64(overview.market_cap as f64, "market_cap", &overview.symbol);
+      let volume_24h_safe =
+        safe_f64_to_i64(overview.volume_24h as f64, "volume_24h", &overview.symbol);
+
+      // Calculate fully diluted valuation with overflow protection
       let fully_diluted_valuation = match (&current_price_bd, &max_supply_bd) {
         (Some(_), Some(_)) => {
           let price_f64 = overview.price_usd;
           let max_supply_f64 = overview.max_supply.unwrap_or(0.0);
-          Some((price_f64 * max_supply_f64) as i64)
+          let fdv = price_f64 * max_supply_f64;
+          safe_f64_to_i64(fdv, "fully_diluted_valuation", &overview.symbol)
         }
         _ => None,
       };
@@ -1264,9 +1292,9 @@ fn save_crypto_overviews_with_github_to_db(
         slug: Some(&slug),
         description: Some(overview.description.as_str()),
         market_cap_rank: market_cap_rank.as_ref(),
-        market_cap: Some(&overview.market_cap),
+        market_cap: market_cap_safe.as_ref(),
         fully_diluted_valuation: fully_diluted_valuation.as_ref(),
-        volume_24h: Some(&overview.volume_24h),
+        volume_24h: volume_24h_safe.as_ref(),
         volume_change_24h: None,
         current_price: current_price_bd.as_ref(),
         circulating_supply: circulating_supply_bd.as_ref(),
