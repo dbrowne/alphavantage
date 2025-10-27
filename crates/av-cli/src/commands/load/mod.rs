@@ -14,6 +14,7 @@ pub mod daily;
 pub mod intraday;
 pub mod news;
 pub mod news_utils;
+pub mod numeric_helpers;
 pub mod overviews;
 pub mod securities;
 pub mod top_movers;
