@@ -1,3 +1,32 @@
+/*
+ *
+ *
+ *
+ *
+ * MIT License
+ * Copyright (c) 2025. Dwight J. Browne
+ * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ *
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 use anyhow::Result;
 use clap::Args;
 use std::collections::HashMap;
@@ -27,7 +56,7 @@ pub struct CryptoArgs {
   #[arg(
     long,
     value_enum,
-    default_values = ["coin-gecko"],
+    default_values = ["coin-gecko", "coin-market-cap"],
     value_delimiter = ','
     )]
   sources: Vec<CryptoDataSourceArg>,
@@ -56,6 +85,10 @@ pub struct CryptoArgs {
   #[arg(long, env = "COINGECKO_API_KEY")]
   coingecko_api_key: Option<String>,
 
+  /// CoinMarketCap API key (optional, for CMC data source)
+  #[arg(long, env = "CMC_API_KEY")]
+  coinmarketcap_api_key: Option<String>,
+
   /// Maximum concurrent requests
   #[arg(long, default_value = "5")]
   concurrent: usize,
@@ -76,6 +109,7 @@ pub struct CryptoArgs {
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum CryptoDataSourceArg {
   CoinGecko,
+  CoinMarketCap,
   SosoValue,
 }
 
@@ -83,6 +117,7 @@ impl From<CryptoDataSourceArg> for CryptoDataSource {
   fn from(arg: CryptoDataSourceArg) -> Self {
     match arg {
       CryptoDataSourceArg::CoinGecko => CryptoDataSource::CoinGecko,
+      CryptoDataSourceArg::CoinMarketCap => CryptoDataSource::CoinMarketCap,
       CryptoDataSourceArg::SosoValue => CryptoDataSource::SosoValue,
     }
   }
@@ -184,6 +219,9 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
   if let Some(key) = args.coingecko_api_key {
     api_keys.insert(CryptoDataSource::CoinGecko, key);
   }
+  if let Some(key) = args.coinmarketcap_api_key {
+    api_keys.insert(CryptoDataSource::CoinMarketCap, key);
+  }
 
   // Create loader input
   let input = CryptoDbInput {
@@ -245,7 +283,7 @@ fn update_existing_token_in_db(
   sid: i64,
   db_symbol: &CryptoSymbolForDb,
 ) -> Result<()> {
-  use av_database_postgres::schema::{crypto_api_map, symbols};
+  use av_database_postgres::schema::{crypto_api_map, symbol_mappings, symbols};
   use diesel::prelude::*;
 
   // Update symbols table
@@ -267,6 +305,33 @@ fn update_existing_token_in_db(
     crypto_api_map::m_time.eq(chrono::Utc::now()),
   ))
   .execute(conn)?;
+
+  // Only update symbol_mappings for PRIMARY tokens (priority != 9999999)
+  if db_symbol.priority != 9999999 {
+    let source_name = db_symbol.source.to_string();
+
+    diesel::insert_into(symbol_mappings::table)
+      .values((
+        symbol_mappings::sid.eq(sid),
+        symbol_mappings::source_name.eq(&source_name),
+        symbol_mappings::source_identifier.eq(&db_symbol.source_id),
+        symbol_mappings::verified.eq(true),
+        symbol_mappings::last_verified_at.eq(chrono::Utc::now().naive_utc()),
+      ))
+      .on_conflict((symbol_mappings::sid, symbol_mappings::source_name))
+      .do_update()
+      .set((
+        symbol_mappings::source_identifier.eq(&db_symbol.source_id),
+        symbol_mappings::verified.eq(true),
+        symbol_mappings::last_verified_at.eq(chrono::Utc::now().naive_utc()),
+      ))
+      .execute(conn)?;
+
+    debug!(
+      "Updated symbol_mappings entry for PRIMARY token: sid={} → {}:{}",
+      sid, source_name, db_symbol.source_id
+    );
+  }
 
   Ok(())
 }
@@ -297,7 +362,30 @@ async fn save_crypto_symbol_to_database(
       info!("Updated existing token: {} '{}' (SID: {})", db_symbol.symbol, db_symbol.name, sid);
       Ok(sid)
     } else {
-      // Skip existing token
+      // Skip updating the symbol itself, but still ensure symbol_mappings is populated for PRIMARY tokens
+      if db_symbol.priority != 9999999 {
+        use av_database_postgres::schema::symbol_mappings;
+        use diesel::prelude::*;
+
+        let source_name = db_symbol.source.to_string();
+
+        diesel::insert_into(symbol_mappings::table)
+          .values((
+            symbol_mappings::sid.eq(sid),
+            symbol_mappings::source_name.eq(&source_name),
+            symbol_mappings::source_identifier.eq(&db_symbol.source_id),
+            symbol_mappings::verified.eq(true),
+            symbol_mappings::last_verified_at.eq(chrono::Utc::now().naive_utc()),
+          ))
+          .on_conflict((symbol_mappings::sid, symbol_mappings::source_name))
+          .do_nothing() // Don't overwrite existing mapping
+          .execute(&mut conn)?;
+
+        debug!(
+          "Ensured symbol_mappings entry exists for PRIMARY token: sid={} → {}:{}",
+          sid, source_name, db_symbol.source_id
+        );
+      }
       info!("Skipped existing token: {} '{}' (SID: {})", db_symbol.symbol, db_symbol.name, sid);
       Ok(sid)
     }
@@ -332,7 +420,7 @@ fn find_existing_token_in_db(
 }
 
 fn insert_new_token_in_db(conn: &mut PgConnection, db_symbol: &CryptoSymbolForDb) -> Result<i64> {
-  use av_database_postgres::schema::{crypto_api_map, symbols};
+  use av_database_postgres::schema::{crypto_api_map, symbol_mappings, symbols};
   use diesel::prelude::*;
 
   // Use CryptoSidGenerator directly - no need for wrapper function
@@ -355,7 +443,7 @@ fn insert_new_token_in_db(conn: &mut PgConnection, db_symbol: &CryptoSymbolForDb
 
   diesel::insert_into(symbols::table).values(&new_symbol).execute(conn)?;
 
-  // Insert API mapping to link symbol to source
+  // Insert API mapping to link symbol to source (legacy crypto_api_map table)
   let api_mapping = NewCryptoApiMap {
     sid: new_sid,
     api_source: db_symbol.source.to_string(),
@@ -370,6 +458,39 @@ fn insert_new_token_in_db(conn: &mut PgConnection, db_symbol: &CryptoSymbolForDb
   };
 
   diesel::insert_into(crypto_api_map::table).values(&api_mapping).execute(conn)?;
+
+  // Only insert into symbol_mappings for PRIMARY tokens (priority != 9999999)
+  // This ensures we only map the canonical version of each symbol, not wrapped/bridged variants
+  if db_symbol.priority != 9999999 {
+    let source_name = db_symbol.source.to_string();
+
+    diesel::insert_into(symbol_mappings::table)
+      .values((
+        symbol_mappings::sid.eq(new_sid),
+        symbol_mappings::source_name.eq(&source_name),
+        symbol_mappings::source_identifier.eq(&db_symbol.source_id),
+        symbol_mappings::verified.eq(true),
+        symbol_mappings::last_verified_at.eq(chrono::Utc::now().naive_utc()),
+      ))
+      .on_conflict((symbol_mappings::sid, symbol_mappings::source_name))
+      .do_update()
+      .set((
+        symbol_mappings::source_identifier.eq(&db_symbol.source_id),
+        symbol_mappings::verified.eq(true),
+        symbol_mappings::last_verified_at.eq(chrono::Utc::now().naive_utc()),
+      ))
+      .execute(conn)?;
+
+    info!(
+      "Created symbol_mappings entry for PRIMARY token: sid={} → {}:{} (priority={})",
+      new_sid, source_name, db_symbol.source_id, db_symbol.priority
+    );
+  } else {
+    debug!(
+      "Skipped symbol_mappings for non-primary token: sid={} {} '{}' (priority=9999999)",
+      new_sid, db_symbol.symbol, db_symbol.name
+    );
+  }
 
   Ok(new_sid)
 }

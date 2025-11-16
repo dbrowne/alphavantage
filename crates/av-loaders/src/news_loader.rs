@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use av_client::AlphaVantageClient;
 use av_database_postgres::{
-  models::news::{NewsData, NewsItem, TickerSentimentData, TopicData},
+  models::{
+    MissingSymbol,
+    news::{NewsData, NewsItem, TickerSentimentData, TopicData},
+  },
   schema::symbols,
 };
 use av_models::news::NewsSentiment;
@@ -452,6 +455,25 @@ impl NewsLoader {
           still_missing
         );
         info!("To capture sentiments for these tickers, add them to the symbols table");
+
+        // Log missing symbols to the database for later resolution
+        match PgConnection::establish(&self.config.database_url) {
+          Ok(mut conn) => {
+            let mut logged_count = 0;
+            for ticker in &still_missing {
+              match MissingSymbol::record_or_increment(&mut conn, ticker, "news_feed") {
+                Ok(_) => logged_count += 1,
+                Err(e) => debug!("Failed to log missing symbol {}: {}", ticker, e),
+              }
+            }
+            if logged_count > 0 {
+              info!("📝 Logged {} missing symbols to database for resolution", logged_count);
+            }
+          }
+          Err(e) => {
+            warn!("Failed to connect to database for logging missing symbols: {}", e);
+          }
+        }
       }
     }
 

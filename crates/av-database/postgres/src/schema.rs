@@ -383,6 +383,25 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
+    missing_symbols (id) {
+        id -> Int4,
+        symbol -> Text,
+        source -> Text,
+        first_seen_at -> Timestamp,
+        last_seen_at -> Timestamp,
+        seen_count -> Int4,
+        resolution_status -> Text,
+        sid -> Nullable<Int8>,
+        resolution_details -> Nullable<Text>,
+        resolved_at -> Nullable<Timestamp>,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     newsoverviews (creation, id) {
         id -> Int4,
         creation -> Timestamptz,
@@ -541,6 +560,21 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
+    symbol_mappings (id) {
+        id -> Int4,
+        sid -> Int8,
+        source_name -> Text,
+        source_identifier -> Text,
+        verified -> Nullable<Bool>,
+        last_verified_at -> Nullable<Timestamp>,
+        created_at -> Nullable<Timestamp>,
+        updated_at -> Nullable<Timestamp>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     symbols (sid) {
         sid -> Int8,
         #[max_length = 64]
@@ -642,6 +676,7 @@ diesel::joinable!(procstates -> proctypes (proc_id));
 diesel::joinable!(procstates -> states (end_state));
 diesel::joinable!(summaryprices -> price_sources (price_source_id));
 diesel::joinable!(summaryprices -> symbols (sid));
+diesel::joinable!(symbol_mappings -> symbols (sid));
 diesel::joinable!(tickersentiments -> feeds (feedid));
 diesel::joinable!(tickersentiments -> symbols (sid));
 diesel::joinable!(topicmaps -> feeds (feedid));
@@ -669,6 +704,7 @@ diesel::allow_tables_to_appear_in_same_query!(
   equity_details,
   feeds,
   intradayprices,
+  missing_symbols,
   newsoverviews,
   overviewexts,
   overviews,
@@ -678,6 +714,7 @@ diesel::allow_tables_to_appear_in_same_query!(
   sources,
   states,
   summaryprices,
+  symbol_mappings,
   symbols,
   tickersentiments,
   topicmaps,
