@@ -1,9 +1,38 @@
+/*
+ *
+ *
+ *
+ *
+ * MIT License
+ * Copyright (c) 2025. Dwight J. Browne
+ * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ *
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{equity_details, overviewexts, overviews, symbols};
+use crate::schema::{equity_details, overviewexts, overviews, symbol_mappings, symbols};
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = symbols)]
@@ -309,6 +338,26 @@ impl NewSymbolOwned {
   }
 }
 
+// Convert from borrowed NewSymbol to owned NewSymbolOwned
+impl<'a> From<&NewSymbol<'a>> for NewSymbolOwned {
+  fn from(new_symbol: &NewSymbol<'a>) -> Self {
+    Self {
+      sid: *new_symbol.sid,
+      symbol: new_symbol.symbol.to_string(),
+      priority: *new_symbol.priority,
+      name: new_symbol.name.to_string(),
+      sec_type: new_symbol.sec_type.to_string(),
+      region: new_symbol.region.to_string(),
+      currency: new_symbol.currency.to_string(),
+      overview: *new_symbol.overview,
+      intraday: *new_symbol.intraday,
+      summary: *new_symbol.summary,
+      c_time: *new_symbol.c_time,
+      m_time: *new_symbol.m_time,
+    }
+  }
+}
+
 // Add owned version for overviews
 #[derive(Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = overviews)]
@@ -486,5 +535,86 @@ impl EquityDetail {
     sid: i64,
   ) -> Result<Self, diesel::result::Error> {
     equity_details::table.find(sid).first(conn).await
+  }
+}
+
+// Symbol Mapping - Maps symbols to source-specific identifiers
+#[derive(
+  Queryable, Selectable, Identifiable, Associations, Debug, Clone, Serialize, Deserialize,
+)]
+#[diesel(belongs_to(Symbol, foreign_key = sid))]
+#[diesel(table_name = symbol_mappings)]
+#[diesel(primary_key(id))]
+pub struct SymbolMapping {
+  pub id: i32,
+  pub sid: i64,
+  pub source_name: String,
+  pub source_identifier: String,
+  pub verified: Option<bool>,
+  pub last_verified_at: Option<NaiveDateTime>,
+  pub created_at: Option<NaiveDateTime>,
+  pub updated_at: Option<NaiveDateTime>,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = symbol_mappings)]
+pub struct NewSymbolMapping {
+  pub sid: i64,
+  pub source_name: String,
+  pub source_identifier: String,
+  pub verified: Option<bool>,
+}
+
+// Implementation methods for SymbolMapping
+impl SymbolMapping {
+  /// Find mapping for a specific symbol and source
+  pub async fn find_by_sid_and_source(
+    conn: &mut diesel_async::AsyncPgConnection,
+    sid: i64,
+    source: &str,
+  ) -> Result<Self, diesel::result::Error> {
+    symbol_mappings::table
+      .filter(symbol_mappings::sid.eq(sid))
+      .filter(symbol_mappings::source_name.eq(source))
+      .first(conn)
+      .await
+  }
+
+  /// Find all mappings for a symbol
+  pub async fn find_by_sid(
+    conn: &mut diesel_async::AsyncPgConnection,
+    sid: i64,
+  ) -> Result<Vec<Self>, diesel::result::Error> {
+    symbol_mappings::table.filter(symbol_mappings::sid.eq(sid)).load(conn).await
+  }
+
+  /// Find mapping by source identifier
+  pub async fn find_by_source_identifier(
+    conn: &mut diesel_async::AsyncPgConnection,
+    source: &str,
+    identifier: &str,
+  ) -> Result<Self, diesel::result::Error> {
+    symbol_mappings::table
+      .filter(symbol_mappings::source_name.eq(source))
+      .filter(symbol_mappings::source_identifier.eq(identifier))
+      .first(conn)
+      .await
+  }
+
+  /// Verify and update the mapping
+  pub async fn mark_verified(
+    conn: &mut diesel_async::AsyncPgConnection,
+    mapping_id: i32,
+  ) -> Result<Self, diesel::result::Error> {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    diesel::update(symbol_mappings::table.find(mapping_id))
+      .set((
+        symbol_mappings::verified.eq(true),
+        symbol_mappings::last_verified_at.eq(chrono::Utc::now().naive_utc()),
+      ))
+      .get_result(conn)
+      .await
   }
 }

@@ -1,21 +1,42 @@
-//! Market-related types
+/*
+ *
+ *
+ *
+ *
+ * MIT License
+ * Copyright (c) 2025. Dwight J. Browne
+ * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ *
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 
 use serde::{Deserialize, Serialize};
 
 /// Stock exchange identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Exchange {
-  /// New York Stock Exchange
   NYSE,
-  /// NASDAQ
   NASDAQ,
-  /// American Stock Exchange
   AMEX,
-  /// Chicago Board of Trade
   CBOT,
-  /// Chicago Mercantile Exchange
   CME,
-  /// London Stock Exchange
   LSE,
   /// Toronto Stock Exchange
   TSX,
@@ -425,7 +446,7 @@ impl SecurityType {
   /// Map AlphaVantage asset type string to SecurityType
   pub fn from_alpha_vantage(asset_type: &str) -> Self {
     match asset_type.to_uppercase().replace([' ', '_', '-'], "").as_str() {
-      "EQUITY" | "CS" => SecurityType::Equity,
+      "EQUITY" | "CS" | "COMMONSTOCK" => SecurityType::Equity,
       "PREFERREDSTOCK" | "PS" => SecurityType::PreferredStock,
       "EXCHANGETRADEDFUND" | "ETF" => SecurityType::ETF,
       "MUTUALFUND" | "MF" => SecurityType::MutualFund,
@@ -474,10 +495,6 @@ impl SecurityType {
     }
   }
 
-  ///
-  ///
-  ///
-  /// Parse security type from string
   pub fn from_str(s: &str) -> Option<Self> {
     match s.to_uppercase().replace([' ', '-', '_'], "").as_str() {
       "COMMONSTOCK" | "EQUITY" | "STOCK" => Some(SecurityType::Equity),
@@ -560,11 +577,8 @@ impl SecurityType {
 /// Top movers type (gainers, losers, most active)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TopType {
-  /// Top gaining stocks
   Gainers,
-  /// Top losing stocks
   Losers,
-  /// Most actively traded stocks
   MostActive,
 }
 
@@ -579,7 +593,6 @@ impl std::fmt::Display for TopType {
 }
 
 impl TopType {
-  /// Parse from string
   pub fn from_str(s: &str) -> Option<Self> {
     match s.to_lowercase().replace([' ', '-', '_'], "").as_str() {
       "gainers" | "topgainers" | "winners" => Some(TopType::Gainers),
@@ -593,29 +606,17 @@ impl TopType {
 /// Market sector classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Sector {
-  /// Technology sector
   Technology,
-  /// Healthcare sector
   Healthcare,
-  /// Financial Services
   FinancialServices,
-  /// Consumer Discretionary
   ConsumerDiscretionary,
-  /// Consumer Staples
   ConsumerStaples,
-  /// Industrials
   Industrials,
-  /// Energy
   Energy,
-  /// Materials
   Materials,
-  /// Real Estate
   RealEstate,
-  /// Utilities
   Utilities,
-  /// Communication Services
   CommunicationServices,
-  /// Other/Unknown
   Other,
 }
 
