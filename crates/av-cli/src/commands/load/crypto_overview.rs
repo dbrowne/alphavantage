@@ -1,4 +1,31 @@
-// crates/av-cli/src/commands/load/crypto_overview.rs
+/*
+ *
+ *
+ *
+ *
+ * MIT License
+ * Copyright (c) 2025. Dwight J. Browne
+ * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ *
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 
 use anyhow::{Result, anyhow};
 use av_database_postgres::models::crypto::{
@@ -169,34 +196,51 @@ async fn get_cached_overview(
     return None;
   }
 
-  let mut conn = match diesel::PgConnection::establish(&cache_config.database_url) {
-    Ok(conn) => conn,
-    Err(e) => {
-      debug!("Failed to connect for cache check: {}", e);
-      return None;
+  let database_url = cache_config.database_url.clone();
+  let cache_key = cache_key.to_string();
+
+  tokio::task::spawn_blocking(move || {
+    let mut conn = match diesel::PgConnection::establish(&database_url) {
+      Ok(conn) => conn,
+      Err(e) => {
+        warn!("Failed to connect for cache check: {}", e);
+        return None;
+      }
+    };
+
+    let cached_entry: Option<CacheQueryResult> = match sql_query(
+      "SELECT response_data, expires_at FROM api_response_cache
+           WHERE cache_key = $1 AND expires_at > NOW()",
+    )
+    .bind::<sql_types::Text, _>(&cache_key)
+    .get_result(&mut conn)
+    .optional()
+    {
+      Ok(result) => result,
+      Err(e) => {
+        warn!("Cache query failed for {}: {}", cache_key, e);
+        return None;
+      }
+    };
+
+    if let Some(cache_result) = cached_entry {
+      info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
+
+      // Deserialize cached overview data
+      match serde_json::from_value::<CryptoOverviewData>(cache_result.response_data) {
+        Ok(overview) => return Some(overview),
+        Err(e) => {
+          warn!("Failed to deserialize cached data for {}: {}", cache_key, e);
+          return None;
+        }
+      }
     }
-  };
 
-  let cached_entry: Option<CacheQueryResult> = sql_query(
-    "SELECT response_data, expires_at FROM api_response_cache
-         WHERE cache_key = $1 AND expires_at > NOW()",
-  )
-  .bind::<sql_types::Text, _>(cache_key)
-  .get_result(&mut conn)
-  .optional()
-  .unwrap_or(None);
-
-  if let Some(cache_result) = cached_entry {
-    info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
-
-    // Deserialize cached overview data
-    if let Ok(overview) = serde_json::from_value::<CryptoOverviewData>(cache_result.response_data) {
-      return Some(overview);
-    }
-  }
-
-  debug!("Cache miss for {}", cache_key);
-  None
+    debug!("Cache miss for {}", cache_key);
+    None
+  })
+  .await
+  .unwrap_or(None)
 }
 
 /// Store overview data in cache
@@ -209,36 +253,48 @@ async fn store_cached_overview(
     return Ok(());
   }
 
-  let mut conn = diesel::PgConnection::establish(&cache_config.database_url)
-    .map_err(|e| anyhow!("Cache connection failed: {}", e))?;
-
+  let database_url = cache_config.database_url.clone();
+  let cache_key = cache_key.to_string();
   let overview_json = serde_json::to_value(overview)?;
-  let now = Utc::now();
-  let expires_at = now + chrono::Duration::hours(cache_config.cache_ttl_hours as i64);
+  let cache_ttl_hours = cache_config.cache_ttl_hours;
 
-  // Dummy values for required fields
-  let endpoint_url = format!("crypto_overview/{}", cache_key);
-  let status_code = 200;
+  tokio::task::spawn_blocking(move || {
+    let mut conn = diesel::PgConnection::establish(&database_url)
+      .map_err(|e| anyhow!("Cache connection failed: {}", e))?;
 
-  sql_query(
-    "INSERT INTO api_response_cache
-     (cache_key, api_source, endpoint_url, response_data, status_code, cached_at, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (cache_key)
-     DO UPDATE SET response_data = $4, cached_at = $6, expires_at = $7",
-  )
-  .bind::<sql_types::Text, _>(cache_key)
-  .bind::<sql_types::Text, _>("crypto_overview")
-  .bind::<sql_types::Text, _>(&endpoint_url)
-  .bind::<sql_types::Jsonb, _>(&overview_json)
-  .bind::<sql_types::Int4, _>(status_code)
-  .bind::<sql_types::Timestamptz, _>(now)
-  .bind::<sql_types::Timestamptz, _>(expires_at)
-  .execute(&mut conn)?;
+    let now = Utc::now();
+    let expires_at = now + chrono::Duration::hours(cache_ttl_hours as i64);
 
-  debug!("💾 Cached overview for {} (TTL: {}h)", cache_key, cache_config.cache_ttl_hours);
+    // Dummy values for required fields
+    let endpoint_url = format!("crypto_overview/{}", cache_key);
+    let status_code = 200;
 
-  Ok(())
+    sql_query(
+      "INSERT INTO api_response_cache
+       (cache_key, api_source, endpoint_url, response_data, status_code, cached_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (cache_key)
+       DO UPDATE SET response_data = $4, cached_at = $6, expires_at = $7",
+    )
+    .bind::<sql_types::Text, _>(&cache_key)
+    .bind::<sql_types::Text, _>("crypto_overview")
+    .bind::<sql_types::Text, _>(&endpoint_url)
+    .bind::<sql_types::Jsonb, _>(&overview_json)
+    .bind::<sql_types::Int4, _>(status_code)
+    .bind::<sql_types::Timestamptz, _>(now)
+    .bind::<sql_types::Timestamptz, _>(expires_at)
+    .execute(&mut conn)
+    .map_err(|e| anyhow!("Failed to store cache: {}", e))?;
+
+    info!(
+      "💾 Cached overview for {} (TTL: {}h, expires: {})",
+      cache_key, cache_ttl_hours, expires_at
+    );
+
+    Ok(())
+  })
+  .await
+  .map_err(|e| anyhow!("Task join error: {}", e))?
 }
 
 /// Clean expired cache entries

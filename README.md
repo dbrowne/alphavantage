@@ -147,7 +147,6 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
 - Comprehensive error handling
 - Retry logic
 - Caching layer
-- Performance optimizationsRetryClaude can make mistakes. Please double-check responses.
 
 
 

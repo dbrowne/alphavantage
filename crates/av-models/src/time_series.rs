@@ -1,3 +1,32 @@
+/*
+ *
+ *
+ *
+ *
+ * MIT License
+ * Copyright (c) 2025. Dwight J. Browne
+ * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ *
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 //! Time series data models for stock prices and market data
 
 use crate::common::{
@@ -171,19 +200,15 @@ pub struct GlobalQuote {
 /// Quote data structure
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuoteData {
-  /// Symbol
   #[serde(rename = "01. symbol")]
   pub symbol: String,
 
-  /// Opening price
   #[serde(rename = "02. open")]
   pub open: String,
 
-  /// Highest price
   #[serde(rename = "03. high")]
   pub high: String,
 
-  /// Lowest price
   #[serde(rename = "04. low")]
   pub low: String,
 
@@ -191,23 +216,18 @@ pub struct QuoteData {
   #[serde(rename = "05. price")]
   pub price: String,
 
-  /// Trading volume
   #[serde(rename = "06. volume")]
   pub volume: String,
 
-  /// Latest trading day
   #[serde(rename = "07. latest trading day")]
   pub latest_trading_day: String,
 
-  /// Previous close
   #[serde(rename = "08. previous close")]
   pub previous_close: String,
 
-  /// Price change
   #[serde(rename = "09. change")]
   pub change: String,
 
-  /// Change percentage
   #[serde(rename = "10. change percent")]
   pub change_percent: String,
 }
@@ -227,27 +247,21 @@ pub struct TechnicalIndicator {
 /// Technical indicator metadata
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TechnicalMetadata {
-  /// Symbol
   #[serde(rename = "1: Symbol")]
   pub symbol: String,
 
-  /// Indicator name
   #[serde(rename = "2: Indicator")]
   pub indicator: String,
 
-  /// Last refreshed
   #[serde(rename = "3: Last Refreshed")]
   pub last_refreshed: String,
 
-  /// Interval
   #[serde(rename = "4: Interval")]
   pub interval: String,
 
-  /// Time period
   #[serde(rename = "5: Time Period", skip_serializing_if = "Option::is_none")]
   pub time_period: Option<String>,
 
-  /// Time zone
   #[serde(rename = "6: Time Zone")]
   pub time_zone: String,
 }
@@ -287,43 +301,35 @@ pub struct MacdData {
 /// Bollinger Bands data point
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BollingerBandsData {
-  /// Upper band
   #[serde(rename = "Real Upper Band")]
   pub upper_band: String,
 
-  /// Middle band (moving average)
   #[serde(rename = "Real Middle Band")]
   pub middle_band: String,
 
-  /// Lower band
   #[serde(rename = "Real Lower Band")]
   pub lower_band: String,
 }
 
 impl IntradayTimeSeries {
-  /// Get the latest data point
   pub fn latest(&self) -> Option<(&String, &OhlcvData)> {
     self.time_series.iter().next()
   }
 
-  /// Get the number of data points
   pub fn len(&self) -> usize {
     self.time_series.len()
   }
 
-  /// Check if the time series is empty
   pub fn is_empty(&self) -> bool {
     self.time_series.is_empty()
   }
 }
 
 impl DailyTimeSeries {
-  /// Get the latest data point
   pub fn latest(&self) -> Option<(&String, &OhlcvData)> {
     self.time_series.iter().next()
   }
 
-  /// Get the number of data points
   pub fn len(&self) -> usize {
     self.time_series.len()
   }

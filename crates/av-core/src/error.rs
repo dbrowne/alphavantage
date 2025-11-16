@@ -1,56 +1,71 @@
+/*
+ *
+ *
+ *
+ *
+ * MIT License
+ * Copyright (c) 2025. Dwight J. Browne
+ * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ *
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 use thiserror::Error;
 
-/// The main error type for av-* crates
 #[derive(Error, Debug)]
 pub enum Error {
-  /// Environment variable error
   #[error("Environment variable error: {0}")]
   EnvVar(#[from] std::env::VarError),
 
-  /// Configuration error
   #[error("Configuration error: {0}")]
   Config(String),
 
-  /// API key error
   #[error("Failed to retrieve API key")]
   ApiKey(String),
 
-  /// Serialization/Deserialization error
   #[error("Serialization error")]
   Serde(#[from] serde_json::Error),
 
-  /// Date/Time parsing error
   #[error("Date parsing error")]
   ParseDate(#[from] chrono::ParseError),
 
-  /// Missing required field in response
   #[error("Missing required field: {0}")]
   MissingField(String),
 
-  /// API rate limit exceeded
   #[error("Rate limit exceeded: {0}")]
   RateLimit(String),
 
-  /// Invalid response from API
   #[error("Invalid API response: {0}")]
   InvalidResponse(String),
 
-  /// General unexpected error
   #[error("Unexpected error: {0}")]
   Unexpected(String),
 
-  /// HTTP transport error
   #[error("HTTP error: {0}")]
   Http(String),
 
-  /// API error from AlphaVantage
   #[error("API error: {0}")]
   Api(String),
 
-  /// Parse error for data processing
   #[error("Parse error: {0}")]
   Parse(String),
 }
 
-/// Result type alias for av-* crates
 pub type Result<T> = std::result::Result<T, Error>;
