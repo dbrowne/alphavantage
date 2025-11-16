@@ -1,4 +1,3 @@
-/// Default tolerance for floating-point comparisons
 pub const DEFAULT_TOLERANCE: f64 = 1e-10;
 
 /// Assert that two floating-point numbers are approximately equal
