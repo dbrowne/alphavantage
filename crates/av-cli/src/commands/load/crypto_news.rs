@@ -28,6 +28,7 @@
  */
 
 use anyhow::{Result, anyhow};
+use av_database_postgres::repository::DatabaseContext;
 use clap::Parser;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -226,7 +227,6 @@ pub async fn execute(args: CryptoNewsArgs, config: Config) -> Result<()> {
     enable_cache: !args.no_cache,
     cache_ttl_hours: 24,
     force_refresh: args.force_refresh,
-    database_url: config.database_url.clone(),
     continue_on_error: args.continue_on_error,
     api_delay_ms,
     progress_interval: args.progress_interval,
@@ -246,8 +246,18 @@ pub async fn execute(args: CryptoNewsArgs, config: Config) -> Result<()> {
   // Create API client
   let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
 
-  // Create loader context
-  let context = LoaderContext::new(client, LoaderConfig::default());
+  // Create database context and repositories
+  let db_context = DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow!("Failed to create database context: {}", e))?;
+  let news_repo: Arc<dyn av_database_postgres::repository::NewsRepository> =
+    Arc::new(db_context.news_repository());
+  let cache_repo: Arc<dyn av_database_postgres::repository::CacheRepository> =
+    Arc::new(db_context.cache_repository());
+
+  // Create loader context with repositories
+  let context = LoaderContext::new(client, LoaderConfig::default())
+    .with_cache_repository(cache_repo)
+    .with_news_repository(news_repo);
 
   // Load data from API
   info!("📡 Fetching crypto news from AlphaVantage API...");

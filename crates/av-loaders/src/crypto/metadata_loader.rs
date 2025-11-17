@@ -34,9 +34,9 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use diesel::{prelude::*, sql_query, sql_types};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::time::{Duration, sleep};
 use tracing::{debug, error, info, warn};
 
@@ -44,17 +44,8 @@ use crate::{
   DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState,
   crypto::{CryptoDataSource, CryptoLoaderError},
 };
-
+use av_database_postgres::repository::CacheRepository;
 use av_models::crypto::CryptoDaily;
-
-/// Cache query result structure for SQL queries
-#[derive(QueryableByName, Debug)]
-struct CacheQueryResult {
-  #[diesel(sql_type = diesel::sql_types::Jsonb)]
-  response_data: serde_json::Value,
-  #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-  expires_at: DateTime<Utc>,
-}
 
 /// Configuration for crypto metadata loader
 #[derive(Debug, Clone)]
@@ -187,106 +178,81 @@ impl CryptoMetadataLoader {
   }
 
   /// Clean expired cache entries
-  pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, LoaderError> {
-    use diesel::Connection;
-
-    let mut conn = diesel::PgConnection::establish(database_url)
-      .map_err(|e| LoaderError::DatabaseError(format!("Connection failed: {}", e)))?;
-
-    let deleted_count = sql_query("DELETE FROM api_response_cache WHERE expires_at < NOW()")
-      .execute(&mut conn)
-      .map_err(|e| LoaderError::DatabaseError(format!("Cleanup failed: {}", e)))?;
-
-    if deleted_count > 0 {
-      info!("🧹 Cleaned up {} expired cache entries", deleted_count);
+  pub async fn cleanup_expired_cache(
+    cache_repo: &Arc<dyn CacheRepository>,
+  ) -> Result<usize, LoaderError> {
+    match cache_repo.cleanup_expired("crypto_metadata").await {
+      Ok(deleted_count) => {
+        if deleted_count > 0 {
+          info!("🧹 Cleaned up {} expired crypto metadata cache entries", deleted_count);
+        }
+        Ok(deleted_count)
+      }
+      Err(e) => Err(LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e))),
     }
-
-    Ok(deleted_count)
   }
 
   /// Get cached response for a specific cache key
   async fn get_cached_response(
     &self,
-    database_url: &str,
+    cache_repo: &Arc<dyn CacheRepository>,
     cache_key: &str,
     api_source: &str,
   ) -> Option<serde_json::Value> {
-    if !self.config.enable_response_cache {
+    if !self.config.enable_response_cache || self.config.force_refresh {
       return None;
     }
 
-    use diesel::Connection;
-    let mut conn = match diesel::PgConnection::establish(database_url) {
-      Ok(conn) => conn,
-      Err(_) => return None,
-    };
-
-    let cached_entry: Option<CacheQueryResult> = sql_query(
-      "SELECT response_data, expires_at FROM api_response_cache
-             WHERE cache_key = $1 AND expires_at > NOW() AND api_source = $2",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .bind::<sql_types::Text, _>(api_source)
-    .get_result(&mut conn)
-    .optional()
-    .unwrap_or(None);
-
-    if let Some(cache_result) = cached_entry {
-      info!("📦 Using cached response for {} (expires: {})", cache_key, cache_result.expires_at);
-      return Some(cache_result.response_data);
+    match cache_repo.get_json(cache_key, api_source).await {
+      Ok(Some(data)) => {
+        info!("📦 Cache hit for {}", cache_key);
+        debug!("Successfully retrieved cached metadata for {}", cache_key);
+        Some(data)
+      }
+      Ok(None) => {
+        debug!("Cache miss for {}", cache_key);
+        None
+      }
+      Err(e) => {
+        debug!("Cache read error for {}: {}", cache_key, e);
+        None
+      }
     }
-
-    None
   }
 
   /// Cache API response
   async fn cache_response(
     &self,
-    database_url: &str,
+    cache_repo: &Arc<dyn CacheRepository>,
     cache_key: &str,
     api_source: &str,
     endpoint_url: &str,
     response_data: &serde_json::Value,
-    status_code: u16,
   ) {
     if !self.config.enable_response_cache {
       return;
     }
 
-    use diesel::Connection;
-    let mut conn = match diesel::PgConnection::establish(database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        warn!("Failed to connect to database for caching: {}", e);
-        return;
+    match cache_repo
+      .set_json(
+        cache_key,
+        api_source,
+        endpoint_url,
+        response_data.clone(),
+        self.config.cache_ttl_hours as i64,
+      )
+      .await
+    {
+      Ok(()) => {
+        let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
+        info!(
+          "💾 Cached {} (TTL: {}h, expires: {})",
+          cache_key, self.config.cache_ttl_hours, expires_at
+        );
       }
-    };
-
-    let expires_at =
-      chrono::Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
-
-    // Insert or update cache entry
-    let result = sql_query(
-      "INSERT INTO api_response_cache
-             (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (cache_key) DO UPDATE SET
-                response_data = EXCLUDED.response_data,
-                status_code = EXCLUDED.status_code,
-                expires_at = EXCLUDED.expires_at,
-                cached_at = NOW()",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .bind::<sql_types::Text, _>(api_source)
-    .bind::<sql_types::Text, _>(endpoint_url)
-    .bind::<sql_types::Jsonb, _>(response_data)
-    .bind::<sql_types::Integer, _>(status_code as i32)
-    .bind::<sql_types::Timestamptz, _>(expires_at)
-    .execute(&mut conn);
-
-    match result {
-      Ok(_) => info!("💾 Cached response for {} (expires: {})", cache_key, expires_at),
-      Err(e) => warn!("Failed to cache response for {}: {}", cache_key, e),
+      Err(e) => {
+        warn!("Failed to cache {}: {}", cache_key, e);
+      }
     }
   }
 
@@ -294,14 +260,14 @@ impl CryptoMetadataLoader {
   async fn load_alphavantage_metadata_cached(
     &self,
     symbol: &CryptoSymbolForMetadata,
-    database_url: &str,
+    cache_repo: &Arc<dyn CacheRepository>,
   ) -> Result<ProcessedCryptoMetadata, CryptoLoaderError> {
     let cache_key = self.generate_cache_key("alphavantage", &symbol.symbol);
 
     // Try cache first (unless force refresh is enabled)
     if !self.config.force_refresh {
       if let Some(cached_data) =
-        self.get_cached_response(database_url, &cache_key, "alphavantage").await
+        self.get_cached_response(cache_repo, &cache_key, "alphavantage").await
       {
         debug!("📦 Using cached AlphaVantage metadata for {}", symbol.symbol);
 
@@ -318,14 +284,12 @@ impl CryptoMetadataLoader {
     debug!("🌐 Fetching fresh AlphaVantage metadata for {} (cache miss)", symbol.symbol);
 
     match self.load_alphavantage_metadata_fresh(symbol).await {
-      Ok((metadata, response, url, status)) => {
+      Ok((metadata, response, url, _status)) => {
         // Cache the successful response
         let response_json =
           serde_json::to_value(&response).unwrap_or_else(|_| serde_json::Value::Null);
 
-        self
-          .cache_response(database_url, &cache_key, "alphavantage", &url, &response_json, status)
-          .await;
+        self.cache_response(cache_repo, &cache_key, "alphavantage", &url, &response_json).await;
 
         Ok(metadata)
       }
@@ -418,14 +382,13 @@ impl CryptoMetadataLoader {
   async fn load_coingecko_metadata_cached(
     &self,
     symbol: &CryptoSymbolForMetadata,
-    database_url: &str,
+    cache_repo: &Arc<dyn CacheRepository>,
   ) -> Result<ProcessedCryptoMetadata, CryptoLoaderError> {
     let cache_key = self.generate_cache_key("coingecko", &symbol.source_id);
 
     // Try cache first (unless force refresh is enabled)
     if !self.config.force_refresh {
-      if let Some(cached_data) =
-        self.get_cached_response(database_url, &cache_key, "coingecko").await
+      if let Some(cached_data) = self.get_cached_response(cache_repo, &cache_key, "coingecko").await
       {
         debug!("📦 Using cached CoinGecko metadata for {}", symbol.symbol);
 
@@ -438,9 +401,9 @@ impl CryptoMetadataLoader {
     debug!("🌐 Fetching fresh CoinGecko metadata for {} (cache miss)", symbol.symbol);
 
     match self.load_coingecko_metadata_fresh(symbol).await {
-      Ok((metadata, response, url, status)) => {
+      Ok((metadata, response, url, _status)) => {
         // Cache the successful response
-        self.cache_response(database_url, &cache_key, "coingecko", &url, &response, status).await;
+        self.cache_response(cache_repo, &cache_key, "coingecko", &url, &response).await;
 
         Ok(metadata)
       }
@@ -551,7 +514,7 @@ impl CryptoMetadataLoader {
     _context: &LoaderContext,
     symbols: Vec<CryptoSymbolForMetadata>,
     source: CryptoDataSource,
-    database_url: &str,
+    cache_repo: &Arc<dyn CacheRepository>,
   ) -> (Vec<ProcessedCryptoMetadata>, MetadataSourceResult) {
     let mut processed_metadata = Vec::new();
     let mut errors = Vec::new();
@@ -573,13 +536,13 @@ impl CryptoMetadataLoader {
 
         let result = match source {
           CryptoDataSource::CoinGecko => {
-            self.load_coingecko_metadata_cached(&symbol, database_url).await
+            self.load_coingecko_metadata_cached(&symbol, cache_repo).await
           }
           _ => {
             // Check if this is an AlphaVantage request (API key provided but not CoinGecko)
             if self.config.alphavantage_api_key.is_some() && source != CryptoDataSource::CoinGecko {
               // Treat as AlphaVantage request
-              self.load_alphavantage_metadata_cached(&symbol, database_url).await
+              self.load_alphavantage_metadata_cached(&symbol, cache_repo).await
             } else {
               Err(CryptoLoaderError::ApiError(format!(
                 "Source {:?} not supported for metadata",
@@ -676,9 +639,10 @@ impl DataLoader for CryptoMetadataLoader {
       self.config.cache_ttl_hours
     );
 
-    // Extract database URL from context (this would need to be added to LoaderContext)
-    // For now, we'll use a placeholder - this should be improved in the actual integration
-    let database_url = std::env::var("DATABASE_URL").unwrap();
+    // Get cache repository from context
+    let cache_repo = context.cache_repository.as_ref().ok_or_else(|| {
+      LoaderError::DatabaseError("Cache repository not available in context".to_string())
+    })?;
 
     let mut all_metadata = Vec::new();
     let mut source_results = HashMap::new();
@@ -699,7 +663,7 @@ impl DataLoader for CryptoMetadataLoader {
 
       for batch in symbols.chunks(self.config.batch_size) {
         let (metadata, result) =
-          self.process_batch(context, batch.to_vec(), source, &database_url).await;
+          self.process_batch(context, batch.to_vec(), source, cache_repo).await;
 
         batch_metadata.extend(metadata);
         combined_result.symbols_processed += result.symbols_processed;

@@ -28,11 +28,10 @@
  */
 
 use anyhow::Result;
-use av_database_postgres::establish_connection;
 use av_loaders::crypto::mapping_service::CryptoMappingService;
 use clap::Parser;
-use diesel::PgConnection;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -66,28 +65,34 @@ pub async fn execute(args: MappingArgs, config: &crate::config::Config) -> Resul
   }
 
   let mapping_service = CryptoMappingService::new(api_keys);
-  let mut conn = establish_connection(&config.database_url)?;
+
+  // Create database context and repository
+  let db_context = av_database_postgres::repository::DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow::anyhow!("Failed to create database context: {}", e))?;
+  let crypto_repo: Arc<dyn av_database_postgres::repository::CryptoRepository> =
+    Arc::new(db_context.crypto_repository());
 
   if args.stats {
-    show_mapping_stats(&mut conn)?;
+    show_mapping_stats(&crypto_repo).await?;
     return Ok(());
   }
 
   if let Some(ref symbol_list) = args.symbols {
     info!("🔍 Initializing mappings for specific symbols: {:?}", symbol_list);
-    let initialized =
-      mapping_service.initialize_mappings_for_symbols(&mut conn, symbol_list).await?;
+    let initialized = mapping_service
+      .initialize_mappings_for_symbols(&crypto_repo, &db_context, symbol_list)
+      .await?;
     info!("✅ Initialized {} symbol mappings", initialized);
     return Ok(());
   }
 
   if args.discover_all {
     info!("🔍 Discovering all missing CoinGecko mappings...");
-    let discovered = mapping_service.discover_missing_mappings(&mut conn, "CoinGecko").await?;
+    let discovered = mapping_service.discover_missing_mappings(&crypto_repo, "CoinGecko").await?;
     info!("✅ Discovered {} new mappings", discovered);
   } else if let Some(source) = args.source {
     info!("🔍 Discovering missing {} mappings...", source);
-    let discovered = mapping_service.discover_missing_mappings(&mut conn, &source).await?;
+    let discovered = mapping_service.discover_missing_mappings(&crypto_repo, &source).await?;
     info!("✅ Discovered {} new {} mappings", discovered, source);
   } else {
     info!("No action specified. Use --stats, --discover-all, --source, or --symbols");
@@ -100,10 +105,13 @@ pub async fn execute(args: MappingArgs, config: &crate::config::Config) -> Resul
   Ok(())
 }
 
-fn show_mapping_stats(conn: &mut PgConnection) -> Result<()> {
-  use av_database_postgres::models::crypto::CryptoApiMap;
-
-  let summary = CryptoApiMap::get_crypto_summary(conn)?;
+async fn show_mapping_stats(
+  crypto_repo: &Arc<dyn av_database_postgres::repository::CryptoRepository>,
+) -> Result<()> {
+  let summary = crypto_repo
+    .get_crypto_summary()
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to get crypto summary: {}", e))?;
 
   println!("📊 Crypto Mapping Statistics:");
   println!("  Total Cryptos: {}", summary.total_cryptos);

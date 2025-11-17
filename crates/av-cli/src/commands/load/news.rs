@@ -29,6 +29,7 @@
 
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
+use av_database_postgres::repository::DatabaseContext;
 use av_loaders::{
   DataLoader,
   // Remove the SymbolInfo import - we'll use the type from NewsLoader
@@ -85,7 +86,7 @@ pub struct NewsArgs {
 
   /// Cache TTL in hours
   #[arg(long, default_value = "24")]
-  cache_ttl_hours: u32,
+  cache_ttl_hours: i64,
 
   /// Continue on error instead of stopping
   #[arg(long, default_value = "true")]
@@ -125,13 +126,21 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
   // Create API client
   let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
 
+  // Create database context and repositories
+  let db_context = DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow!("Failed to create database context: {}", e))?;
+  let news_repo: Arc<dyn av_database_postgres::repository::NewsRepository> =
+    Arc::new(db_context.news_repository());
+  let cache_repo: Arc<dyn av_database_postgres::repository::CacheRepository> =
+    Arc::new(db_context.cache_repository());
+
   // Get symbols to process
   let mut symbols_to_process = if args.all_equity {
     info!("Loading all equity symbols with overview=true");
-    NewsLoader::get_equity_symbols_with_overview(&config.database_url)?
+    NewsLoader::get_equity_symbols_with_overview(&news_repo).await?
   } else if let Some(ref symbol_list) = args.symbols {
     info!("Loading specific symbols: {:?}", symbol_list);
-    get_specific_symbols(&config.database_url, symbol_list)?
+    get_specific_symbols(&news_repo, symbol_list).await?
   } else {
     return Err(anyhow!("Must specify either --all-equity or --symbols"));
   };
@@ -164,7 +173,6 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
     enable_cache: !args.no_cache,
     cache_ttl_hours: args.cache_ttl_hours,
     force_refresh: args.force_refresh,
-    database_url: config.database_url.clone(),
     continue_on_error: args.continue_on_error,
     api_delay_ms,
     progress_interval: 10,
@@ -187,8 +195,10 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
     time_to: Some(Utc::now()),
   };
 
-  // Create context
-  let context = LoaderContext::new(client, LoaderConfig::default());
+  // Create context with repositories
+  let context = LoaderContext::new(client, LoaderConfig::default())
+    .with_cache_repository(cache_repo.clone())
+    .with_news_repository(news_repo.clone());
 
   // Load data from API
   info!("📡 Fetching news from AlphaVantage API...");
@@ -251,16 +261,19 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
 }
 
 /// Helper function to get specific symbols from database
-fn get_specific_symbols(database_url: &str, symbols: &[String]) -> Result<Vec<SymbolInfo>> {
-  use av_database_postgres::schema::symbols;
-  use diesel::prelude::*;
+async fn get_specific_symbols(
+  news_repo: &Arc<dyn av_database_postgres::repository::NewsRepository>,
+  symbols: &[String],
+) -> Result<Vec<SymbolInfo>> {
+  // Get all symbols from repository and filter
+  let all_symbols =
+    news_repo.get_all_symbols().await.map_err(|e| anyhow!("Failed to query symbols: {}", e))?;
 
-  let mut conn = PgConnection::establish(database_url)?;
-
-  let results = symbols::table
-    .filter(symbols::symbol.eq_any(symbols))
-    .select((symbols::sid, symbols::symbol))
-    .load::<(i64, String)>(&mut conn)?;
-
-  Ok(results.into_iter().map(|(sid, symbol)| SymbolInfo { sid, symbol }).collect())
+  // Filter to only the requested symbols
+  Ok(
+    symbols
+      .iter()
+      .filter_map(|s| all_symbols.get(s).map(|&sid| SymbolInfo { sid, symbol: s.clone() }))
+      .collect(),
+  )
 }

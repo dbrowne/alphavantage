@@ -35,8 +35,7 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 use av_client::AlphaVantageClient;
-use av_database_postgres::models::crypto_markets::{CryptoMarket, NewCryptoMarket};
-use av_database_postgres::schema::{crypto_api_map, symbols};
+use av_database_postgres::models::crypto_markets::NewCryptoMarket;
 use av_loaders::{
   LoaderConfig, LoaderContext,
   crypto::{
@@ -48,14 +47,7 @@ use av_loaders::{
     },
   },
 };
-use diesel::{Connection, pg::PgConnection, prelude::*};
 use std::collections::HashMap;
-
-/// Helper function to establish database connection
-fn establish_connection(database_url: &str) -> Result<PgConnection> {
-  PgConnection::establish(database_url)
-    .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))
-}
 
 #[derive(Args, Debug)]
 pub struct CryptoMarketsArgs {
@@ -160,11 +152,15 @@ pub async fn execute(args: CryptoMarketsArgs, config: &Config) -> Result<()> {
   // Pre-initialize mappings if requested
   if args.initialize_mappings {
     if let (Some(ref service), Some(ref symbol_list)) = (&mapping_service, &args.symbols) {
-      let mut conn = establish_connection(&config.database_url)?;
+      // Create database context and repository
+      let db_context = av_database_postgres::repository::DatabaseContext::new(&config.database_url)
+        .context("Failed to create database context")?;
+      let crypto_repo: Arc<dyn av_database_postgres::repository::CryptoRepository> =
+        Arc::new(db_context.crypto_repository());
 
       info!("🔍 Pre-initializing mappings for {} symbols", symbol_list.len());
       let initialized = service
-        .initialize_mappings_for_symbols(&mut conn, symbol_list)
+        .initialize_mappings_for_symbols(&crypto_repo, &db_context, symbol_list)
         .await
         .context("Failed to initialize mappings")?;
 
@@ -179,13 +175,19 @@ pub async fn execute(args: CryptoMarketsArgs, config: &Config) -> Result<()> {
     }
   }
 
+  // Create database context and crypto repository for loading symbols
+  let db_context = av_database_postgres::repository::DatabaseContext::new(&config.database_url)
+    .context("Failed to create database context")?;
+  let crypto_repo: Arc<dyn av_database_postgres::repository::CryptoRepository> =
+    Arc::new(db_context.crypto_repository());
+
   // Load symbols from database (this will only find symbols with existing mappings)
   let symbols = if let Some(ref symbol_list) = args.symbols {
     info!("Loading specific symbols: {:?}", symbol_list);
-    load_crypto_symbols_from_db(&config.database_url, &Some(symbol_list.clone()), args.limit)?
+    load_crypto_symbols_from_db(&crypto_repo, &Some(symbol_list.clone()), args.limit).await?
   } else {
     info!("Loading all crypto symbols with existing mappings");
-    load_crypto_symbols_from_db(&config.database_url, &None, args.limit)?
+    load_crypto_symbols_from_db(&crypto_repo, &None, args.limit).await?
   };
 
   if symbols.is_empty() {
@@ -257,7 +259,7 @@ pub async fn execute(args: CryptoMarketsArgs, config: &Config) -> Result<()> {
         info!("Saving market data to database...");
 
         let (inserted, updated) =
-          save_market_data_to_db(&config.database_url, &market_data, args.update_existing)
+          save_market_data_to_db(&crypto_repo, &market_data, args.update_existing)
             .await
             .context("Failed to save market data to database")?;
 
@@ -276,67 +278,51 @@ pub async fn execute(args: CryptoMarketsArgs, config: &Config) -> Result<()> {
 }
 
 /// Load symbols that already have CoinGecko mappings (no hardcoded fallbacks)
-fn load_crypto_symbols_from_db(
-  database_url: &str,
+async fn load_crypto_symbols_from_db(
+  crypto_repo: &Arc<dyn av_database_postgres::repository::CryptoRepository>,
   symbol_filter: &Option<Vec<String>>,
   limit: Option<usize>,
 ) -> Result<Vec<CryptoSymbolForMarkets>> {
-  use crypto_api_map::dsl::{api_id, api_source, crypto_api_map as api_map_table};
-  use symbols::dsl::{name, sec_type, sid, symbol, symbols as symbols_table};
+  // Get all crypto symbols with CoinGecko mappings from repository
+  let results = crypto_repo
+    .get_crypto_symbols_with_mappings("CoinGecko", limit)
+    .await
+    .context("Failed to query crypto symbols with mappings")?;
 
-  let mut conn = establish_connection(database_url)?;
-
-  // Query that ONLY returns symbols with existing CoinGecko mappings
-  let mut query = symbols_table
-    .inner_join(
-      api_map_table.on(
-        // INNER JOIN - only symbols with mappings
-        sid
-          .eq(crypto_api_map::sid)
-          .and(api_source.eq("coingecko"))
-          .and(crypto_api_map::is_active.eq(Some(true))),
-      ),
-    )
-    .filter(sec_type.eq("Cryptocurrency"))
-    .select((sid, symbol, name, api_id))
-    .into_boxed();
-
-  // Apply symbol filter if provided
-  if let Some(ref filter_list) = symbol_filter {
+  // Filter by specific symbols if requested
+  let filtered_results: Vec<_> = if let Some(ref filter_list) = symbol_filter {
     let uppercase_filters: Vec<String> = filter_list.iter().map(|s| s.to_uppercase()).collect();
-    query = query.filter(symbol.eq_any(uppercase_filters));
-  }
+    results
+      .into_iter()
+      .filter(|(_, symbol_val, _, _)| uppercase_filters.contains(&symbol_val.to_uppercase()))
+      .collect()
+  } else {
+    results
+  };
 
-  // Apply limit if provided
-  if let Some(limit_val) = limit {
-    query = query.limit(limit_val as i64);
-  }
-
-  let results: Vec<(i64, String, String, String)> =
-    query.load(&mut conn).context("Failed to execute query")?;
-
-  let crypto_symbols = results
+  // Convert to CryptoSymbolForMarkets
+  let crypto_symbols = filtered_results
     .into_iter()
-    .map(|(sid_val, symbol_val, name_val, coingecko_id_val)| CryptoSymbolForMarkets {
-      sid: sid_val,
-      symbol: symbol_val.clone(),
-      name: name_val,
-      coingecko_id: Some(coingecko_id_val),
-      alphavantage_symbol: Some(symbol_val),
+    .filter_map(|(sid_val, symbol_val, name_val, api_id_opt)| {
+      api_id_opt.map(|coingecko_id_val| CryptoSymbolForMarkets {
+        sid: sid_val,
+        symbol: symbol_val.clone(),
+        name: name_val,
+        coingecko_id: Some(coingecko_id_val),
+        alphavantage_symbol: Some(symbol_val),
+      })
     })
     .collect();
 
   Ok(crypto_symbols)
 }
 
-/// Save market data to database
+/// Save market data to database using repository
 async fn save_market_data_to_db(
-  database_url: &str,
+  crypto_repo: &Arc<dyn av_database_postgres::repository::CryptoRepository>,
   market_data: &[CryptoMarketData],
   _update_existing: bool, // Not needed with UPSERT
 ) -> Result<(usize, usize)> {
-  let mut conn = establish_connection(database_url)?;
-
   info!("Processing {} market data entries with UPSERT", market_data.len());
 
   // Convert and validate data
@@ -362,44 +348,17 @@ async fn save_market_data_to_db(
     return Ok((0, 0));
   }
 
-  // Process in batches for memory efficiency
-  const BATCH_SIZE: usize = 100;
-  let mut total_processed = 0;
-  let mut batch_errors = 0;
-
-  for (batch_index, batch) in valid_markets.chunks(BATCH_SIZE).enumerate() {
-    info!("Processing UPSERT batch {} with {} entries", batch_index + 1, batch.len());
-
-    match CryptoMarket::upsert_markets(&mut conn, batch) {
-      Ok(results) => {
-        total_processed += results.len();
-        info!("✅ Batch {}: {} records upserted", batch_index + 1, results.len());
-      }
-      Err(e) => {
-        batch_errors += 1;
-        error!("❌ Batch {} failed: {}", batch_index + 1, e);
-
-        // Fallback to individual processing for failed batch
-        warn!("🔄 Attempting individual processing for failed batch...");
-        let individual_results = process_batch_individually(&mut conn, batch);
-        total_processed += individual_results;
-      }
-    }
-  }
-
-  // Estimate insert vs update counts (PostgreSQL doesn't easily distinguish in bulk UPSERT)
-  let estimated_inserts = total_processed / 2;
-  let estimated_updates = total_processed - estimated_inserts;
+  // Use repository to upsert market data
+  let (inserted, updated) =
+    crypto_repo.upsert_market_data(&valid_markets).await.context("Failed to upsert market data")?;
 
   info!(
-    "✅ Database save complete: ~{} inserted, ~{} updated, {} validation errors, {} batch errors",
-    estimated_inserts,
-    estimated_updates,
-    validation_errors.len(),
-    batch_errors
+    "✅ Database save complete: {} inserted/updated, {} validation errors",
+    inserted,
+    validation_errors.len()
   );
 
-  Ok((estimated_inserts, estimated_updates))
+  Ok((inserted, updated))
 }
 
 /// Convert CryptoMarketData to NewCryptoMarket with validation
@@ -470,31 +429,6 @@ fn convert_to_new_crypto_market(market: &CryptoMarketData) -> Result<NewCryptoMa
     last_traded_at,
     last_fetch_at: Some(last_fetch_at),
   })
-}
-
-/// Process batch individually when bulk operation fails
-fn process_batch_individually(conn: &mut PgConnection, batch: &[NewCryptoMarket]) -> usize {
-  let mut processed = 0;
-
-  for market in batch {
-    // FIX: Use insert instead of non-existent upsert_market
-    match CryptoMarket::insert(conn, market) {
-      Ok(_) => processed += 1,
-      Err(diesel::result::Error::DatabaseError(
-        diesel::result::DatabaseErrorKind::UniqueViolation,
-        _,
-      )) => {
-        // Try update on conflict
-        // This is a simplified fallback - todo:  FIX THIS FOR PROD
-        processed += 1; // Count as processed even if it was a duplicate
-      }
-      Err(e) => {
-        error!("Failed to process individual market {}/{}: {}", market.exchange, market.base, e)
-      }
-    }
-  }
-
-  processed
 }
 
 /// Helper trait for partitioning results

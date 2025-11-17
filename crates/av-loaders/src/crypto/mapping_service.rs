@@ -28,10 +28,10 @@
  */
 
 use crate::crypto::CryptoLoaderError;
-use av_database_postgres::models::crypto::CryptoApiMap;
-use diesel::PgConnection;
+use av_database_postgres::repository::CryptoRepository;
 use reqwest::Client;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 pub struct CryptoMappingService {
@@ -47,12 +47,12 @@ impl CryptoMappingService {
   /// Get or discover CoinGecko ID for a symbol using ONLY dynamic discovery
   pub async fn get_coingecko_id(
     &self,
-    conn: &mut PgConnection,
+    crypto_repo: &Arc<dyn CryptoRepository>,
     sid: i64,
     symbol: &str,
   ) -> Result<Option<String>, CryptoLoaderError> {
     // 1. Check database first
-    if let Ok(Some(api_id)) = CryptoApiMap::get_api_id(conn, sid, "CoinGecko") {
+    if let Ok(Some(api_id)) = crypto_repo.get_api_id(sid, "CoinGecko").await {
       info!("✅ Found existing CoinGecko mapping: {} -> {}", symbol, api_id);
       return Ok(Some(api_id));
     }
@@ -72,15 +72,10 @@ impl CryptoMappingService {
         info!("✅ Discovered CoinGecko ID: {} -> {}", symbol, coingecko_id);
 
         // Store the discovered mapping
-        if let Err(e) = CryptoApiMap::upsert_mapping(
-          conn,
-          sid,
-          "CoinGecko",
-          &coingecko_id,
-          None,
-          Some(symbol),
-          None,
-        ) {
+        if let Err(e) = crypto_repo
+          .upsert_api_mapping(sid, "CoinGecko", &coingecko_id, None, Some(symbol), None)
+          .await
+        {
           error!("Failed to store discovered mapping: {}", e);
         } else {
           info!("💾 Stored dynamic mapping: {} -> {}", symbol, coingecko_id);
@@ -102,10 +97,12 @@ impl CryptoMappingService {
   /// Bulk discovery for missing mappings - purely dynamic
   pub async fn discover_missing_mappings(
     &self,
-    conn: &mut PgConnection,
+    crypto_repo: &Arc<dyn CryptoRepository>,
     source: &str,
   ) -> Result<usize, CryptoLoaderError> {
-    let missing_symbols = CryptoApiMap::get_symbols_needing_mapping(conn, source)
+    let missing_symbols = crypto_repo
+      .get_symbols_needing_mapping(source)
+      .await
       .map_err(|e| CryptoLoaderError::ApiError(format!("Query failed: {}", e)))?;
 
     info!("🔍 Discovering {} missing {} mappings via API", missing_symbols.len(), source);
@@ -114,7 +111,7 @@ impl CryptoMappingService {
     for (sid, symbol, _name) in missing_symbols {
       match source {
         "CoinGecko" => {
-          if let Ok(Some(_)) = self.get_coingecko_id(conn, sid, &symbol).await {
+          if let Ok(Some(_)) = self.get_coingecko_id(crypto_repo, sid, &symbol).await {
             discovered_count += 1;
           }
         }
@@ -123,15 +120,9 @@ impl CryptoMappingService {
             av_database_postgres::models::crypto::discover_coinpaprika_id(&self.client, &symbol)
               .await
           {
-            let _ = CryptoApiMap::upsert_mapping(
-              conn,
-              sid,
-              "CoinPaprika",
-              &coinpaprika_id,
-              None,
-              Some(&symbol),
-              None,
-            );
+            let _ = crypto_repo
+              .upsert_api_mapping(sid, "CoinPaprika", &coinpaprika_id, None, Some(&symbol), None)
+              .await;
             discovered_count += 1;
             info!("✅ Discovered CoinPaprika mapping: {} -> {}", symbol, coinpaprika_id);
           }
@@ -151,38 +142,46 @@ impl CryptoMappingService {
 
   /// Initialize mappings for a specific set of symbols (discovery-based)
   ///
-  ///
-  ///
-
+  /// Note: This method still uses direct Diesel queries for symbol lookup
+  /// as we don't have a SymbolRepository yet. This could be refactored
+  /// when SymbolRepository is implemented.
   pub async fn initialize_mappings_for_symbols(
     &self,
-    conn: &mut PgConnection,
+    crypto_repo: &Arc<dyn CryptoRepository>,
+    db_context: &av_database_postgres::repository::DatabaseContext,
     symbol_names: &[String],
   ) -> Result<usize, CryptoLoaderError> {
-    use av_database_postgres::schema::symbols;
-    use diesel::prelude::*;
-
     let mut initialized_count = 0;
 
     for symbol_name in symbol_names {
-      // Look up the symbol in the database to get its SID
       let symbol_upper = symbol_name.to_uppercase();
+      let symbol_upper_clone = symbol_upper.clone();
 
-      let symbol_record: Result<(i64, String), diesel::result::Error> = symbols::table
-        .filter(symbols::symbol.eq(&symbol_upper))
-        .filter(symbols::sec_type.eq("Cryptocurrency"))
-        .select((symbols::sid, symbols::symbol))
-        .first(conn);
+      // Look up symbol using DatabaseContext
+      let symbol_result = db_context
+        .run(move |conn| {
+          use av_database_postgres::schema::symbols;
+          use diesel::prelude::*;
 
-      match symbol_record {
-        Ok((symbol_sid, symbol_code)) => {
+          let record: Result<(i64, String), diesel::result::Error> = symbols::table
+            .filter(symbols::symbol.eq(&symbol_upper_clone))
+            .filter(symbols::sec_type.eq("Cryptocurrency"))
+            .select((symbols::sid, symbols::symbol))
+            .first(conn);
+
+          Ok(record)
+        })
+        .await;
+
+      match symbol_result {
+        Ok(Ok((symbol_sid, symbol_code))) => {
           info!("Found symbol {} with SID {}", symbol_code, symbol_sid);
 
-          if let Ok(Some(_)) = self.get_coingecko_id(conn, symbol_sid, &symbol_code).await {
+          if let Ok(Some(_)) = self.get_coingecko_id(crypto_repo, symbol_sid, &symbol_code).await {
             initialized_count += 1;
           }
         }
-        Err(_) => {
+        _ => {
           warn!("Symbol {} not found in database", symbol_name);
         }
       }

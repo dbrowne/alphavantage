@@ -28,12 +28,13 @@
  */
 
 //! Security loader that reads symbols from CSV files and searches for them via AlphaVantage API
+//!
+//! ## Refactored to use Repository Pattern
+//! This loader now uses the CacheRepository abstraction instead of direct database access.
+//! All database operations are delegated to the repository layer, following clean architecture principles.
 
 use async_trait::async_trait;
 use chrono::Utc;
-use diesel::sql_query;
-use diesel::sql_types;
-use diesel::{OptionalExtension, PgConnection, QueryableByName, RunQueryDsl};
 use futures::stream::{self, StreamExt};
 use indicatif::ProgressBar;
 use std::sync::Arc;
@@ -45,9 +46,9 @@ use crate::{
   DataLoader, LoaderContext, LoaderResult, csv_processor::CsvProcessor,
   process_tracker::ProcessState,
 };
+use av_database_postgres::repository::CacheRepositoryExt;
 use av_models::common::SymbolMatch;
 use av_models::time_series::SymbolSearch;
-use diesel::Connection;
 
 /// Configuration for symbol matching behavior
 #[derive(Debug, Clone)]
@@ -66,17 +67,15 @@ impl Default for SymbolMatchMode {
   }
 }
 
-/// Configuration for security loader
+/// Configuration for security loader caching behavior
 #[derive(Debug, Clone)]
 pub struct SecurityLoaderConfig {
-  /// Enable caching
+  /// Enable caching (requires cache_repository in LoaderContext)
   pub enable_cache: bool,
   /// Cache TTL in hours
-  pub cache_ttl_hours: u32,
+  pub cache_ttl_hours: i64,
   /// Force refresh (bypass cache)
   pub force_refresh: bool,
-  /// Database URL for cache
-  pub database_url: String,
 }
 
 impl Default for SecurityLoaderConfig {
@@ -85,20 +84,14 @@ impl Default for SecurityLoaderConfig {
       enable_cache: true,
       cache_ttl_hours: 168, // 7 days - symbol data is relatively stable
       force_refresh: false,
-      database_url: String::new(),
     }
   }
 }
 
-// Cache query result structure
-#[derive(Debug, Clone, QueryableByName)]
-struct CacheQueryResult {
-  #[diesel(sql_type = diesel::sql_types::Jsonb)]
-  response_data: serde_json::Value,
-  #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-  expires_at: chrono::DateTime<chrono::Utc>,
-}
-
+/// Security loader - fetches symbol data from AlphaVantage API
+///
+/// This loader is now database-agnostic. It uses the CacheRepository
+/// trait for caching instead of direct database access.
 pub struct SecurityLoader {
   semaphore: Arc<Semaphore>,
   match_mode: SymbolMatchMode,
@@ -129,121 +122,80 @@ impl SecurityLoader {
   /// Generate cache key for symbol search requests
   fn generate_cache_key(&self, symbol: &str) -> String {
     // Use simple string key for deterministic caching across runs
-    // DefaultHasher is NOT stable across process restarts!
     format!("symbol_search_{}", symbol.to_uppercase())
   }
 
   /// Get cached response if available and not expired
-  async fn get_cached_response(&self, cache_key: &str) -> Option<SymbolSearch> {
-    if !self.config.enable_cache || self.config.force_refresh || self.config.database_url.is_empty()
-    {
+  /// Now uses the CacheRepository instead of direct database access
+  async fn get_cached_response(
+    &self,
+    cache_key: &str,
+    cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
+  ) -> Option<SymbolSearch> {
+    if !self.config.enable_cache || self.config.force_refresh {
       return None;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        debug!("Failed to connect for cache check: {}", e);
-        return None;
+    match cache_repo.get::<SymbolSearch>(cache_key, "alphavantage").await {
+      Ok(Some(search)) => {
+        info!("📦 Cache hit for key: {}", cache_key);
+        debug!("Successfully retrieved cached symbol search");
+        Some(search)
       }
-    };
-
-    let cached_entry: Option<CacheQueryResult> = sql_query(
-      "SELECT response_data, expires_at FROM api_response_cache
-             WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'alphavantage'",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .get_result(&mut conn)
-    .optional()
-    .unwrap_or(None);
-
-    if let Some(cache_result) = cached_entry {
-      info!("📦 Cache hit for key: {} (expires: {})", cache_key, cache_result.expires_at);
-
-      // Try to parse the cached JSON into SymbolSearch
-      match serde_json::from_value::<SymbolSearch>(cache_result.response_data) {
-        Ok(search) => {
-          debug!("Successfully parsed cached symbol search");
-          return Some(search);
-        }
-        Err(e) => {
-          warn!("Failed to parse cached symbol search: {}", e);
-          return None;
-        }
+      Ok(None) => {
+        debug!("Cache miss for key: {}", cache_key);
+        None
+      }
+      Err(e) => {
+        debug!("Cache read error for key {}: {}", cache_key, e);
+        None
       }
     }
-
-    debug!("Cache miss for key: {}", cache_key);
-    None
   }
 
   /// Cache the API response
-  async fn cache_response(&self, cache_key: &str, search: &SymbolSearch, symbol: &str) {
-    if !self.config.enable_cache || self.config.database_url.is_empty() {
+  /// Now uses the CacheRepository instead of direct database access
+  async fn cache_response(
+    &self,
+    cache_key: &str,
+    search: &SymbolSearch,
+    symbol: &str,
+    cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
+  ) {
+    if !self.config.enable_cache {
       return;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        warn!("Failed to connect for caching: {}", e);
-        return;
+    let endpoint_url = format!("SYMBOL_SEARCH:{}", symbol);
+
+    match cache_repo
+      .set(cache_key, "alphavantage", &endpoint_url, search, self.config.cache_ttl_hours)
+      .await
+    {
+      Ok(()) => {
+        let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours);
+        info!("💾 Cached symbol search for {} (expires: {})", cache_key, expires_at);
       }
-    };
-
-    let response_json = match serde_json::to_value(search) {
-      Ok(json) => json,
       Err(e) => {
-        warn!("Failed to serialize symbol search for caching: {}", e);
-        return;
+        warn!("Failed to cache symbol search for {}: {}", cache_key, e);
       }
-    };
-
-    let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
-
-    let result = sql_query(
-      "INSERT INTO api_response_cache
-             (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
-             VALUES ($1, 'alphavantage', $2, $3, 200, $4)
-             ON CONFLICT (cache_key) DO UPDATE SET
-                response_data = EXCLUDED.response_data,
-                status_code = EXCLUDED.status_code,
-                expires_at = EXCLUDED.expires_at,
-                cached_at = NOW()",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .bind::<sql_types::Text, _>(format!("SYMBOL_SEARCH:{}", symbol))
-    .bind::<sql_types::Jsonb, _>(&response_json)
-    .bind::<sql_types::Timestamptz, _>(expires_at)
-    .execute(&mut conn);
-
-    match result {
-      Ok(_) => info!("💾 Cached symbol search for {} (expires: {})", cache_key, expires_at),
-      Err(e) => warn!("Failed to cache symbol search: {}", e),
     }
   }
 
   /// Clean expired cache entries
-  pub async fn cleanup_expired_cache(&self) -> Result<usize, LoaderError> {
-    if self.config.database_url.is_empty() {
-      return Ok(0);
+  /// This is now a convenience method that delegates to the repository
+  pub async fn cleanup_expired_cache(
+    cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
+  ) -> Result<usize, LoaderError> {
+    match cache_repo.cleanup_expired("alphavantage").await {
+      Ok(deleted_count) => {
+        if deleted_count > 0 {
+          info!("🧹 Cleaned up {} expired security cache entries", deleted_count);
+        }
+        Ok(deleted_count)
+      }
+      Err(e) => Err(LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e))),
     }
-
-    let mut conn = PgConnection::establish(&self.config.database_url)
-      .map_err(|e| LoaderError::DatabaseError(format!("Connection failed: {}", e)))?;
-
-    let deleted_count = sql_query(
-      "DELETE FROM api_response_cache
-             WHERE expires_at < NOW() AND api_source = 'alphavantage'",
-    )
-    .execute(&mut conn)
-    .map_err(|e| LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e)))?;
-
-    if deleted_count > 0 {
-      info!("🧹 Cleaned up {} expired security cache entries", deleted_count);
-    }
-
-    Ok(deleted_count)
   }
 
   /// Get matching symbols based on the configured match mode
@@ -308,6 +260,9 @@ impl DataLoader for SecurityLoader {
     let retry_delay = context.config.retry_delay_ms;
     let max_concurrent = context.config.max_concurrent_requests;
 
+    // Get cache repository if available
+    let cache_repo_opt = context.cache_repository.clone();
+
     // Counters for output
     let mut cache_hits = 0usize;
     let mut api_calls = 0usize;
@@ -321,6 +276,7 @@ impl DataLoader for SecurityLoader {
         let exchange = exchange.clone();
         let original_symbol = symbol.clone();
         let loader = self.clone();
+        let cache_repo_opt = cache_repo_opt.clone();
 
         async move {
           let _permit =
@@ -329,9 +285,9 @@ impl DataLoader for SecurityLoader {
           // Generate cache key
           let cache_key = loader.generate_cache_key(&symbol);
 
-          // Check cache first
-          let (search_results, from_cache) =
-            if let Some(cached_search) = loader.get_cached_response(&cache_key).await {
+          // Check cache first (if cache repository is available)
+          let (search_results, from_cache) = if let Some(cache_repo) = &cache_repo_opt {
+            if let Some(cached_search) = loader.get_cached_response(&cache_key, cache_repo).await {
               info!("📦 Using cached data for {} (no API call needed)", symbol);
               (cached_search, true)
             } else {
@@ -352,10 +308,26 @@ impl DataLoader for SecurityLoader {
               };
 
               // Cache the successful response
-              loader.cache_response(&cache_key, &search_res, &symbol).await;
+              loader.cache_response(&cache_key, &search_res, &symbol, cache_repo).await;
 
               (search_res, false)
+            }
+          } else {
+            // No cache repository - just call API
+            debug!("No cache repository available - calling API directly");
+            let search_res = match client.time_series().symbol_search(&symbol).await {
+              Ok(results) => results,
+              Err(e) => {
+                warn!("Symbol search failed for {}: {}", symbol, e);
+                if let Some(pb) = &progress {
+                  pb.inc(1);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                return Err((e, false));
+              }
             };
+            (search_res, false)
+          };
 
           // Get matching symbols based on mode
           let matches = loader.get_matching_symbols(&symbol, search_results);

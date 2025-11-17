@@ -76,6 +76,7 @@ pub struct CryptoLoaderConfig {
   pub enable_progress_bar: bool,
   pub sources: Vec<CryptoDataSource>,
   pub batch_size: usize,
+  pub cache_ttl_hours: Option<u64>,
 }
 
 impl Default for CryptoLoaderConfig {
@@ -94,6 +95,7 @@ impl Default for CryptoLoaderConfig {
         CryptoDataSource::CoinMarketCap,
       ],
       batch_size: 250,
+      cache_ttl_hours: Some(24), // Default 24 hours
     }
   }
 }

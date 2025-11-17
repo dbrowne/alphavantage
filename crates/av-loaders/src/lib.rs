@@ -115,11 +115,7 @@ pub use crypto::{
     CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader, CryptoMetadataOutput,
     CryptoSymbolForMetadata, ProcessedCryptoMetadata,
   },
-  // Export social loader types
-  social_loader::{
-    CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader, CryptoSymbolForSocial,
-    ProcessedSocialData,
-  },
+
 };
 
 pub mod prelude {
@@ -135,7 +131,6 @@ pub mod prelude {
     CryptoLoaderConfig,
     CryptoMarketsLoader,
     CryptoMetadataLoader,
-    CryptoSocialLoader,
     CryptoSymbolLoader,
     DataLoader,
     IntradayInterval,

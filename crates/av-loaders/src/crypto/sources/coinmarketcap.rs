@@ -30,10 +30,12 @@
 use super::CryptoDataProvider;
 use crate::crypto::{CryptoDataSource, CryptoLoaderError, CryptoSymbol};
 use async_trait::async_trait;
+use av_database_postgres::repository::CacheRepository;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 pub struct CoinMarketCapProvider {
@@ -114,7 +116,11 @@ struct CmcQuote {
 
 #[async_trait]
 impl CryptoDataProvider for CoinMarketCapProvider {
-  async fn fetch_symbols(&self, client: &Client) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
+  async fn fetch_symbols(
+    &self,
+    client: &Client,
+    _cache_repo: Option<&Arc<dyn CacheRepository>>,
+  ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from CoinMarketCap");
 
     // Use listings endpoint for comprehensive data
