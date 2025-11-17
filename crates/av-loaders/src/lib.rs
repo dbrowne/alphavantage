@@ -115,7 +115,6 @@ pub use crypto::{
     CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader, CryptoMetadataOutput,
     CryptoSymbolForMetadata, ProcessedCryptoMetadata,
   },
-
 };
 
 pub mod prelude {
