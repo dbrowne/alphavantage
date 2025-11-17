@@ -177,6 +177,16 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
   // Validate API keys for selected sources
   validate_api_keys(&sources, &args)?;
 
+  // Create database context and crypto repository
+  let db_context = av_database_postgres::repository::DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow::anyhow!("Failed to create database context: {}", e))?;
+  let crypto_repo: Arc<dyn av_database_postgres::repository::CryptoRepository> =
+    Arc::new(db_context.crypto_repository());
+
+  // Create cache repository for API response caching
+  let cache_repo: Arc<dyn av_database_postgres::repository::CacheRepository> =
+    Arc::new(db_context.cache_repository());
+
   // Create API client for HTTP operations
   let client = Arc::new(AlphaVantageClient::new(config.api_config));
 
@@ -190,8 +200,8 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
     ..Default::default()
   };
 
-  // Create crypto database loader
-  let crypto_loader = CryptoDbLoader::new(crypto_config);
+  // Create crypto database loader with cache repository
+  let crypto_loader = CryptoDbLoader::new(crypto_config).with_cache_repository(cache_repo);
 
   // Create loader context
   let loader_config = LoaderConfig {

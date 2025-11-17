@@ -150,10 +150,16 @@ pub async fn execute(args: CryptoMetadataArgs, config: &Config) -> Result<()> {
     info!("Dry run mode - no database updates will be performed");
   }
 
+  // Create database context and cache repository
+  let db_context = av_database_postgres::repository::DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow::anyhow!("Failed to create database context: {}", e))?;
+  let cache_repo: Arc<dyn av_database_postgres::repository::CacheRepository> =
+    Arc::new(db_context.cache_repository());
+
   // Clean up expired cache entries if requested
   if args.cleanup_cache {
     info!("Cleaning up expired cache entries...");
-    match CryptoMetadataLoader::cleanup_expired_cache(&config.database_url).await {
+    match CryptoMetadataLoader::cleanup_expired_cache(&cache_repo).await {
       Ok(deleted_count) => {
         if deleted_count > 0 {
           info!("🧹 Cleaned up {} expired cache entries", deleted_count);
@@ -243,6 +249,8 @@ pub async fn execute(args: CryptoMetadataArgs, config: &Config) -> Result<()> {
       batch_size: args.batch_size,
     },
     process_tracker: None,
+    cache_repository: Some(cache_repo),
+    news_repository: None,
   };
 
   // Create metadata input

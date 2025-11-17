@@ -30,10 +30,12 @@
 use super::CryptoDataProvider;
 use crate::crypto::{CryptoDataSource, CryptoLoaderError, CryptoSymbol};
 use async_trait::async_trait;
+use av_database_postgres::repository::CacheRepository;
 use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 pub struct CoinCapProvider;
@@ -58,7 +60,11 @@ struct CoinCapAsset {
 
 #[async_trait]
 impl CryptoDataProvider for CoinCapProvider {
-  async fn fetch_symbols(&self, client: &Client) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
+  async fn fetch_symbols(
+    &self,
+    client: &Client,
+    _cache_repo: Option<&Arc<dyn CacheRepository>>,
+  ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from CoinCap");
 
     // CoinCap limits to 2000 assets per request, but we can paginate

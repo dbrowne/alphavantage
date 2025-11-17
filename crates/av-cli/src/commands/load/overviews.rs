@@ -29,15 +29,14 @@
 
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
-use av_database_postgres::models::Symbol;
 use av_database_postgres::models::security::{NewOverviewOwned, NewOverviewextOwned};
+use av_database_postgres::repository::{DatabaseContext, OverviewRepository, OverviewSymbolFilter};
 use av_loaders::{
   DataLoader, LoaderConfig, LoaderContext,
-  overview_loader::{OverviewLoader, OverviewLoaderInput, SymbolInfo},
+  overview_loader::{OverviewLoader, OverviewLoaderInput},
 };
 use chrono::{NaiveDate, Utc};
 use clap::Args;
-use diesel::prelude::*;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -74,15 +73,19 @@ pub struct OverviewsArgs {
 pub async fn execute(args: OverviewsArgs, config: Config) -> Result<()> {
   info!("Starting overview loader");
 
+  // Create database context and overview repository
+  let db_context = DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow!("Failed to create database context: {}", e))?;
+  let overview_repo = db_context.overview_repository();
+
   // Get symbols to load from database
-  let symbols_to_load = tokio::task::spawn_blocking({
-    let database_url = config.database_url.clone();
+  let symbols_to_load = {
     let symbols = args.symbols.clone();
     let symbols_file = args.symbols_file.clone();
     let limit = args.limit;
-    move || get_symbols_to_load(&database_url, symbols, symbols_file, limit)
-  })
-  .await??;
+
+    get_symbols_to_load(&overview_repo, symbols, symbols_file, limit).await?
+  };
 
   if symbols_to_load.is_empty() {
     info!("No symbols to load");
@@ -108,8 +111,9 @@ pub async fn execute(args: OverviewsArgs, config: Config) -> Result<()> {
     batch_size: 100,
   };
 
-  // Create loader context
-  let context = LoaderContext::new(client, loader_config);
+  // Create loader context with cache repository
+  let cache_repo = Arc::new(db_context.cache_repository());
+  let context = LoaderContext::new(client, loader_config).with_cache_repository(cache_repo);
 
   // Create overview loader
   let loader = OverviewLoader::new(args.concurrent);
@@ -130,24 +134,22 @@ pub async fn execute(args: OverviewsArgs, config: Config) -> Result<()> {
   };
 
   info!(
-    "API loading complete: {} loaded, {} no data, {} errors",
-    output.loaded_count, output.no_data_count, output.errors
+    "API loading complete: {} loaded, {} no data, {} errors, {} cache hits, {} API calls",
+    output.loaded_count, output.no_data_count, output.errors, output.cache_hits, output.api_calls
   );
 
   // Save to database unless dry run
   let saved_count = if !args.dry_run && !output.data.is_empty() {
-    tokio::task::spawn_blocking({
-      let database_url = config.database_url.clone();
-      let data = output.data;
-      move || save_overviews_to_db(&database_url, data)
-    })
-    .await??
+    save_overviews_to_db(&overview_repo, output.data).await?
   } else {
     0
   };
 
   if !args.dry_run {
-    info!("Saved {} overviews to database", saved_count);
+    info!(
+      "Saved {} overviews to database (saved {} API calls via caching)",
+      saved_count, output.cache_hits
+    );
   } else {
     info!("Dry run complete - would have saved {} overviews", output.loaded_count);
   }
@@ -155,97 +157,89 @@ pub async fn execute(args: OverviewsArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
-/// Get symbols to load based on command arguments
-fn get_symbols_to_load(
-  database_url: &str,
+/// Get symbols to load based on command arguments using OverviewRepository
+async fn get_symbols_to_load(
+  repo: &impl OverviewRepository,
   symbols_arg: Option<Vec<String>>,
   symbols_file: Option<String>,
   limit: Option<usize>,
-) -> Result<Vec<SymbolInfo>> {
-  use av_database_postgres::schema::symbols::dsl::*;
-  use diesel::PgConnection;
-
-  let mut conn = PgConnection::establish(database_url)
-    .map_err(|e| anyhow!("Failed to connect to database: {}", e))?;
-
-  // Check if specific symbols or file was provided
-  if let Some(ref symbol_list) = symbols_arg {
-    // Load specific symbols that don't have overviews
-    let symbol_records: Vec<Symbol> = symbols
-      .filter(symbol.eq_any(symbol_list))
-      .filter(overview.eq(false))
-      .load::<Symbol>(&mut conn)?;
-
-    if symbol_records.is_empty() {
-      warn!("No symbols found that need overviews");
-    } else if symbol_records.len() < symbol_list.len() {
-      warn!(
-        "Only {} of {} requested symbols need overviews",
-        symbol_records.len(),
-        symbol_list.len()
-      );
-    }
-
-    Ok(symbol_records.into_iter().map(|s| SymbolInfo { sid: s.sid, symbol: s.symbol }).collect())
-  } else if let Some(ref file) = symbols_file {
-    // Load symbols from file
+) -> Result<Vec<av_loaders::overview_loader::SymbolInfo>> {
+  // Handle symbols from file if provided
+  let symbols_list = if let Some(file) = symbols_file {
     let content = std::fs::read_to_string(file)?;
     let file_symbols: Vec<String> =
       content.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-
-    let symbol_records: Vec<Symbol> = symbols
-      .filter(symbol.eq_any(&file_symbols))
-      .filter(overview.eq(false))
-      .load::<Symbol>(&mut conn)?;
-
-    Ok(symbol_records.into_iter().map(|s| SymbolInfo { sid: s.sid, symbol: s.symbol }).collect())
+    Some(file_symbols)
   } else {
-    // Default: Load all US equities without overviews
-    let mut query = av_database_postgres::schema::symbols::table
-      .filter(sec_type.eq("Equity"))
-      .filter(region.eq("USA"))
-      .filter(overview.eq(false))
-      .order(symbol.asc())
-      .into_boxed();
+    symbols_arg
+  };
 
-    // Apply limit if specified
-    if let Some(limit_val) = limit {
-      query = query.limit(limit_val as i64);
+  // Build filter
+  let filter = if symbols_list.is_some() {
+    OverviewSymbolFilter {
+      symbols: symbols_list.clone(),
+      sec_type: None, // Don't filter by type when specific symbols provided
+      region: None,   // Don't filter by region when specific symbols provided
+      missing_overviews_only: true,
+      limit,
     }
+  } else {
+    OverviewSymbolFilter {
+      symbols: None,
+      sec_type: Some("Equity".to_string()),
+      region: Some("USA".to_string()),
+      missing_overviews_only: true,
+      limit,
+    }
+  };
 
-    let symbol_records: Vec<Symbol> = query.load::<Symbol>(&mut conn)?;
+  // Get symbols from repository
+  let symbol_infos = repo
+    .get_symbols_to_load(&filter)
+    .await
+    .map_err(|e| anyhow!("Failed to query symbols: {}", e))?;
 
-    if let Some(limit_val) = limit {
-      info!(
-        "Found {} US equity symbols without overviews (limited to {})",
-        symbol_records.len(),
-        limit_val
+  // Log results
+  if let Some(symbol_list) = &symbols_list {
+    if symbol_infos.is_empty() {
+      warn!("No symbols found that need overviews");
+    } else if symbol_infos.len() < symbol_list.len() {
+      warn!(
+        "Only {} of {} requested symbols need overviews",
+        symbol_infos.len(),
+        symbol_list.len()
       );
-    } else {
-      info!("Found {} US equity symbols without overviews", symbol_records.len());
     }
-
-    Ok(symbol_records.into_iter().map(|s| SymbolInfo { sid: s.sid, symbol: s.symbol }).collect())
+  } else if let Some(limit_val) = limit {
+    info!(
+      "Found {} US equity symbols without overviews (limited to {})",
+      symbol_infos.len(),
+      limit_val
+    );
+  } else {
+    info!("Found {} US equity symbols without overviews", symbol_infos.len());
   }
+
+  // Convert to loader's SymbolInfo type
+  Ok(
+    symbol_infos
+      .into_iter()
+      .map(|s| av_loaders::overview_loader::SymbolInfo { sid: s.sid, symbol: s.symbol })
+      .collect(),
+  )
 }
 
-/// Save overview data to database
-fn save_overviews_to_db(
-  database_url: &str,
+/// Save overview data to database using OverviewRepository
+async fn save_overviews_to_db(
+  repo: &impl OverviewRepository,
   data: Vec<av_loaders::overview_loader::OverviewData>,
 ) -> Result<usize> {
-  use av_database_postgres::schema::{overviewexts, overviews, symbols};
-  use diesel::PgConnection;
-
-  let mut conn = PgConnection::establish(database_url)
-    .map_err(|e| anyhow!("Failed to connect to database: {}", e))?;
-
-  let mut saved_count = 0;
   let now = Utc::now().naive_utc();
 
-  // Process in a transaction
-  conn.transaction::<_, diesel::result::Error, _>(|conn| {
-    for overview_data in data {
+  // Build overview records
+  let overview_pairs: Vec<(NewOverviewOwned, NewOverviewextOwned)> = data
+    .into_iter()
+    .map(|overview_data| {
       // Parse dates
       let latest_quarter_date = parse_date(&overview_data.overview.latest_quarter)
         .unwrap_or_else(|| NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
@@ -326,32 +320,15 @@ fn save_overviews_to_db(
         m_time: now,
       };
 
-      // Save main overview
-      diesel::insert_into(overviews::table)
-        .values(&new_overview)
-        .on_conflict(overviews::sid)
-        .do_update()
-        .set(&new_overview)
-        .execute(conn)?;
+      (new_overview, new_overview_ext)
+    })
+    .collect();
 
-      // Save extended overview
-      diesel::insert_into(overviewexts::table)
-        .values(&new_overview_ext)
-        .on_conflict(overviewexts::sid)
-        .do_update()
-        .set(&new_overview_ext)
-        .execute(conn)?;
-
-      // Update symbols table
-      diesel::update(symbols::table.filter(symbols::sid.eq(overview_data.sid)))
-        .set(symbols::overview.eq(true))
-        .execute(conn)?;
-
-      saved_count += 1;
-    }
-
-    Ok(())
-  })?;
+  // Use repository to batch save
+  let saved_count = repo
+    .batch_save_overviews(&overview_pairs)
+    .await
+    .map_err(|e| anyhow!("Failed to save overviews: {}", e))?;
 
   Ok(saved_count)
 }

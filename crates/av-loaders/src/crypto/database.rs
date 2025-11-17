@@ -29,12 +29,14 @@
 
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::{
   DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState,
   batch_processor::{BatchConfig, BatchProcessor, BatchResult},
 };
+use av_database_postgres::repository::CacheRepository;
 
 use super::{CryptoDataSource, CryptoLoaderConfig, CryptoSymbol, CryptoSymbolLoader};
 
@@ -111,6 +113,7 @@ impl From<CryptoSymbol> for CryptoSymbolForDb {
 pub struct CryptoDbLoader {
   crypto_loader: CryptoSymbolLoader,
   batch_processor: BatchProcessor,
+  cache_repository: Option<Arc<dyn CacheRepository>>,
 }
 
 impl CryptoDbLoader {
@@ -126,7 +129,13 @@ impl CryptoDbLoader {
 
     let batch_processor = BatchProcessor::new(batch_config);
 
-    Self { crypto_loader, batch_processor }
+    Self { crypto_loader, batch_processor, cache_repository: None }
+  }
+
+  /// Set the cache repository for caching API responses
+  pub fn with_cache_repository(mut self, cache_repo: Arc<dyn CacheRepository>) -> Self {
+    self.cache_repository = Some(cache_repo);
+    self
   }
 
   /// Load symbols from a specific source using the provided crypto loader
@@ -359,6 +368,11 @@ impl DataLoader for CryptoDbLoader {
     let mut crypto_loader = self.crypto_loader.clone();
     if let Some(api_keys) = input.api_keys {
       crypto_loader = crypto_loader.with_api_keys(api_keys);
+    }
+
+    // Configure cache repository if available
+    if let Some(cache_repo) = &self.cache_repository {
+      crypto_loader = crypto_loader.with_cache_repository(cache_repo.clone());
     }
 
     let mut all_symbols = Vec::new();

@@ -36,9 +36,12 @@ use super::{
   CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError, CryptoLoaderResult, CryptoSymbol,
   SourceResult,
 };
+use av_database_postgres::repository::CacheRepository;
+use chrono::Utc;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{error, info, warn};
 
@@ -46,6 +49,7 @@ pub struct CryptoSymbolLoader {
   config: CryptoLoaderConfig,
   client: Client,
   providers: HashMap<CryptoDataSource, Box<dyn CryptoDataProvider + Send + Sync>>,
+  cache_repository: Option<Arc<dyn CacheRepository>>,
 }
 
 impl CryptoSymbolLoader {
@@ -95,7 +99,7 @@ impl CryptoSymbolLoader {
       }
     }
 
-    Self { config, client, providers }
+    Self { config, client, providers, cache_repository: None }
   }
 
   pub fn with_api_keys(mut self, api_keys: HashMap<CryptoDataSource, String>) -> Self {
@@ -116,6 +120,12 @@ impl CryptoSymbolLoader {
         }
       }
     }
+    self
+  }
+
+  /// Set the cache repository for caching API responses
+  pub fn with_cache_repository(mut self, cache_repo: Arc<dyn CacheRepository>) -> Self {
+    self.cache_repository = Some(cache_repo);
     self
   }
 
@@ -265,11 +275,79 @@ impl CryptoSymbolLoader {
     source: CryptoDataSource,
   ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     if let Some(provider) = self.providers.get(&source) {
-      info!("Loading symbols from {}", source);
+      let cache_key = format!("crypto_symbols_{}", source);
 
-      let symbols = provider.fetch_symbols(&self.client).await?;
+      // Check cache first if available
+      if let Some(cache_repo) = &self.cache_repository {
+        info!("🔍 Checking cache for {} (key: {})", source, cache_key);
+        match cache_repo.get_json(&cache_key, "crypto_loader").await {
+          Ok(Some(cached_data)) => {
+            match serde_json::from_value::<Vec<CryptoSymbol>>(cached_data) {
+              Ok(symbols) => {
+                info!("📦 Cache hit for {}: {} symbols loaded from cache", source, symbols.len());
+                return Ok(symbols);
+              }
+              Err(e) => {
+                warn!("Failed to deserialize cached data for {}: {}", source, e);
+                // Continue to API call
+              }
+            }
+          }
+          Ok(None) => {
+            info!("❌ Cache miss for {} - no cached data found", source);
+          }
+          Err(e) => {
+            warn!("Cache read error for {}: {}", source, e);
+          }
+        }
+      } else {
+        warn!("⚠️ No cache repository configured for {} - caching disabled", source);
+      }
 
+      // Cache miss or no cache - fetch from API
+      info!("🌐 Loading symbols from {} API", source);
+      let cache_ref = self.cache_repository.as_ref();
+      let symbols = provider.fetch_symbols(&self.client, cache_ref).await?;
       info!("Fetched {} symbols from {}", symbols.len(), source);
+
+      // Cache the result if cache repository is available
+      if let Some(cache_repo) = &self.cache_repository {
+        match serde_json::to_value(&symbols) {
+          Ok(json_data) => {
+            let cache_ttl_hours = self.config.cache_ttl_hours.unwrap_or(24);
+            let endpoint_url = format!("{}:{}", source, "symbols");
+
+            match cache_repo
+              .set_json(
+                &cache_key,
+                "crypto_loader",
+                &endpoint_url,
+                json_data,
+                cache_ttl_hours as i64,
+              )
+              .await
+            {
+              Ok(()) => {
+                let expires_at = Utc::now() + chrono::Duration::hours(cache_ttl_hours as i64);
+                info!(
+                  "💾 Cached {} symbols for {} (TTL: {}h, expires: {})",
+                  symbols.len(),
+                  source,
+                  cache_ttl_hours,
+                  expires_at
+                );
+              }
+              Err(e) => {
+                warn!("Failed to cache symbols for {}: {}", source, e);
+              }
+            }
+          }
+          Err(e) => {
+            warn!("Failed to serialize symbols for caching: {}", e);
+          }
+        }
+      }
+
       Ok(symbols)
     } else {
       Err(CryptoLoaderError::SourceUnavailable(source.to_string()))

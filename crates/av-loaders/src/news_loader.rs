@@ -1,21 +1,9 @@
 use async_trait::async_trait;
 use av_client::AlphaVantageClient;
-use av_database_postgres::{
-  models::{
-    MissingSymbol,
-    news::{NewsData, NewsItem, TickerSentimentData, TopicData},
-  },
-  schema::symbols,
-};
+use av_database_postgres::models::news::{NewsData, NewsItem, TickerSentimentData, TopicData};
+use av_database_postgres::repository::CacheRepositoryExt;
 use av_models::news::NewsSentiment;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use diesel::sql_query;
-use diesel::sql_types;
-use diesel::{
-  Connection, ExpressionMethods, OptionalExtension, PgConnection, QueryDsl, QueryableByName,
-  RunQueryDsl,
-};
-use serde_json;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -48,11 +36,9 @@ pub struct NewsLoaderConfig {
   /// Enable caching
   pub enable_cache: bool,
   /// Cache TTL in hours
-  pub cache_ttl_hours: u32,
+  pub cache_ttl_hours: i64,
   /// Force refresh (bypass cache)
   pub force_refresh: bool,
-  /// Database URL for cache and symbol lookup
-  pub database_url: String,
   /// Continue processing on error
   pub continue_on_error: bool,
   /// Delay between API calls in milliseconds
@@ -71,7 +57,6 @@ impl Default for NewsLoaderConfig {
       enable_cache: true,
       cache_ttl_hours: 24,
       force_refresh: false,
-      database_url: String::new(),
       continue_on_error: true,
       api_delay_ms: 800, // Default for standard tier (~75 calls per minute)
       progress_interval: 10,
@@ -111,15 +96,6 @@ impl Default for NewsLoaderOutput {
       no_data_count: 0,
     }
   }
-}
-
-// Cache query result structure
-#[derive(Debug, Clone, QueryableByName)]
-struct CacheQueryResult {
-  #[diesel(sql_type = diesel::sql_types::Jsonb)]
-  response_data: serde_json::Value,
-  #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-  expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// News loader implementation
@@ -180,145 +156,104 @@ impl NewsLoader {
   }
 
   /// Get cached response if available and not expired
-  async fn get_cached_response(&self, cache_key: &str) -> Option<NewsSentiment> {
+  async fn get_cached_response(
+    &self,
+    cache_key: &str,
+    cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
+  ) -> Option<NewsSentiment> {
     if !self.config.enable_cache || self.config.force_refresh {
       return None;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        debug!("Failed to connect for cache check: {}", e);
-        return None;
+    match cache_repo.get::<NewsSentiment>(cache_key, "alphavantage").await {
+      Ok(Some(news)) => {
+        info!("📦 Cache hit for news: {}", cache_key);
+        debug!("Successfully retrieved cached news sentiment");
+        Some(news)
       }
-    };
-
-    let cached_entry: Option<CacheQueryResult> = sql_query(
-      "SELECT response_data, expires_at FROM api_response_cache
-             WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'alphavantage'",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .get_result(&mut conn)
-    .optional()
-    .unwrap_or(None);
-
-    if let Some(cache_result) = cached_entry {
-      info!("📦 Cache hit for key: {} (expires: {})", cache_key, cache_result.expires_at);
-
-      // Try to parse the cached JSON into NewsSentiment
-      match serde_json::from_value::<NewsSentiment>(cache_result.response_data) {
-        Ok(news) => {
-          debug!("Successfully parsed cached news sentiment");
-          return Some(news);
-        }
-        Err(e) => {
-          warn!("Failed to parse cached news sentiment: {}", e);
-          return None;
-        }
+      Ok(None) => {
+        debug!("Cache miss for key: {}", cache_key);
+        None
+      }
+      Err(e) => {
+        debug!("Cache read error for key {}: {}", cache_key, e);
+        None
       }
     }
-
-    debug!("Cache miss for key: {}", cache_key);
-    None
   }
 
   /// Cache the API response
-  async fn cache_response(&self, cache_key: &str, news: &NewsSentiment, endpoint_url: &str) {
+  async fn cache_response(
+    &self,
+    cache_key: &str,
+    news: &NewsSentiment,
+    endpoint_url: &str,
+    cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
+  ) {
     if !self.config.enable_cache {
       return;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        warn!("Failed to connect for caching: {}", e);
-        return;
+    match cache_repo
+      .set(cache_key, "alphavantage", endpoint_url, news, self.config.cache_ttl_hours)
+      .await
+    {
+      Ok(()) => {
+        let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours);
+        info!("💾 Cached news for {} (expires: {})", cache_key, expires_at);
       }
-    };
-
-    let response_json = match serde_json::to_value(news) {
-      Ok(json) => json,
       Err(e) => {
-        warn!("Failed to serialize news for caching: {}", e);
-        return;
+        warn!("Failed to cache news for {}: {}", cache_key, e);
       }
-    };
-
-    let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
-
-    let result = sql_query(
-      "INSERT INTO api_response_cache
-             (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
-             VALUES ($1, 'alphavantage', $2, $3, 200, $4)
-             ON CONFLICT (cache_key) DO UPDATE SET
-                response_data = EXCLUDED.response_data,
-                status_code = EXCLUDED.status_code,
-                expires_at = EXCLUDED.expires_at,
-                cached_at = NOW()",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .bind::<sql_types::Text, _>(endpoint_url)
-    .bind::<sql_types::Jsonb, _>(&response_json)
-    .bind::<sql_types::Timestamptz, _>(expires_at)
-    .execute(&mut conn);
-
-    match result {
-      Ok(_) => info!("💾 Cached news response for {} (expires: {})", cache_key, expires_at),
-      Err(e) => warn!("Failed to cache news response: {}", e),
     }
   }
 
   /// Clean expired cache entries
-  pub async fn cleanup_expired_cache(&self) -> Result<usize, LoaderError> {
-    let mut conn = PgConnection::establish(&self.config.database_url)
-      .map_err(|e| LoaderError::DatabaseError(format!("Connection failed: {}", e)))?;
-
-    let deleted_count = sql_query(
-      "DELETE FROM api_response_cache
-             WHERE expires_at < NOW() AND api_source = 'alphavantage'",
-    )
-    .execute(&mut conn)
-    .map_err(|e| LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e)))?;
-
-    if deleted_count > 0 {
-      info!("🧹 Cleaned up {} expired news cache entries", deleted_count);
+  pub async fn cleanup_expired_cache(
+    cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
+  ) -> Result<usize, LoaderError> {
+    match cache_repo.cleanup_expired("alphavantage").await {
+      Ok(deleted_count) => {
+        if deleted_count > 0 {
+          info!("🧹 Cleaned up {} expired news cache entries", deleted_count);
+        }
+        Ok(deleted_count)
+      }
+      Err(e) => Err(LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e))),
     }
-
-    Ok(deleted_count)
   }
 
   /// Load all symbols from database for sentiment mapping
-  fn load_all_symbols(&self) -> LoaderResult<HashMap<String, i64>> {
-    let mut conn = PgConnection::establish(&self.config.database_url)
-      .map_err(|e| LoaderError::DatabaseError(format!("Connection failed: {}", e)))?;
-
-    let results: Vec<(String, i64)> = symbols::table
-      .select((symbols::symbol, symbols::sid))
-      .load::<(String, i64)>(&mut conn)
-      .map_err(|e| LoaderError::DatabaseError(format!("Query failed: {}", e)))?;
-
-    Ok(results.into_iter().collect())
+  async fn load_all_symbols(
+    news_repo: &Arc<dyn av_database_postgres::repository::NewsRepository>,
+  ) -> LoaderResult<HashMap<String, i64>> {
+    news_repo
+      .get_all_symbols()
+      .await
+      .map_err(|e| LoaderError::DatabaseError(format!("Failed to load symbols: {}", e)))
   }
 
   /// Get equity symbols with overview=true from database
-  pub fn get_equity_symbols_with_overview(database_url: &str) -> LoaderResult<Vec<SymbolInfo>> {
-    let mut conn = PgConnection::establish(database_url)
-      .map_err(|e| LoaderError::DatabaseError(format!("Connection failed: {}", e)))?;
-
-    let results = symbols::table
-      .filter(symbols::overview.eq(true))
-      .filter(symbols::sec_type.eq("Equity"))
-      .select((symbols::sid, symbols::symbol))
-      .load::<(i64, String)>(&mut conn)
-      .map_err(|e| LoaderError::DatabaseError(format!("Query failed: {}", e)))?;
+  pub async fn get_equity_symbols_with_overview(
+    news_repo: &Arc<dyn av_database_postgres::repository::NewsRepository>,
+  ) -> LoaderResult<Vec<SymbolInfo>> {
+    let results = news_repo
+      .get_equity_symbols_with_overview()
+      .await
+      .map_err(|e| LoaderError::DatabaseError(format!("Failed to load equity symbols: {}", e)))?;
 
     Ok(results.into_iter().map(|(sid, symbol)| SymbolInfo { sid, symbol }).collect())
   }
 
   /// Convert API response to database-ready structure, capturing ALL ticker sentiments
-  fn convert_news_to_data(&self, news: &NewsSentiment, symbols: &[SymbolInfo]) -> Vec<NewsData> {
+  async fn convert_news_to_data(
+    &self,
+    news: &NewsSentiment,
+    symbols: &[SymbolInfo],
+    news_repo: &Arc<dyn av_database_postgres::repository::NewsRepository>,
+  ) -> Vec<NewsData> {
     // Load ALL symbols from database for sentiment mapping
-    let symbol_to_sid: HashMap<String, i64> = match self.load_all_symbols() {
+    let symbol_to_sid: HashMap<String, i64> = match Self::load_all_symbols(news_repo).await {
       Ok(map) => {
         info!("Loaded {} symbols for sentiment mapping", map.len());
         map
@@ -457,22 +392,15 @@ impl NewsLoader {
         info!("To capture sentiments for these tickers, add them to the symbols table");
 
         // Log missing symbols to the database for later resolution
-        match PgConnection::establish(&self.config.database_url) {
-          Ok(mut conn) => {
-            let mut logged_count = 0;
-            for ticker in &still_missing {
-              match MissingSymbol::record_or_increment(&mut conn, ticker, "news_feed") {
-                Ok(_) => logged_count += 1,
-                Err(e) => debug!("Failed to log missing symbol {}: {}", ticker, e),
-              }
-            }
-            if logged_count > 0 {
-              info!("📝 Logged {} missing symbols to database for resolution", logged_count);
-            }
+        let mut logged_count = 0;
+        for ticker in &still_missing {
+          match news_repo.record_missing_symbol(ticker, "news_feed").await {
+            Ok(_) => logged_count += 1,
+            Err(e) => debug!("Failed to log missing symbol {}: {}", ticker, e),
           }
-          Err(e) => {
-            warn!("Failed to connect to database for logging missing symbols: {}", e);
-          }
+        }
+        if logged_count > 0 {
+          info!("📝 Logged {} missing symbols to database for resolution", logged_count);
         }
       }
     }
@@ -492,6 +420,15 @@ impl DataLoader for NewsLoader {
     if input.symbols.is_empty() {
       return Ok(output);
     }
+
+    // Get repositories from context
+    let cache_repo = context.cache_repository.as_ref().ok_or_else(|| {
+      LoaderError::ConfigurationError("Cache repository not provided in context".to_string())
+    })?;
+
+    let news_repo = context.news_repository.as_ref().ok_or_else(|| {
+      LoaderError::ConfigurationError("News repository not provided in context".to_string())
+    })?;
 
     info!("Processing {} symbols individually for maximum news coverage", input.symbols.len());
 
@@ -517,7 +454,7 @@ impl DataLoader for NewsLoader {
       );
 
       // Check cache first
-      if let Some(cached_news) = self.get_cached_response(&cache_key).await {
+      if let Some(cached_news) = self.get_cached_response(&cache_key, cache_repo).await {
         info!("  Using cached data for {} (no API call needed)", symbol_info.symbol);
         output.cache_hits += 1;
 
@@ -527,7 +464,8 @@ impl DataLoader for NewsLoader {
           output.no_data_count += 1;
         } else {
           info!("  Found {} cached articles for {}", cached_news.feed.len(), symbol_info.symbol);
-          let batch_data = self.convert_news_to_data(&cached_news, &[symbol_info.clone()]);
+          let batch_data =
+            self.convert_news_to_data(&cached_news, &[symbol_info.clone()], news_repo).await;
           output.articles_processed += cached_news.feed.len();
           output.loaded_count += batch_data.len();
           all_news_data.extend(batch_data);
@@ -557,7 +495,7 @@ impl DataLoader for NewsLoader {
               "https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={}",
               symbol_info.symbol
             );
-            self.cache_response(&cache_key, &news, &endpoint_url).await;
+            self.cache_response(&cache_key, &news, &endpoint_url, cache_repo).await;
 
             if news.feed.is_empty() {
               debug!("  No news found for {}", symbol_info.symbol);
@@ -566,7 +504,8 @@ impl DataLoader for NewsLoader {
               info!("  Found {} articles for {}", news.feed.len(), symbol_info.symbol);
 
               // Convert to internal format - pass as single-element slice
-              let batch_data = self.convert_news_to_data(&news, &[symbol_info.clone()]);
+              let batch_data =
+                self.convert_news_to_data(&news, &[symbol_info.clone()], news_repo).await;
 
               output.articles_processed += news.feed.len();
               output.loaded_count += batch_data.len();
@@ -643,11 +582,12 @@ impl DataLoader for NewsLoader {
 /// Helper function to load news for all equity symbols with overview=true
 pub async fn load_news_for_equity_symbols(
   client: Arc<AlphaVantageClient>,
-  database_url: &str,
+  cache_repo: Arc<dyn av_database_postgres::repository::CacheRepository>,
+  news_repo: Arc<dyn av_database_postgres::repository::NewsRepository>,
   config: NewsLoaderConfig,
 ) -> LoaderResult<NewsLoaderOutput> {
   // Get equity symbols with overview=true
-  let symbols = NewsLoader::get_equity_symbols_with_overview(database_url)?;
+  let symbols = NewsLoader::get_equity_symbols_with_overview(&news_repo).await?;
 
   info!("Found {} equity symbols with overview=true", symbols.len());
 
@@ -665,8 +605,10 @@ pub async fn load_news_for_equity_symbols(
     time_to: Some(Utc::now()),
   };
 
-  // Create context
-  let context = LoaderContext::new(client, crate::LoaderConfig::default());
+  // Create context with repositories
+  let context = LoaderContext::new(client, crate::LoaderConfig::default())
+    .with_cache_repository(cache_repo)
+    .with_news_repository(news_repo);
 
   // Load data
   loader.load(&context, input).await

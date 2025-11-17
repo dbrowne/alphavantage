@@ -174,7 +174,7 @@ pub struct CryptoTechnical {
   pub m_time: DateTime<Utc>,
 }
 
-#[derive(Insertable, Debug)]
+#[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = crypto_technical)]
 pub struct NewCryptoTechnical {
   pub sid: i64,
@@ -241,7 +241,7 @@ pub struct CryptoSocial {
   pub m_time: DateTime<Utc>,
 }
 
-#[derive(Insertable, Debug)]
+#[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = crypto_social)]
 pub struct NewCryptoSocial {
   pub sid: i64,

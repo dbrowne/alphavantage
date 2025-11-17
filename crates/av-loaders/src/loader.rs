@@ -32,6 +32,7 @@
 use crate::{LoaderResult, ProcessTracker};
 use async_trait::async_trait;
 use av_client::AlphaVantageClient;
+use av_database_postgres::repository::{CacheRepository, NewsRepository};
 use std::sync::Arc;
 
 /// Configuration for data loaders
@@ -69,20 +70,35 @@ impl Default for LoaderConfig {
   }
 }
 
-/// Shared context for all loaders - no database dependency
+/// Shared context for all loaders
+/// Now includes optional repositories to avoid direct database dependencies
 pub struct LoaderContext {
   pub client: Arc<AlphaVantageClient>,
   pub config: LoaderConfig,
   pub process_tracker: Option<ProcessTracker>,
+  /// Optional cache repository for API response caching
+  pub cache_repository: Option<Arc<dyn CacheRepository>>,
+  /// Optional news repository for symbol operations
+  pub news_repository: Option<Arc<dyn NewsRepository>>,
 }
 
 impl LoaderContext {
   pub fn new(client: Arc<AlphaVantageClient>, config: LoaderConfig) -> Self {
-    Self { client, config, process_tracker: None }
+    Self { client, config, process_tracker: None, cache_repository: None, news_repository: None }
   }
 
   pub fn with_process_tracker(mut self, tracker: ProcessTracker) -> Self {
     self.process_tracker = Some(tracker);
+    self
+  }
+
+  pub fn with_cache_repository(mut self, cache_repo: Arc<dyn CacheRepository>) -> Self {
+    self.cache_repository = Some(cache_repo);
+    self
+  }
+
+  pub fn with_news_repository(mut self, news_repo: Arc<dyn NewsRepository>) -> Self {
+    self.news_repository = Some(news_repo);
     self
   }
 }
