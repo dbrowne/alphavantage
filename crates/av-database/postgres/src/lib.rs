@@ -36,7 +36,10 @@ pub mod schema;
 // Re-export commonly used items
 pub use connection::establish_connection;
 pub use diesel::prelude::*;
+pub use models::crypto::CryptoSummary;
 pub use repositories::SymbolRepository;
 pub use repository::{
-  CacheRepository, DatabaseContext, Repository, RepositoryError, RepositoryResult, Transactional,
+  CacheRepository, CacheRepositoryExt, CryptoRepository, DatabaseContext, NewsRepository,
+  OverviewRepository, OverviewSymbolFilter, Repository, RepositoryError, RepositoryResult,
+  SymbolInfo, Transactional,
 };

@@ -44,5 +44,6 @@ pub use missing_symbols::{MissingSymbol, NewMissingSymbol, ResolutionStatus, Upd
 pub use news::{Article, Feed, NewsOverview, TickerSentiment};
 pub use price::{IntradayPrice, SummaryPrice, TopStat};
 pub use security::{
-  NewSymbol, NewSymbolMapping, NewSymbolOwned, Overview, Overviewext, Symbol, SymbolMapping,
+  NewOverviewOwned, NewOverviewextOwned, NewSymbol, NewSymbolMapping, NewSymbolOwned, Overview,
+  Overviewext, Symbol, SymbolMapping,
 };

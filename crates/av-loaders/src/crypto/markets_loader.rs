@@ -187,14 +187,14 @@ impl CryptoMarketsLoader {
     &self,
     symbol: CryptoSymbolForMarkets,
     mapping_service: &CryptoMappingService,
-    conn: &mut PgConnection,
+    crypto_repo: &Arc<dyn av_database_postgres::repository::CryptoRepository>,
   ) -> LoaderResult<Vec<CryptoMarketData>> {
     info!("🔍 Processing symbol: {} ({})", symbol.symbol, symbol.name);
 
     let mut market_data = Vec::new();
 
     // Use dynamic discovery instead of hardcoded mapping!
-    match mapping_service.get_coingecko_id(conn, symbol.sid, &symbol.symbol).await {
+    match mapping_service.get_coingecko_id(crypto_repo, symbol.sid, &symbol.symbol).await {
       Ok(Some(coingecko_id)) => {
         info!("✅ {} has CoinGecko ID: {}", symbol.symbol, coingecko_id);
 

@@ -33,6 +33,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 pub mod crypto;
+pub mod crypto_details;
 pub mod crypto_intraday;
 pub mod crypto_mapping;
 mod crypto_markets;
@@ -40,7 +41,6 @@ pub mod crypto_metadata;
 pub mod crypto_news;
 pub mod crypto_overview;
 pub mod crypto_prices;
-pub mod crypto_social;
 pub mod crypto_symbols;
 pub mod daily;
 pub mod intraday;
@@ -72,8 +72,6 @@ enum LoadSubcommands {
 
   CryptoOverview(crypto_overview::CryptoOverviewArgs),
 
-  CryptoSocial(crypto_social::CryptoSocialArgs),
-
   UpdateGithub(crypto_overview::UpdateGitHubArgs),
 
   CryptoMarkets(crypto_markets::CryptoMarketsArgs),
@@ -85,6 +83,7 @@ enum LoadSubcommands {
   CryptoIntraday(crypto_intraday::CryptoIntradayArgs),
   CryptoPrices(crypto_prices::CryptoPricesArgs),
   CryptoSymbols(crypto_symbols::CryptoSymbolsArgs),
+  CryptoDetails(crypto_details::CryptoDetailsArgs),
 
   MissingSymbols(missing_symbols::MissingSymbolsArgs),
 
@@ -104,13 +103,13 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::Crypto(args) => crypto::execute(args, config).await,
     LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
     LoadSubcommands::CryptoMarkets(args) => crypto_markets::execute(args, &config).await,
-    LoadSubcommands::CryptoSocial(args) => crypto_social::execute(args, config).await,
     LoadSubcommands::CryptoMapping(args) => crypto_mapping::execute(args, &config).await,
     LoadSubcommands::CryptoMetadata(args) => crypto_metadata::execute(args, &config).await,
     LoadSubcommands::CryptoNews(args) => crypto_news::execute(args, config).await,
     LoadSubcommands::CryptoIntraday(args) => crypto_intraday::execute(args, config).await,
     LoadSubcommands::CryptoPrices(args) => crypto_prices::execute(args, config).await,
     LoadSubcommands::CryptoSymbols(args) => crypto_symbols::execute(args, config).await,
+    LoadSubcommands::CryptoDetails(args) => crypto_details::execute(args, config).await,
     LoadSubcommands::MissingSymbols(args) => missing_symbols::execute(args, config).await,
     LoadSubcommands::UpdateGithub(args) => {
       info!("Updating GitHub data for cryptocurrencies");

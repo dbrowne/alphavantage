@@ -31,18 +31,18 @@ use anyhow::{Result, anyhow};
 use av_database_postgres::models::crypto::{
   NewCryptoOverviewBasic, NewCryptoOverviewMetrics, NewCryptoSocial, NewCryptoTechnical,
 };
+use av_database_postgres::repository::{CacheRepository, CacheRepositoryExt, DatabaseContext};
 use chrono::NaiveDate;
 use chrono::{DateTime, Utc};
 use clap::Args;
 use diesel::PgConnection;
 use diesel::prelude::*;
-use diesel::sql_query;
-use diesel::sql_types;
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
@@ -165,23 +165,6 @@ pub struct GitHubData {
   pub last_commit_date: Option<NaiveDate>,
 }
 
-// Cache query result structure for SQL queries
-#[derive(QueryableByName, Debug)]
-struct CacheQueryResult {
-  #[diesel(sql_type = diesel::sql_types::Jsonb)]
-  response_data: serde_json::Value,
-  #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-  expires_at: DateTime<Utc>,
-}
-
-/// Configuration for caching
-struct CacheConfig {
-  enable_cache: bool,
-  cache_ttl_hours: u32,
-  force_refresh: bool,
-  database_url: String,
-}
-
 /// Generate cache key for overview requests
 fn generate_cache_key(sid: i64, symbol: &str) -> String {
   format!("crypto_overview_{}_{}", sid, symbol)
@@ -189,129 +172,60 @@ fn generate_cache_key(sid: i64, symbol: &str) -> String {
 
 /// Get cached response if available and not expired
 async fn get_cached_overview(
-  cache_config: &CacheConfig,
+  cache_repo: &Arc<dyn CacheRepository>,
   cache_key: &str,
+  enable_cache: bool,
+  force_refresh: bool,
 ) -> Option<CryptoOverviewData> {
-  if !cache_config.enable_cache || cache_config.force_refresh {
+  if !enable_cache || force_refresh {
     return None;
   }
 
-  let database_url = cache_config.database_url.clone();
-  let cache_key = cache_key.to_string();
-
-  tokio::task::spawn_blocking(move || {
-    let mut conn = match diesel::PgConnection::establish(&database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        warn!("Failed to connect for cache check: {}", e);
-        return None;
-      }
-    };
-
-    let cached_entry: Option<CacheQueryResult> = match sql_query(
-      "SELECT response_data, expires_at FROM api_response_cache
-           WHERE cache_key = $1 AND expires_at > NOW()",
-    )
-    .bind::<sql_types::Text, _>(&cache_key)
-    .get_result(&mut conn)
-    .optional()
-    {
-      Ok(result) => result,
-      Err(e) => {
-        warn!("Cache query failed for {}: {}", cache_key, e);
-        return None;
-      }
-    };
-
-    if let Some(cache_result) = cached_entry {
-      info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
-
-      // Deserialize cached overview data
-      match serde_json::from_value::<CryptoOverviewData>(cache_result.response_data) {
-        Ok(overview) => return Some(overview),
-        Err(e) => {
-          warn!("Failed to deserialize cached data for {}: {}", cache_key, e);
-          return None;
-        }
-      }
+  match cache_repo.get::<CryptoOverviewData>(cache_key, "crypto_overview").await {
+    Ok(Some(overview)) => {
+      info!("📦 Cache hit for {}", cache_key);
+      Some(overview)
     }
-
-    debug!("Cache miss for {}", cache_key);
-    None
-  })
-  .await
-  .unwrap_or(None)
+    Ok(None) => {
+      debug!("Cache miss for {}", cache_key);
+      None
+    }
+    Err(e) => {
+      warn!("Cache read error for {}: {}", cache_key, e);
+      None
+    }
+  }
 }
 
 /// Store overview data in cache
 async fn store_cached_overview(
-  cache_config: &CacheConfig,
+  cache_repo: &Arc<dyn CacheRepository>,
   cache_key: &str,
   overview: &CryptoOverviewData,
+  cache_ttl_hours: i64,
+  enable_cache: bool,
 ) -> Result<()> {
-  if !cache_config.enable_cache {
+  if !enable_cache {
     return Ok(());
   }
 
-  let database_url = cache_config.database_url.clone();
-  let cache_key = cache_key.to_string();
-  let overview_json = serde_json::to_value(overview)?;
-  let cache_ttl_hours = cache_config.cache_ttl_hours;
+  let endpoint_url = format!("crypto_overview:{}", cache_key);
 
-  tokio::task::spawn_blocking(move || {
-    let mut conn = diesel::PgConnection::establish(&database_url)
-      .map_err(|e| anyhow!("Cache connection failed: {}", e))?;
-
-    let now = Utc::now();
-    let expires_at = now + chrono::Duration::hours(cache_ttl_hours as i64);
-
-    // Dummy values for required fields
-    let endpoint_url = format!("crypto_overview/{}", cache_key);
-    let status_code = 200;
-
-    sql_query(
-      "INSERT INTO api_response_cache
-       (cache_key, api_source, endpoint_url, response_data, status_code, cached_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (cache_key)
-       DO UPDATE SET response_data = $4, cached_at = $6, expires_at = $7",
-    )
-    .bind::<sql_types::Text, _>(&cache_key)
-    .bind::<sql_types::Text, _>("crypto_overview")
-    .bind::<sql_types::Text, _>(&endpoint_url)
-    .bind::<sql_types::Jsonb, _>(&overview_json)
-    .bind::<sql_types::Int4, _>(status_code)
-    .bind::<sql_types::Timestamptz, _>(now)
-    .bind::<sql_types::Timestamptz, _>(expires_at)
-    .execute(&mut conn)
-    .map_err(|e| anyhow!("Failed to store cache: {}", e))?;
-
-    info!(
-      "💾 Cached overview for {} (TTL: {}h, expires: {})",
-      cache_key, cache_ttl_hours, expires_at
-    );
-
-    Ok(())
-  })
-  .await
-  .map_err(|e| anyhow!("Task join error: {}", e))?
-}
-
-/// Clean expired cache entries
-pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize> {
-  let mut conn = diesel::PgConnection::establish(database_url)
-    .map_err(|e| anyhow!("Connection failed: {}", e))?;
-
-  let deleted_count = sql_query(
-    "DELETE FROM api_response_cache WHERE expires_at < NOW() AND api_source = 'crypto_overview'",
-  )
-  .execute(&mut conn)?;
-
-  if deleted_count > 0 {
-    info!("🧹 Cleaned up {} expired crypto overview cache entries", deleted_count);
+  match cache_repo.set(cache_key, "crypto_overview", &endpoint_url, overview, cache_ttl_hours).await
+  {
+    Ok(()) => {
+      let expires_at = Utc::now() + chrono::Duration::hours(cache_ttl_hours);
+      info!(
+        "💾 Cached overview for {} (TTL: {}h, expires: {})",
+        cache_key, cache_ttl_hours, expires_at
+      );
+      Ok(())
+    }
+    Err(e) => {
+      warn!("Failed to cache overview for {}: {}", cache_key, e);
+      Ok(()) // Don't fail the operation if caching fails
+    }
   }
-
-  Ok(deleted_count)
 }
 
 /// Main execute function
@@ -329,28 +243,25 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
     warn!("   Set CMC_API_KEY environment variable or use --cmc-api-key flag");
   }
 
-  // Create cache configuration
-  let cache_config = CacheConfig {
-    enable_cache: args.enable_cache,
-    cache_ttl_hours: args.cache_ttl_hours,
-    force_refresh: args.force_refresh,
-    database_url: config.database_url.clone(),
-  };
+  // Create database context and cache repository
+  let db_context = DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow!("Failed to create database context: {}", e))?;
+  let cache_repo: Arc<dyn CacheRepository> = Arc::new(db_context.cache_repository());
 
   // Log cache status
-  if cache_config.enable_cache {
-    if cache_config.force_refresh {
+  if args.enable_cache {
+    if args.force_refresh {
       info!("🔄 Cache enabled but FORCE REFRESH is on - will bypass cache");
     } else {
-      info!("💾 Cache ENABLED (TTL: {} hours)", cache_config.cache_ttl_hours);
+      info!("💾 Cache ENABLED (TTL: {} hours)", args.cache_ttl_hours);
     }
   } else {
     info!("⚠️  Cache DISABLED - all requests will hit API");
   }
 
   // Clean up expired cache entries at start
-  if cache_config.enable_cache {
-    match cleanup_expired_cache(&cache_config.database_url).await {
+  if args.enable_cache {
+    match cache_repo.cleanup_expired("crypto_overview").await {
       Ok(count) if count > 0 => info!("🧹 Cleaned up {} expired cache entries", count),
       Ok(_) => debug!("No expired cache entries to clean"),
       Err(e) => warn!("Failed to clean up cache: {}", e),
@@ -398,9 +309,9 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
     info!("📊 Loading ALL symbols (including non-primary)");
   }
 
-  if cache_config.enable_cache {
-    info!("💾 Caching enabled (TTL: {}h)", cache_config.cache_ttl_hours);
-    if cache_config.force_refresh {
+  if args.enable_cache {
+    info!("💾 Caching enabled (TTL: {}h)", args.cache_ttl_hours);
+    if args.force_refresh {
       info!("🔄 Force refresh mode - bypassing cache");
     }
   } else {
@@ -441,7 +352,7 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
     // Try to get from cache first
     let cache_key = generate_cache_key(sid, &symbol);
     let (overview, made_api_call) = if let Some(cached) =
-      get_cached_overview(&cache_config, &cache_key).await
+      get_cached_overview(&cache_repo, &cache_key, args.enable_cache, args.force_refresh).await
     {
       cache_hits += 1;
       (Some(cached), false)
@@ -452,10 +363,16 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
           api_calls += 1;
 
           // Store in cache
-          if cache_config.enable_cache {
-            if let Err(e) = store_cached_overview(&cache_config, &cache_key, &overview).await {
-              warn!("Failed to cache overview for {}: {}", symbol, e);
-            }
+          if let Err(e) = store_cached_overview(
+            &cache_repo,
+            &cache_key,
+            &overview,
+            args.cache_ttl_hours as i64,
+            args.enable_cache,
+          )
+          .await
+          {
+            warn!("Failed to cache overview for {}: {}", symbol, e);
           }
 
           (Some(overview), true)

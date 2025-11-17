@@ -27,6 +27,7 @@
  * SOFTWARE.
  */
 
+pub mod coingecko_details_loader;
 pub mod crypto_news_loader;
 pub mod database;
 pub mod intraday_loader;
@@ -34,7 +35,7 @@ pub mod loader;
 pub mod mapping_service;
 pub mod markets_loader;
 pub mod metadata_loader;
-pub mod social_loader;
+
 pub mod sources;
 pub mod types;
 
@@ -44,10 +45,7 @@ pub use markets_loader::{
   CryptoMarketData, CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
   CryptoSymbolForMarkets,
 };
-pub use social_loader::{
-  CryptoSocialConfig, CryptoSocialInput, CryptoSocialLoader, CryptoSymbolForSocial,
-  ProcessedSocialData,
-};
+
 pub use types::*;
 
 pub use metadata_loader::{
@@ -59,6 +57,11 @@ pub use intraday_loader::{
   CryptoIntradayConfig, CryptoIntradayInput, CryptoIntradayLoader, CryptoIntradayLoaderInput,
   CryptoIntradayLoaderOutput, CryptoIntradayOutput, CryptoIntradayPriceData,
   CryptoSymbolInfo as CryptoIntradaySymbolInfo,
+};
+
+pub use coingecko_details_loader::{
+  CoinGeckoDetailsInput, CoinGeckoDetailsLoader, CoinGeckoDetailsOutput, CoinInfo,
+  CryptoDetailedData, CryptoSocialData, CryptoTechnicalData,
 };
 
 use thiserror::Error;

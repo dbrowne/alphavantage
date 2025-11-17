@@ -31,6 +31,7 @@ use super::sid_generator::SidGenerator;
 use anyhow::Result;
 use av_client::AlphaVantageClient;
 use av_core::types::market::{Exchange, SecurityType};
+use av_database_postgres::repository::DatabaseContext;
 use av_loaders::SecurityLoaderConfig;
 use av_loaders::{
   DataLoader, LoaderConfig, LoaderContext, SecurityLoader, SecurityLoaderInput, SymbolMatchMode,
@@ -88,7 +89,7 @@ pub struct SecuritiesArgs {
 
   /// Cache TTL in hours
   #[arg(long, default_value = "168")]
-  cache_ttl_hours: u32,
+  cache_ttl_hours: i64,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -164,8 +165,14 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     batch_size: 100,
   };
 
-  // Create loader context
+  // Create database context and cache repository
+  let db_context = DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow::anyhow!("Failed to create database context: {}", e))?;
+  let cache_repo = Arc::new(db_context.cache_repository());
+
+  // Create loader context with cache repository
   let mut context = LoaderContext::new(client, loader_config);
+  context = context.with_cache_repository(cache_repo);
 
   // Set up process tracking
   let tracker = ProcessTracker::new();
@@ -181,7 +188,6 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
     enable_cache: !args.no_cache,
     cache_ttl_hours: args.cache_ttl_hours,
     force_refresh: args.force_refresh,
-    database_url: config.database_url.clone(),
   };
 
   let loader =
@@ -308,10 +314,9 @@ async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
     MatchMode::Top => SymbolMatchMode::TopMatches(args.top_matches),
   };
   let security_config = SecurityLoaderConfig {
-    enable_cache: false, // Disable for dry run
+    enable_cache: false, // Disable for dry run (no cache repository provided)
     cache_ttl_hours: 168,
     force_refresh: false,
-    database_url: String::new(),
   };
 
   let loader =
