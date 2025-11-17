@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -43,8 +43,8 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use av_database_postgres::models::SymbolMapping;
-
+use av_database_postgres::models::{CryptoApiMap, SymbolMapping};
+const NO_PRIORITY: i32 = 9_999_999;
 #[derive(Args, Debug)]
 pub struct CryptoPricesArgs {
   /// Specific symbols to load (comma-separated)
@@ -63,9 +63,13 @@ pub struct CryptoPricesArgs {
   #[arg(short = 'k', long, default_value = "true")]
   continue_on_error: bool,
 
-  /// Delay between requests in milliseconds (deprecated, use per-source rate limits)
-  #[arg(long, default_value = "2000")]
+  /// Delay between requests in milliseconds (will be adjusted based on requests-per-minute limit)
+  #[arg(long, default_value = "200")]
   delay_ms: u64,
+
+  /// Maximum requests per minute (for API rate limiting)
+  #[arg(long, default_value = "500")]
+  requests_per_minute: u64,
 
   /// CoinGecko API key (optional, for pro tier with higher rate limits)
   #[arg(long, env = "COINGECKO_API_KEY")]
@@ -76,11 +80,11 @@ pub struct CryptoPricesArgs {
   coinmarketcap_api_key: Option<String>,
 
   /// AlphaVantage API key (optional)
-  #[arg(long, env = "ALPHAVANTAGE_API_KEY")]
+  #[arg(long, env = "ALPHA_VANTAGE_API_KEY")]
   alphavantage_api_key: Option<String>,
 
-  /// Priority order of sources to try (comma-separated, default: coingecko,coinmarketcap,alphavantage)
-  #[arg(long, value_delimiter = ',', default_value = "coingecko,coinmarketcap,alphavantage")]
+  /// Priority order of sources to try (comma-separated, default: coingecko)
+  #[arg(long, value_delimiter = ',', default_value = "coingecko")]
   sources: Vec<String>,
 
   /// Enable parallel fetching from multiple sources (default: true)
@@ -535,6 +539,12 @@ async fn fetch_price_parallel(
   let sid = symbol_with_mappings.sid;
   let symbol = &symbol_with_mappings.symbol;
 
+  // Normalize symbol by stripping CRYPTO: prefix if present
+  // News feeds and some sources use "CRYPTO:BTC" format
+  let normalized_symbol = symbol.strip_prefix("CRYPTO:").unwrap_or(symbol).to_string();
+
+  debug!("Processing symbol: {} (normalized: {}, sid: {})", symbol, normalized_symbol, sid);
+
   // Build a map of source -> identifier for quick lookup
   let mut mapping_map: HashMap<String, String> = HashMap::new();
   for mapping in &symbol_with_mappings.mappings {
@@ -548,8 +558,9 @@ async fn fetch_price_parallel(
     let source_lower = source.to_lowercase();
 
     // Get the identifier to use for this source
-    // Use mapping if available, otherwise fall back to raw symbol
-    let identifier = mapping_map.get(&source_lower).cloned().unwrap_or_else(|| symbol.clone());
+    // Use mapping if available, otherwise fall back to normalized symbol
+    let identifier =
+      mapping_map.get(&source_lower).cloned().unwrap_or_else(|| normalized_symbol.clone());
 
     debug!(
       "Trying source '{}' for {} (sid={}) using identifier '{}'",
@@ -658,20 +669,19 @@ fn get_or_create_price_source(conn: &mut PgConnection, source_name: &str) -> Res
     sourceid: i32,
   }
 
-  // First try to select existing
-  if let Ok(source) = sql_query("SELECT sourceid FROM price_sources WHERE name = $1")
-    .bind::<Text, _>(source_name)
-    .get_result::<SourceId>(conn)
-  {
-    return Ok(source.sourceid);
-  }
-
-  // If not found, insert new
+  // Insert with ON CONFLICT DO NOTHING to avoid triggering update trigger
+  // Use CTE to either return new insert or select existing row
   let source: SourceId = sql_query(
-    "INSERT INTO price_sources (name)
-     VALUES ($1)
-     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-     RETURNING sourceid",
+    "WITH ins AS (
+       INSERT INTO price_sources (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING
+       RETURNING sourceid
+     )
+     SELECT sourceid FROM ins
+     UNION ALL
+     SELECT sourceid FROM price_sources WHERE name = $1
+     LIMIT 1",
   )
   .bind::<Text, _>(source_name)
   .get_result(conn)?;
@@ -750,18 +760,18 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
     let no_priority_filter = args.no_priority_filter;
 
     move || -> Result<Vec<SymbolWithMappings>> {
-      use av_database_postgres::schema::{symbol_mappings, symbols};
+      use av_database_postgres::schema::{crypto_api_map, symbol_mappings, symbols};
 
       let mut conn = diesel::PgConnection::establish(&database_url)?;
 
-      // First, query symbols
+      // First, query symbols with priority filter
       let mut query = symbols::table
         .select((symbols::sid, symbols::symbol))
         .filter(symbols::sec_type.eq("Cryptocurrency"))
         .into_boxed();
 
       if !no_priority_filter {
-        query = query.filter(symbols::priority.lt(9999999));
+        query = query.filter(symbols::priority.lt(NO_PRIORITY));
       }
 
       if let Some(symbol_list) = symbols {
@@ -781,11 +791,38 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
       // Extract symbol IDs for mapping query
       let symbol_ids: Vec<i64> = symbol_list.iter().map(|(sid, _)| *sid).collect();
 
-      // Query all mappings for these symbols
-      let all_mappings = symbol_mappings::table
+      // Query crypto_api_map for better coverage (19,427 CoinGecko vs 3,468 in symbol_mappings)
+      // Note: This respects the priority filter through symbol_ids
+      let crypto_api_mappings = crypto_api_map::table
+        .filter(crypto_api_map::sid.eq_any(&symbol_ids))
+        .filter(crypto_api_map::is_active.eq(Some(true)))
+        .load::<CryptoApiMap>(&mut conn)?;
+
+      // Convert CryptoApiMap to SymbolMapping format for compatibility
+      let mut all_mappings: Vec<SymbolMapping> = Vec::new();
+      for cam in crypto_api_mappings {
+        // Create a SymbolMapping from CryptoApiMap
+        all_mappings.push(SymbolMapping {
+          id: 0, // Not used in this context
+          sid: cam.sid,
+          source_name: cam.api_source.clone(),
+          source_identifier: cam.api_id.clone(),
+          verified: Some(true), // crypto_api_map entries are considered verified
+          last_verified_at: cam.last_verified.map(|dt| dt.naive_utc()),
+          created_at: Some(cam.c_time.naive_utc()),
+          updated_at: Some(cam.m_time.naive_utc()),
+        });
+      }
+
+      // Also query symbol_mappings for any AlphaVantage mappings (not in crypto_api_map)
+      let symbol_mappings_data = symbol_mappings::table
         .filter(symbol_mappings::sid.eq_any(&symbol_ids))
+        .filter(symbol_mappings::source_name.eq("alphavantage"))
         .filter(symbol_mappings::verified.eq(true).or(symbol_mappings::verified.is_null()))
         .load::<SymbolMapping>(&mut conn)?;
+
+      // Merge both sources
+      all_mappings.extend(symbol_mappings_data);
 
       // Group mappings by sid
       let mut mappings_by_sid: HashMap<i64, Vec<SymbolMapping>> = HashMap::new();
@@ -857,6 +894,22 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
 
   info!("Using price source: {} (id: {})", source_name, source_id);
 
+  // Calculate effective delay to respect requests-per-minute limit
+  let min_delay_for_rate_limit = (60_000 / args.requests_per_minute).max(1);
+  let effective_delay = args.delay_ms.max(min_delay_for_rate_limit);
+
+  if effective_delay > args.delay_ms {
+    info!(
+      "⏱️  Adjusted delay from {}ms to {}ms to respect rate limit ({} req/min)",
+      args.delay_ms, effective_delay, args.requests_per_minute
+    );
+  }
+
+  info!(
+    "⚡ Rate limiting: {} req/min, {}ms delay between requests",
+    args.requests_per_minute, effective_delay
+  );
+
   // Load prices
   let mut all_prices = Vec::new();
   let progress = ProgressBar::new(symbols_with_mappings.len() as u64);
@@ -891,7 +944,7 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
       Some(cached)
     } else {
       // Fetch from API using multi-source coordinator
-      sleep(Duration::from_millis(args.delay_ms)).await;
+      sleep(Duration::from_millis(effective_delay)).await;
 
       // Determine which sources to try
       let sources_to_try = if let Some(ref single_source) = args.source {

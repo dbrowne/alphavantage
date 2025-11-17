@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -48,7 +48,7 @@ use av_loaders::{
 };
 
 use crate::config::Config;
-
+const NO_PRIORITY: i32 = 9_999_999;
 /// Arguments for the crypto intraday price loader
 #[derive(Parser, Debug)]
 #[clap(about = "Load crypto intraday price data from AlphaVantage")]
@@ -314,7 +314,7 @@ async fn get_crypto_symbols_to_load(
     // IMPORTANT: For crypto, we only want symbols with valid priorities (not 9999999)
     let mut query = symbols::table
       .filter(symbols::sec_type.eq("Cryptocurrency"))
-      .filter(symbols::priority.lt(9999999)) // Use less than instead of not equal
+      .filter(symbols::priority.lt(NO_PRIORITY)) // Use less than instead of not equal
       .into_boxed();
 
     // Apply intraday data filters
