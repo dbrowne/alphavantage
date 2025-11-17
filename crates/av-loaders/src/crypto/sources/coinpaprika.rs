@@ -30,10 +30,12 @@
 use super::CryptoDataProvider;
 use crate::crypto::{CryptoDataSource, CryptoLoaderError, CryptoSymbol};
 use async_trait::async_trait;
+use av_database_postgres::repository::CacheRepository;
 use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 pub struct CoinPaprikaProvider;
@@ -51,7 +53,11 @@ struct CoinPaprikaCoin {
 
 #[async_trait]
 impl CryptoDataProvider for CoinPaprikaProvider {
-  async fn fetch_symbols(&self, client: &Client) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
+  async fn fetch_symbols(
+    &self,
+    client: &Client,
+    _cache_repo: Option<&Arc<dyn CacheRepository>>,
+  ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from CoinPaprika");
 
     let url = "https://api.coinpaprika.com/v1/coins";
