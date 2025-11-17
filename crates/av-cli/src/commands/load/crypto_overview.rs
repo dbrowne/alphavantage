@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -37,6 +37,7 @@ use chrono::{DateTime, Utc};
 use clap::Args;
 use diesel::PgConnection;
 use diesel::prelude::*;
+use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use reqwest;
@@ -44,11 +45,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 use crate::commands::load::numeric_helpers::{f64_to_price_bigdecimal, f64_to_supply_bigdecimal};
 use crate::config::Config;
+const NO_PRIORITY: i32 = 9_999_999;
 
 #[derive(Args, Debug)]
 pub struct CryptoOverviewArgs {
@@ -69,8 +72,17 @@ pub struct CryptoOverviewArgs {
   continue_on_error: bool,
 
   /// Delay between requests in milliseconds
-  #[arg(long, default_value = "2000", env = "CRYPTO_API_DELAY_MS")]
+  #[arg(long, default_value = "800", env = "CRYPTO_API_DELAY_MS")]
   delay_ms: u64,
+
+  /// Maximum requests per minute (for API rate limiting)
+  #[arg(long, default_value = "30")]
+  requests_per_minute: u64,
+
+  /// Maximum concurrent requests (parallel processing)
+  /// WARNING: Setting this > 1 may cause rate limit errors with burst requests
+  #[arg(long, default_value = "1")]
+  concurrency: usize,
 
   /// GitHub personal access token (optional, increases rate limit)
   #[arg(long, env = "GITHUB_TOKEN")]
@@ -80,8 +92,8 @@ pub struct CryptoOverviewArgs {
   #[arg(long)]
   check_rate_limit: bool,
 
-  /// Include GitHub data scraping
-  #[arg(long, default_value = "true")]
+  /// Include GitHub data scraping (use coingecko_details loader instead for better GitHub data)
+  #[arg(long, default_value = "false")]
   include_github: bool,
 
   /// CoinMarketCap API key (overrides environment variable)
@@ -159,6 +171,7 @@ pub struct GitHubData {
   pub stars: Option<i32>,
   pub watchers: Option<i32>,
   pub open_issues: Option<i32>,
+  pub closed_issues: Option<i32>,
   pub contributors: Option<i32>,
   pub commits_30d: Option<i32>,
   pub pull_requests: Option<i32>,
@@ -168,6 +181,11 @@ pub struct GitHubData {
 /// Generate cache key for overview requests
 fn generate_cache_key(sid: i64, symbol: &str) -> String {
   format!("crypto_overview_{}_{}", sid, symbol)
+}
+
+/// Generate cache key for GitHub data
+fn generate_github_cache_key(sid: i64, github_url: &str) -> String {
+  format!("github_data_{}_{}", sid, github_url.replace("/", "_"))
 }
 
 /// Get cached response if available and not expired
@@ -226,6 +244,180 @@ async fn store_cached_overview(
       Ok(()) // Don't fail the operation if caching fails
     }
   }
+}
+
+/// Get cached GitHub data if available
+async fn get_cached_github_data(
+  cache_repo: &Arc<dyn CacheRepository>,
+  cache_key: &str,
+  enable_cache: bool,
+  force_refresh: bool,
+) -> Option<GitHubData> {
+  if !enable_cache || force_refresh {
+    return None;
+  }
+
+  match cache_repo.get::<GitHubData>(cache_key, "github_data").await {
+    Ok(Some(gh_data)) => {
+      debug!("📦 GitHub cache hit for {}", cache_key);
+      Some(gh_data)
+    }
+    Ok(None) => {
+      debug!("GitHub cache miss for {}", cache_key);
+      None
+    }
+    Err(e) => {
+      warn!("GitHub cache read error for {}: {}", cache_key, e);
+      None
+    }
+  }
+}
+
+/// Store GitHub data in cache
+async fn store_cached_github_data(
+  cache_repo: &Arc<dyn CacheRepository>,
+  cache_key: &str,
+  gh_data: &GitHubData,
+  cache_ttl_hours: i64,
+  enable_cache: bool,
+) -> Result<()> {
+  if !enable_cache {
+    return Ok(());
+  }
+
+  let endpoint_url = format!("github:{}", cache_key);
+
+  match cache_repo.set(cache_key, "github_data", &endpoint_url, gh_data, cache_ttl_hours).await {
+    Ok(()) => {
+      debug!("💾 Cached GitHub data for {}", cache_key);
+      Ok(())
+    }
+    Err(e) => {
+      warn!("Failed to cache GitHub data for {}: {}", cache_key, e);
+      Ok(()) // Don't fail the operation if caching fails
+    }
+  }
+}
+
+/// Fetch a single cryptocurrency overview with caching (both overview and GitHub data)
+async fn fetch_single_crypto(
+  sid: i64,
+  symbol: String,
+  name: String,
+  client: reqwest::Client,
+  cache_repo: Arc<dyn CacheRepository>,
+  cmc_api_key: Option<String>,
+  github_token: Option<String>,
+  include_github: bool,
+  enable_cache: bool,
+  force_refresh: bool,
+  cache_ttl_hours: u32,
+  delay_ms: u64,
+  github_delay_ms: u64,
+) -> Result<(CryptoOverviewData, Option<GitHubData>, bool)> {
+  // Try to get overview from cache first
+  let cache_key = generate_cache_key(sid, &symbol);
+  let (overview, made_api_call) = if let Some(cached) =
+    get_cached_overview(&cache_repo, &cache_key, enable_cache, force_refresh).await
+  {
+    (cached, false)
+  } else {
+    // Fetch from API
+    let overview =
+      fetch_crypto_overview(&client, sid, &symbol, &name, cmc_api_key.as_deref()).await?;
+
+    // Store in cache
+    if let Err(e) = store_cached_overview(
+      &cache_repo,
+      &cache_key,
+      &overview,
+      cache_ttl_hours as i64,
+      enable_cache,
+    )
+    .await
+    {
+      warn!("Failed to cache overview for {}: {}", symbol, e);
+    }
+
+    (overview, true)
+  };
+
+  // Fetch GitHub data if URL is available and GitHub scraping is enabled
+  let github_data = if include_github {
+    if let Some(ref github_url) = overview.github {
+      let gh_cache_key = generate_github_cache_key(sid, github_url);
+
+      // Check GitHub cache first
+      let gh_data = if let Some(cached_gh) =
+        get_cached_github_data(&cache_repo, &gh_cache_key, enable_cache, force_refresh).await
+      {
+        debug!("Using cached GitHub data for {}", symbol);
+        cached_gh
+      } else {
+        // Fetch fresh GitHub data
+        debug!("Fetching GitHub data for {}", symbol);
+        if let Some(gh) = fetch_github_data(&client, Some(github_url), github_token.as_ref()).await
+        {
+          // Cache the GitHub data
+          if let Err(e) = store_cached_github_data(
+            &cache_repo,
+            &gh_cache_key,
+            &gh,
+            cache_ttl_hours as i64,
+            enable_cache,
+          )
+          .await
+          {
+            warn!("Failed to cache GitHub data for {}: {}", symbol, e);
+          }
+
+          info!(
+            "GitHub stats for {}: {} stars, {} forks, {} contributors",
+            symbol,
+            gh.stars.unwrap_or(0),
+            gh.forks.unwrap_or(0),
+            gh.contributors.unwrap_or(0)
+          );
+
+          // Add GitHub-specific delay
+          sleep(Duration::from_millis(github_delay_ms)).await;
+
+          gh
+        } else {
+          // Failed to fetch GitHub data
+          GitHubData {
+            forks: None,
+            stars: None,
+            watchers: None,
+            open_issues: None,
+            closed_issues: None,
+            contributors: None,
+            commits_30d: None,
+            pull_requests: None,
+            last_commit_date: None,
+          }
+        }
+      };
+
+      Some(gh_data)
+    } else {
+      None
+    }
+  } else {
+    None
+  };
+
+  info!(
+    "Successfully loaded overview for {}: Market Cap ${}, Rank #{}",
+    symbol, overview.market_cap, overview.rank
+  );
+
+  // Rate limiting for crypto APIs - sleep after API calls
+  if made_api_call {
+    sleep(Duration::from_millis(delay_ms)).await;
+  }
+
+  Ok((overview, github_data, made_api_call))
 }
 
 /// Main execute function
@@ -333,8 +525,23 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
     return Ok(());
   }
 
-  // Load overviews
-  let mut all_overviews_with_github = Vec::new();
+  // Calculate minimum delay to respect requests-per-minute limit
+  let min_delay_for_rate_limit = (60_000 / args.requests_per_minute).max(1);
+  let effective_delay = args.delay_ms.max(min_delay_for_rate_limit);
+
+  if effective_delay > args.delay_ms {
+    info!(
+      "⏱️  Adjusted delay from {}ms to {}ms to respect rate limit ({} req/min)",
+      args.delay_ms, effective_delay, args.requests_per_minute
+    );
+  }
+
+  info!(
+    "⚡ Parallel processing: {} concurrent requests, {} req/min limit, {}ms delay",
+    args.concurrency, args.requests_per_minute, effective_delay
+  );
+
+  // Load overviews in parallel
   let progress = ProgressBar::new(symbols_to_load.len() as u64);
   progress.set_style(
     ProgressStyle::default_bar()
@@ -343,94 +550,86 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
       .progress_chars("##-"),
   );
 
+  // Rate limiting semaphore - controls concurrent requests
+  let rate_limiter = Arc::new(Semaphore::new(args.concurrency));
+
+  // Process cryptocurrencies in parallel using buffer_unordered
+  let results: Vec<_> = stream::iter(symbols_to_load)
+    .map(|(sid, symbol, name)| {
+      let client = client.clone();
+      let cache_repo = cache_repo.clone();
+      let cmc_api_key = args.cmc_api_key.clone();
+      let github_token = args.github_token.clone();
+      let progress = progress.clone();
+      let rate_limiter = rate_limiter.clone();
+      let include_github = args.include_github;
+      let enable_cache = args.enable_cache;
+      let force_refresh = args.force_refresh;
+      let cache_ttl_hours = args.cache_ttl_hours;
+      let delay_ms = effective_delay;
+
+      async move {
+        // Acquire semaphore permit for rate limiting
+        let _permit = rate_limiter.acquire().await.unwrap();
+
+        progress.set_message(format!("Loading {}", symbol));
+
+        // Fetch crypto overview and GitHub data with caching
+        let result = fetch_single_crypto(
+          sid,
+          symbol.clone(),
+          name,
+          client,
+          cache_repo,
+          cmc_api_key,
+          github_token,
+          include_github,
+          enable_cache,
+          force_refresh,
+          cache_ttl_hours,
+          delay_ms,
+          github_delay_ms,
+        )
+        .await;
+
+        progress.inc(1);
+
+        match result {
+          Ok((overview, github_data, made_api_call)) => {
+            Ok::<Option<(CryptoOverviewData, Option<GitHubData>, bool)>, anyhow::Error>(Some((
+              overview,
+              github_data,
+              made_api_call,
+            )))
+          }
+          Err(e) => {
+            error!("Failed to fetch {}: {}", symbol, e);
+            Ok::<Option<(CryptoOverviewData, Option<GitHubData>, bool)>, anyhow::Error>(None)
+          }
+        }
+      }
+    })
+    .buffer_unordered(args.concurrency) // Process up to concurrency limit at a time
+    .collect()
+    .await;
+
+  progress.finish_with_message("Loading complete");
+
+  // Separate successful results and count cache hits/API calls
+  let mut all_overviews_with_github = Vec::new();
   let mut cache_hits = 0;
   let mut api_calls = 0;
 
-  for (sid, symbol, name) in symbols_to_load {
-    progress.set_message(format!("Loading {}", symbol));
-
-    // Try to get from cache first
-    let cache_key = generate_cache_key(sid, &symbol);
-    let (overview, made_api_call) = if let Some(cached) =
-      get_cached_overview(&cache_repo, &cache_key, args.enable_cache, args.force_refresh).await
-    {
-      cache_hits += 1;
-      (Some(cached), false)
-    } else {
-      // Fetch from API
-      match fetch_crypto_overview(&client, sid, &symbol, &name, args.cmc_api_key.as_deref()).await {
-        Ok(overview) => {
-          api_calls += 1;
-
-          // Store in cache
-          if let Err(e) = store_cached_overview(
-            &cache_repo,
-            &cache_key,
-            &overview,
-            args.cache_ttl_hours as i64,
-            args.enable_cache,
-          )
-          .await
-          {
-            warn!("Failed to cache overview for {}: {}", symbol, e);
-          }
-
-          (Some(overview), true)
-        }
-        Err(e) => {
-          error!("Failed to fetch overview for {}: {}", symbol, e);
-          progress.inc(1);
-          continue;
-        }
-      }
-    };
-
-    if let Some(overview) = overview {
-      // Fetch GitHub data if URL is available and GitHub scraping is enabled
-      let github_data = if args.include_github {
-        if let Some(ref github_url) = overview.github {
-          debug!("Fetching GitHub data for {}", symbol);
-          let gh_data =
-            fetch_github_data(&client, Some(github_url), args.github_token.as_ref()).await;
-
-          if let Some(ref gh) = gh_data {
-            info!(
-              "GitHub stats for {}: {} stars, {} forks, {} contributors",
-              symbol,
-              gh.stars.unwrap_or(0),
-              gh.forks.unwrap_or(0),
-              gh.contributors.unwrap_or(0)
-            );
-          }
-
-          // Add GitHub-specific delay
-          sleep(Duration::from_millis(github_delay_ms)).await;
-
-          gh_data
-        } else {
-          None
-        }
+  for result in results {
+    if let Ok(Some((overview, github_data, made_api_call))) = result {
+      if made_api_call {
+        api_calls += 1;
       } else {
-        None
-      };
-
-      info!(
-        "Successfully loaded overview for {}: Market Cap ${}, Rank #{}",
-        symbol, overview.market_cap, overview.rank
-      );
-
+        cache_hits += 1;
+      }
       all_overviews_with_github.push((overview, github_data));
     }
-
-    progress.inc(1);
-
-    // Rate limiting for crypto APIs - sleep after EVERY API call
-    if made_api_call {
-      sleep(Duration::from_millis(args.delay_ms)).await;
-    }
   }
-
-  progress.finish_with_message("Loading complete");
 
   info!(
     "📊 Load statistics: {} cache hits, {} API calls ({:.1}% cache hit rate)",
@@ -521,6 +720,7 @@ pub async fn update_github_data(args: UpdateGitHubArgs, config: Config) -> Resul
               crypto_technical::github_stars.eq(gh_data.stars),
               crypto_technical::github_subscribers.eq(gh_data.watchers),
               crypto_technical::github_total_issues.eq(gh_data.open_issues),
+              crypto_technical::github_closed_issues.eq(gh_data.closed_issues),
               crypto_technical::github_pull_requests.eq(gh_data.pull_requests),
               crypto_technical::github_contributors.eq(gh_data.contributors),
               crypto_technical::github_commits_4_weeks.eq(gh_data.commits_30d),
@@ -574,7 +774,7 @@ fn get_crypto_symbols_to_load(
 
   // Apply priority filter by default (only load primary symbols)
   if !no_priority_filter {
-    query = query.filter(priority.lt(9999999));
+    query = query.filter(priority.lt(NO_PRIORITY));
     info!("Filtering to symbols with priority < 9999999 (primary symbols only)");
   } else {
     info!("Loading all symbols (no priority filter applied)");
@@ -734,7 +934,7 @@ async fn fetch_from_coingecko_free(
     atl_date: market_data["atl_date"]["usd"]
       .as_str()
       .and_then(|d| NaiveDate::parse_from_str(&d[..10], "%Y-%m-%d").ok()),
-    rank: data["market_cap_rank"].as_u64().unwrap_or(9999999) as u32,
+    rank: data["market_cap_rank"].as_u64().unwrap_or(NO_PRIORITY as u64) as u32,
     website: data["links"]["homepage"][0].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty()),
     whitepaper: data["links"]["whitepaper"]
       .as_str()
@@ -797,7 +997,7 @@ async fn fetch_from_coinpaprika(
       .and_then(|d| NaiveDate::parse_from_str(&d[..10], "%Y-%m-%d").ok()),
     atl: 0.0, // Not provided by CoinPaprika
     atl_date: None,
-    rank: ticker_data["rank"].as_u64().unwrap_or(9999999) as u32,
+    rank: ticker_data["rank"].as_u64().unwrap_or(NO_PRIORITY as u64) as u32,
     website: coin_data["links"]["website"]
       .as_array()
       .and_then(|arr| arr.first())
@@ -937,7 +1137,7 @@ async fn fetch_from_coinmarketcap(
     ath_date: None,
     atl: 0.0,
     atl_date: None,
-    rank: crypto_data.get("cmc_rank").and_then(|v| v.as_u64()).unwrap_or(9999999) as u32,
+    rank: crypto_data.get("cmc_rank").and_then(|v| v.as_u64()).unwrap_or(NO_PRIORITY as u64) as u32,
     website: None, // Need metadata endpoint for this
     whitepaper: None,
     github: None,
@@ -1137,14 +1337,76 @@ async fn fetch_github_data(
     None
   };
 
+  // Fetch closed issues count
+  let closed_issues_url =
+    format!("https://api.github.com/repos/{}/{}/issues?state=closed&per_page=1", owner, repo);
+
+  let mut closed_issues_req =
+    client.get(&closed_issues_url).header("User-Agent", "CryptoOverviewBot");
+
+  if let Some(token) = github_token {
+    closed_issues_req = closed_issues_req.header("Authorization", format!("token {}", token));
+  }
+
+  let closed_issues_response = closed_issues_req.send().await.ok()?;
+  let closed_issues = if closed_issues_response.status() == 200 {
+    closed_issues_response
+      .headers()
+      .get("Link")
+      .and_then(|v| v.to_str().ok())
+      .and_then(|link| {
+        let re = Regex::new(r#"page=(\d+)>; rel="last""#).ok()?;
+        let caps = re.captures(link)?;
+        caps.get(1)?.as_str().parse::<i32>().ok()
+      })
+      .or_else(|| Some(1))
+  } else {
+    None
+  };
+
+  // Fetch merged pull requests count (last 4 weeks)
+  let pr_since = Utc::now() - chrono::Duration::weeks(4);
+  let pulls_url =
+    format!("https://api.github.com/repos/{}/{}/pulls?state=closed&per_page=100", owner, repo);
+
+  let mut pulls_req = client.get(&pulls_url).header("User-Agent", "CryptoOverviewBot");
+
+  if let Some(token) = github_token {
+    pulls_req = pulls_req.header("Authorization", format!("token {}", token));
+  }
+
+  let pulls_response = pulls_req.send().await.ok()?;
+  let pull_requests = if pulls_response.status() == 200 {
+    // Parse the pull requests and count merged ones in last 4 weeks
+    if let Ok(pulls_data) = pulls_response.json::<Vec<Value>>().await {
+      let merged_count = pulls_data
+        .iter()
+        .filter(|pr| {
+          pr["merged_at"].as_str().is_some()
+            && pr["merged_at"]
+              .as_str()
+              .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+              .map(|dt| dt.with_timezone(&Utc) > pr_since)
+              .unwrap_or(false)
+        })
+        .count() as i32;
+      Some(merged_count)
+    } else {
+      None
+    }
+  } else {
+    None
+  };
+
   Some(GitHubData {
     forks: repo_data["forks_count"].as_i64().map(|v| v as i32),
     stars: repo_data["stargazers_count"].as_i64().map(|v| v as i32),
     watchers: repo_data["subscribers_count"].as_i64().map(|v| v as i32),
     open_issues: repo_data["open_issues_count"].as_i64().map(|v| v as i32),
+    closed_issues,
     contributors,
     commits_30d,
-    pull_requests: None, // Would need separate API call
+    pull_requests,
     last_commit_date: repo_data["pushed_at"]
       .as_str()
       .and_then(|d| NaiveDate::parse_from_str(&d[..10], "%Y-%m-%d").ok()),
@@ -1250,7 +1512,7 @@ fn save_crypto_overviews_with_github_to_db(
 
       // Create the values that need to be borrowed
       let slug = overview.symbol.to_lowercase().replace(" ", "-");
-      let market_cap_rank = if overview.rank == 0 || overview.rank == 9999999 {
+      let market_cap_rank = if overview.rank == 0 || overview.rank == NO_PRIORITY as u32 {
         None
       } else {
         Some(overview.rank as i32)
@@ -1368,7 +1630,7 @@ fn save_crypto_overviews_with_github_to_db(
           github_stars: gh.stars,
           github_subscribers: gh.watchers,
           github_total_issues: gh.open_issues,
-          github_closed_issues: None,
+          github_closed_issues: gh.closed_issues,
           github_pull_requests: gh.pull_requests,
           github_contributors: gh.contributors,
           github_commits_4_weeks: gh.commits_30d,

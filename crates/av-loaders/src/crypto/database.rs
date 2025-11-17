@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -39,7 +39,7 @@ use crate::{
 use av_database_postgres::repository::CacheRepository;
 
 use super::{CryptoDataSource, CryptoLoaderConfig, CryptoSymbol, CryptoSymbolLoader};
-
+const NO_PRIORITY: i32 = 9_999_999;
 /// Input for the crypto database integration loader
 #[derive(Debug, Clone)]
 pub struct CryptoDbInput {
@@ -324,24 +324,24 @@ impl CryptoDbLoader {
     if tokens.len() == 1 {
       // Single token - use its market cap rank or default
       let token = &mut tokens[0];
-      token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(9999999);
+      token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(NO_PRIORITY);
       return;
     }
 
     // Multiple tokens - sort by market cap rank (lower rank = higher priority)
-    tokens.sort_by_key(|token| token.market_cap_rank.unwrap_or(9999999));
+    tokens.sort_by_key(|token| token.market_cap_rank.unwrap_or(NO_PRIORITY as u32));
 
     for (index, token) in tokens.iter_mut().enumerate() {
       if index == 0 && token.market_cap_rank.is_some() {
         // Best market cap rank gets its actual rank as priority (primary)
-        token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(9999999);
+        token.priority = token.market_cap_rank.map(|r| r as i32).unwrap_or(NO_PRIORITY);
         info!(
           "Made '{}' primary for '{}' with market cap rank {:?}",
           token.name, symbol, token.market_cap_rank
         );
       } else {
         // Non-primary tokens get default priority
-        token.priority = 9999999;
+        token.priority = NO_PRIORITY;
       }
       debug!("Assigned priority {} to '{}' for symbol '{}'", token.priority, token.name, symbol);
     }

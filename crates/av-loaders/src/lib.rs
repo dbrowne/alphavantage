@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -71,7 +71,9 @@ pub use summary_price_loader::{
   SummaryPriceLoaderOutput,
 };
 
-pub use top_movers_loader::{TopMoversLoader, TopMoversLoaderInput, TopMoversLoaderOutput};
+pub use top_movers_loader::{
+  TopMoversConfig, TopMoversLoader, TopMoversLoaderInput, TopMoversLoaderOutput,
+};
 
 // Re-export commonly used types
 pub use batch_processor::{BatchConfig, BatchProcessor};

@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -41,7 +41,6 @@ pub mod crypto_metadata;
 pub mod crypto_news;
 pub mod crypto_overview;
 pub mod crypto_prices;
-pub mod crypto_symbols;
 pub mod daily;
 pub mod intraday;
 pub mod missing_symbol_logger;
@@ -82,7 +81,6 @@ enum LoadSubcommands {
   CryptoNews(crypto_news::CryptoNewsArgs),
   CryptoIntraday(crypto_intraday::CryptoIntradayArgs),
   CryptoPrices(crypto_prices::CryptoPricesArgs),
-  CryptoSymbols(crypto_symbols::CryptoSymbolsArgs),
   CryptoDetails(crypto_details::CryptoDetailsArgs),
 
   MissingSymbols(missing_symbols::MissingSymbolsArgs),
@@ -108,7 +106,6 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::CryptoNews(args) => crypto_news::execute(args, config).await,
     LoadSubcommands::CryptoIntraday(args) => crypto_intraday::execute(args, config).await,
     LoadSubcommands::CryptoPrices(args) => crypto_prices::execute(args, config).await,
-    LoadSubcommands::CryptoSymbols(args) => crypto_symbols::execute(args, config).await,
     LoadSubcommands::CryptoDetails(args) => crypto_details::execute(args, config).await,
     LoadSubcommands::MissingSymbols(args) => missing_symbols::execute(args, config).await,
     LoadSubcommands::UpdateGithub(args) => {

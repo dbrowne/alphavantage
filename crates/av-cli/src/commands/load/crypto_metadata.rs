@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -47,7 +47,7 @@ use av_loaders::{
 };
 
 use crate::config::Config;
-
+const NO_PRIORITY: i32 = 9_999_999;
 /// Arguments for the crypto metadata command
 #[derive(Args, Debug)]
 pub struct CryptoMetadataArgs {
@@ -327,6 +327,7 @@ fn load_crypto_symbols_from_db(
   let mut query = symbols::table
     .inner_join(crypto_api_map::table.on(symbols::sid.eq(crypto_api_map::sid)))
     .filter(symbols::sec_type.eq("Cryptocurrency")) // Fixed: using sec_type instead of security_type
+    .filter(symbols::priority.lt(NO_PRIORITY)) // Only load symbols with priority < 9999999
     .into_boxed();
 
   // Filter by specific symbols if provided

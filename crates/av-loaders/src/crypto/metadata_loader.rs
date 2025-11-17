@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -560,6 +560,14 @@ impl CryptoMetadataLoader {
           }
           Err(e) => {
             let error_msg = e.to_string();
+
+            // Check for permanent errors (404 Not Found) - don't retry
+            if error_msg.contains("404") || error_msg.contains("Not Found") {
+              debug!("Coin {} not found on {:?} (404) - skipping retries", symbol.symbol, source);
+              errors.push(format!("Coin not found on {:?}: {}", source, symbol.symbol));
+              symbols_failed += 1;
+              break; // Exit retry loop immediately for 404s
+            }
 
             // Check for rate limiting
             if error_msg.contains("rate limit") || error_msg.contains("429") {

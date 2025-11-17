@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -49,6 +49,7 @@ use crate::config::Config;
 use av_database_postgres::models::crypto::NewCryptoApiMap;
 use av_database_postgres::models::security::NewSymbolOwned;
 use av_loaders::crypto::database::CryptoSymbolForDb;
+const NO_PRIORITY: i32 = 9_999_999;
 
 #[derive(Args, Debug)]
 pub struct CryptoArgs {
@@ -317,7 +318,7 @@ fn update_existing_token_in_db(
   .execute(conn)?;
 
   // Only update symbol_mappings for PRIMARY tokens (priority != 9999999)
-  if db_symbol.priority != 9999999 {
+  if db_symbol.priority != NO_PRIORITY {
     let source_name = db_symbol.source.to_string();
 
     diesel::insert_into(symbol_mappings::table)
@@ -373,7 +374,7 @@ async fn save_crypto_symbol_to_database(
       Ok(sid)
     } else {
       // Skip updating the symbol itself, but still ensure symbol_mappings is populated for PRIMARY tokens
-      if db_symbol.priority != 9999999 {
+      if db_symbol.priority != NO_PRIORITY {
         use av_database_postgres::schema::symbol_mappings;
         use diesel::prelude::*;
 
@@ -469,9 +470,9 @@ fn insert_new_token_in_db(conn: &mut PgConnection, db_symbol: &CryptoSymbolForDb
 
   diesel::insert_into(crypto_api_map::table).values(&api_mapping).execute(conn)?;
 
-  // Only insert into symbol_mappings for PRIMARY tokens (priority != 9999999)
+  // Only insert into symbol_mappings for PRIMARY tokens (priority != NO_PRIORITY)
   // This ensures we only map the canonical version of each symbol, not wrapped/bridged variants
-  if db_symbol.priority != 9999999 {
+  if db_symbol.priority != NO_PRIORITY {
     let source_name = db_symbol.source.to_string();
 
     diesel::insert_into(symbol_mappings::table)

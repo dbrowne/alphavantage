@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,45 +29,246 @@
 
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
-use diesel::PgConnection;
-use diesel::prelude::*;
 use std::collections::HashMap;
-use tracing::{info, warn};
+use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 use av_database_postgres::{
   establish_connection,
   models::price::NewTopStat,
-  schema::{symbols, topstats},
+  repository::{CacheRepositoryExt, NewsRepository},
 };
 use av_models::fundamentals::{StockMover, TopGainersLosers};
+use diesel::PgConnection;
 
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 
+const SOURCE_NAME: &str = "top_movers";
+const API_SOURCE: &str = "alphavantage";
+
 pub struct TopMoversLoader {
+  config: TopMoversConfig,
   database_url: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TopMoversConfig {
+  /// Whether to record missing symbols
+  pub track_missing_symbols: bool,
+  /// Enable caching of API responses
+  pub enable_cache: bool,
+  /// Cache TTL in hours
+  pub cache_ttl_hours: i64,
+  /// Force refresh (bypass cache)
+  pub force_refresh: bool,
+}
+
+impl TopMoversConfig {
+  pub fn with_database_url(self, _database_url: Option<String>) -> Self {
+    self
+  }
+}
+
+impl Default for TopMoversConfig {
+  fn default() -> Self {
+    Self {
+      track_missing_symbols: true,
+      enable_cache: true,
+      cache_ttl_hours: 24,
+      force_refresh: false,
+    }
+  }
+}
+
 impl TopMoversLoader {
-  pub fn new(database_url: Option<String>) -> Self {
-    Self { database_url }
+  pub fn new(config: TopMoversConfig, database_url: Option<String>) -> Self {
+    Self { config, database_url }
   }
 
-  fn resolve_symbol_ids(
-    &self,
-    conn: &mut PgConnection,
-    tickers: &[String],
-  ) -> Result<HashMap<String, i64>, diesel::result::Error> {
-    // Filter for Equity securities only
-    let results: Vec<(String, i64)> = symbols::table
-      .filter(symbols::symbol.eq_any(tickers))
-      .filter(symbols::sec_type.eq("Equity")) // Only Equity type
-      .select((symbols::symbol, symbols::sid))
-      .load(conn)?;
+  /// Load all equity symbols from the database
+  /// TODO: This should be moved to a SymbolRepository trait method
+  fn load_all_equity_symbols(conn: &mut PgConnection) -> Result<HashMap<String, i64>, LoaderError> {
+    use av_database_postgres::schema::symbols;
+    use diesel::prelude::*;
 
-    info!("Resolved {} equity symbols out of {} total tickers", results.len(), tickers.len());
+    let results: Vec<(String, i64)> = symbols::table
+      .filter(symbols::sec_type.eq("Equity"))
+      .select((symbols::symbol, symbols::sid))
+      .load(conn)
+      .map_err(|e| LoaderError::DatabaseError(format!("Failed to load equity symbols: {}", e)))?;
 
     Ok(results.into_iter().collect())
   }
+
+  /// Record missing symbols to the database
+  async fn record_missing_symbols(
+    &self,
+    news_repo: &Arc<dyn NewsRepository>,
+    symbols: &[String],
+  ) -> Result<usize, LoaderError> {
+    if !self.config.track_missing_symbols || symbols.is_empty() {
+      return Ok(0);
+    }
+
+    let mut logged_count = 0;
+    for symbol in symbols {
+      match news_repo.record_missing_symbol(symbol, SOURCE_NAME).await {
+        Ok(_) => {
+          logged_count += 1;
+          debug!("Recorded missing symbol: {}", symbol);
+        }
+        Err(e) => {
+          warn!("Failed to record missing symbol {}: {}", symbol, e);
+        }
+      }
+    }
+
+    Ok(logged_count)
+  }
+
+  /// Parse stock mover data and convert to database format
+  fn parse_mover_data(
+    movers: &[StockMover],
+    event_type: &str,
+    symbol_map: &HashMap<String, i64>,
+    missing_symbols: &mut Vec<String>,
+  ) -> Vec<ParsedMoverData> {
+    movers
+      .iter()
+      .filter_map(|mover| {
+        let sid = match symbol_map.get(&mover.ticker) {
+          Some(&sid) => sid,
+          None => {
+            missing_symbols.push(mover.ticker.clone());
+            return None;
+          }
+        };
+
+        let price = mover.price.parse::<f32>().unwrap_or_else(|e| {
+          warn!("Failed to parse price '{}' for {}: {}", mover.price, mover.ticker, e);
+          0.0
+        });
+
+        let change_val = mover.change_amount.parse::<f32>().unwrap_or_else(|e| {
+          warn!(
+            "Failed to parse change amount '{}' for {}: {}",
+            mover.change_amount, mover.ticker, e
+          );
+          0.0
+        });
+
+        let change_pct =
+          mover.change_percentage.trim_end_matches('%').parse::<f32>().unwrap_or_else(|e| {
+            warn!(
+              "Failed to parse change percentage '{}' for {}: {}",
+              mover.change_percentage, mover.ticker, e
+            );
+            0.0
+          });
+
+        let volume = mover.volume.parse::<i64>().unwrap_or_else(|e| {
+          warn!("Failed to parse volume '{}' for {}: {}", mover.volume, mover.ticker, e);
+          0
+        });
+
+        Some(ParsedMoverData {
+          sid,
+          symbol: mover.ticker.clone(),
+          price,
+          change_val,
+          change_pct,
+          volume,
+          event_type: event_type.to_string(),
+        })
+      })
+      .collect()
+  }
+
+  /// Generate cache key for top movers data
+  fn generate_cache_key(date: &NaiveDate) -> String {
+    format!("top_movers:{}", date.format("%Y-%m-%d"))
+  }
+
+  /// Try to get cached response
+  async fn get_cached_response(
+    &self,
+    context: &LoaderContext,
+    cache_key: &str,
+  ) -> Result<Option<TopGainersLosers>, LoaderError> {
+    if !self.config.enable_cache || self.config.force_refresh {
+      return Ok(None);
+    }
+
+    let cache_repo = match &context.cache_repository {
+      Some(repo) => repo,
+      None => {
+        debug!("Cache repository not available");
+        return Ok(None);
+      }
+    };
+
+    match cache_repo.get::<TopGainersLosers>(cache_key, API_SOURCE).await {
+      Ok(Some(data)) => {
+        info!("Cache hit for key: {}", cache_key);
+        Ok(Some(data))
+      }
+      Ok(None) => {
+        debug!("Cache miss for key: {}", cache_key);
+        Ok(None)
+      }
+      Err(e) => {
+        warn!("Cache retrieval error: {}", e);
+        Ok(None)
+      }
+    }
+  }
+
+  /// Cache the response
+  async fn cache_response(
+    &self,
+    context: &LoaderContext,
+    cache_key: &str,
+    data: &TopGainersLosers,
+  ) -> Result<(), LoaderError> {
+    if !self.config.enable_cache {
+      return Ok(());
+    }
+
+    let cache_repo = match &context.cache_repository {
+      Some(repo) => repo,
+      None => {
+        debug!("Cache repository not available");
+        return Ok(());
+      }
+    };
+
+    let endpoint_url = "TOP_GAINERS_LOSERS";
+    match cache_repo
+      .set(cache_key, API_SOURCE, endpoint_url, data, self.config.cache_ttl_hours)
+      .await
+    {
+      Ok(_) => {
+        debug!("Cached response with key: {}", cache_key);
+        Ok(())
+      }
+      Err(e) => {
+        warn!("Failed to cache response: {}", e);
+        Ok(())
+      }
+    }
+  }
+}
+
+/// Internal struct to hold parsed mover data
+#[derive(Debug, Clone)]
+struct ParsedMoverData {
+  sid: i64,
+  symbol: String,
+  price: f32,
+  change_val: f32,
+  change_pct: f32,
+  volume: i64,
+  event_type: String,
 }
 
 #[async_trait]
@@ -83,13 +284,30 @@ impl DataLoader for TopMoversLoader {
       tracker.start("top_movers_loader").await?;
     }
 
-    // Fetch data from API
-    let api_data = context
-      .client
-      .fundamentals()
-      .top_gainers_losers()
-      .await
-      .map_err(|e| LoaderError::ApiError(e.to_string()))?;
+    // Generate cache key
+    let date = input.date.unwrap_or_else(|| Utc::now().date_naive());
+    let cache_key = Self::generate_cache_key(&date);
+
+    // Try to get from cache first
+    let (api_data, from_cache) =
+      if let Some(cached_data) = self.get_cached_response(context, &cache_key).await? {
+        info!("Using cached top movers data");
+        (cached_data, true)
+      } else {
+        // Fetch data from API
+        info!("Fetching fresh top movers data from API");
+        let data = context
+          .client
+          .fundamentals()
+          .top_gainers_losers()
+          .await
+          .map_err(|e| LoaderError::ApiError(e.to_string()))?;
+
+        // Cache the response
+        self.cache_response(context, &cache_key, &data).await?;
+
+        (data, false)
+      };
 
     info!(
       "Fetched {} gainers, {} losers, {} most active",
@@ -98,103 +316,89 @@ impl DataLoader for TopMoversLoader {
       api_data.most_actively_traded.len()
     );
 
-    // Convert NaiveDate to DateTime<Utc> for the database
-    let date_time = input
-      .date
-      .unwrap_or_else(|| Utc::now().date_naive())
-      .and_hms_opt(0, 0, 0)
-      .unwrap()
-      .and_local_timezone(Utc)
-      .unwrap();
+    // Get news repository for missing symbols tracking
+    let news_repo = context.news_repository.as_ref().ok_or_else(|| {
+      LoaderError::ConfigurationError("News repository not configured".to_string())
+    })?;
 
-    let mut records_inserted = 0;
+    // Load all equity symbols from database if database URL is provided
+    let symbol_map = if let Some(db_url) = &self.database_url {
+      let mut conn = establish_connection(db_url)
+        .map_err(|e| LoaderError::DatabaseError(format!("Failed to connect to database: {}", e)))?;
+      Self::load_all_equity_symbols(&mut conn)?
+    } else {
+      HashMap::new()
+    };
+
+    debug!("Loaded {} equity symbols from database", symbol_map.len());
+
     let mut missing_symbols = Vec::new();
+    let mut all_parsed_data = Vec::new();
 
-    // If database URL is provided, resolve symbols and save
-    if let Some(db_url) = &self.database_url {
-      let mut conn =
-        establish_connection(db_url).map_err(|e| LoaderError::DatabaseError(e.to_string()))?;
+    // Process gainers
+    let gainers_data =
+      Self::parse_mover_data(&api_data.top_gainers, "gainers", &symbol_map, &mut missing_symbols);
+    all_parsed_data.extend(gainers_data);
 
-      // Collect all unique tickers
-      let mut all_tickers = Vec::new();
-      all_tickers.extend(api_data.top_gainers.iter().map(|m| m.ticker.clone()));
-      all_tickers.extend(api_data.top_losers.iter().map(|m| m.ticker.clone()));
-      all_tickers.extend(api_data.most_actively_traded.iter().map(|m| m.ticker.clone()));
-      all_tickers.sort();
-      all_tickers.dedup();
+    // Process losers
+    let losers_data =
+      Self::parse_mover_data(&api_data.top_losers, "losers", &symbol_map, &mut missing_symbols);
+    all_parsed_data.extend(losers_data);
 
-      // Resolve to SIDs
-      let symbol_map = self
-        .resolve_symbol_ids(&mut conn, &all_tickers)
-        .map_err(|e| LoaderError::DatabaseError(e.to_string()))?;
+    // Process most active
+    let active_data = Self::parse_mover_data(
+      &api_data.most_actively_traded,
+      "most_active",
+      &symbol_map,
+      &mut missing_symbols,
+    );
+    all_parsed_data.extend(active_data);
 
-      // Store parsed values to ensure they live long enough
-      struct ParsedMoverData {
-        sid: i64,
-        symbol: String,
-        price: f32,
-        change_val: f32,
-        change_pct: f32,
-        volume: i64,
-        event_type: String,
-      }
+    // Remove duplicates from missing symbols
+    missing_symbols.sort();
+    missing_symbols.dedup();
 
-      let mut parsed_data = Vec::new();
+    let resolved_count = all_parsed_data.len();
+    let total_count =
+      api_data.top_gainers.len() + api_data.top_losers.len() + api_data.most_actively_traded.len();
 
-      // Helper function to parse mover data
-      let parse_mover = |mover: &StockMover, event_type: &str| -> ParsedMoverData {
-        let sid = symbol_map.get(&mover.ticker).copied().unwrap_or(0);
-        ParsedMoverData {
-          sid,
-          symbol: mover.ticker.clone(),
-          price: mover.price.parse::<f32>().unwrap_or(0.0),
-          change_val: mover.change_amount.parse::<f32>().unwrap_or(0.0),
-          change_pct: mover.change_percentage.trim_end_matches('%').parse::<f32>().unwrap_or(0.0),
-          volume: mover.volume.parse::<i64>().unwrap_or(0),
-          event_type: event_type.to_string(),
-        }
-      };
+    info!("Resolved {} equity symbols out of {} total tickers", resolved_count, total_count);
 
-      // Process gainers
-      for gainer in &api_data.top_gainers {
-        let data = parse_mover(gainer, "gainers");
-        if data.sid == 0 {
-          missing_symbols.push(gainer.ticker.clone());
-          continue;
-        }
-        parsed_data.push(data);
-      }
+    // Record missing symbols if tracking is enabled
+    let missing_recorded = if !missing_symbols.is_empty() {
+      warn!("Missing symbols in database: {:?}", missing_symbols);
+      self.record_missing_symbols(news_repo, &missing_symbols).await?
+    } else {
+      0
+    };
 
-      // Process losers
-      for loser in &api_data.top_losers {
-        let data = parse_mover(loser, "losers");
-        if data.sid == 0 {
-          missing_symbols.push(loser.ticker.clone());
-          continue;
-        }
-        parsed_data.push(data);
-      }
+    if missing_recorded > 0 {
+      info!("Recorded {} missing symbols to database", missing_recorded);
+    }
 
-      // Process most active
-      for active in &api_data.most_actively_traded {
-        let data = parse_mover(active, "most_active");
-        if data.sid == 0 {
-          missing_symbols.push(active.ticker.clone());
-          continue;
-        }
-        parsed_data.push(data);
-      }
+    // Save to database if we have data
+    let records_inserted = if !all_parsed_data.is_empty() && self.database_url.is_some() {
+      // Convert NaiveDate to DateTime<Utc> for the database
+      let date_time = input
+        .date
+        .unwrap_or_else(|| Utc::now().date_naive())
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| LoaderError::InvalidData("Invalid date/time".to_string()))?
+        .and_local_timezone(Utc)
+        .single()
+        .ok_or_else(|| LoaderError::InvalidData("Ambiguous date/time".to_string()))?;
 
-      // Remove duplicates from missing symbols
-      missing_symbols.sort();
-      missing_symbols.dedup();
+      // Use direct database access for now
+      // TODO: This should be refactored to use a PriceRepository trait
+      use av_database_postgres::schema::topstats;
+      use diesel::prelude::*;
 
-      if !missing_symbols.is_empty() {
-        warn!("Missing symbols in database: {:?}", missing_symbols);
-      }
+      let db_url = self.database_url.as_ref().unwrap();
+      let mut conn = establish_connection(db_url)
+        .map_err(|e| LoaderError::DatabaseError(format!("Failed to connect to database: {}", e)))?;
 
-      // Create NewTopStat records with references to parsed_data
-      let new_records: Vec<NewTopStat> = parsed_data
+      // Create NewTopStat records
+      let new_records: Vec<NewTopStat> = all_parsed_data
         .iter()
         .map(|data| NewTopStat {
           date: &date_time,
@@ -209,21 +413,30 @@ impl DataLoader for TopMoversLoader {
         .collect();
 
       // Insert into database
-      records_inserted = diesel::insert_into(topstats::table)
+      diesel::insert_into(topstats::table)
         .values(&new_records)
         .on_conflict_do_nothing()
         .execute(&mut conn)
-        .map_err(|e| LoaderError::DatabaseError(e.to_string()))?;
+        .map_err(|e| LoaderError::DatabaseError(format!("Failed to insert records: {}", e)))?
+    } else {
+      if all_parsed_data.is_empty() {
+        warn!("No valid equity symbols found to save");
+      } else {
+        warn!("Database URL not provided, skipping database save");
+      }
+      0
+    };
 
-      info!("Inserted {} records into topstats table", records_inserted);
-    }
+    info!("Inserted {} records into topstats table", records_inserted);
 
     // Complete process tracking
     if let Some(tracker) = &context.process_tracker {
-      let state = if missing_symbols.is_empty() {
+      let state = if missing_symbols.is_empty() && records_inserted > 0 {
         ProcessState::Success
-      } else {
+      } else if records_inserted > 0 {
         ProcessState::CompletedWithErrors
+      } else {
+        ProcessState::Failed
       };
       tracker.complete(state).await?;
     }
@@ -236,7 +449,9 @@ impl DataLoader for TopMoversLoader {
       most_active_count: api_data.most_actively_traded.len(),
       records_saved: records_inserted,
       missing_symbols,
+      missing_recorded,
       raw_data: api_data,
+      from_cache,
     })
   }
 
@@ -259,5 +474,7 @@ pub struct TopMoversLoaderOutput {
   pub most_active_count: usize,
   pub records_saved: usize,
   pub missing_symbols: Vec<String>,
+  pub missing_recorded: usize,
   pub raw_data: TopGainersLosers,
+  pub from_cache: bool,
 }
