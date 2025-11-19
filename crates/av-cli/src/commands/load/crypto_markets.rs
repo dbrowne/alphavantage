@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -285,7 +285,7 @@ async fn load_crypto_symbols_from_db(
 ) -> Result<Vec<CryptoSymbolForMarkets>> {
   // Get all crypto symbols with CoinGecko mappings from repository
   let results = crypto_repo
-    .get_crypto_symbols_with_mappings("CoinGecko", limit)
+    .get_crypto_symbols_with_mappings("coingecko", limit)
     .await
     .context("Failed to query crypto symbols with mappings")?;
 
@@ -389,14 +389,52 @@ fn convert_to_new_crypto_market(market: &CryptoMarketData) -> Result<NewCryptoMa
     return Err("SID cannot be zero".to_string());
   }
 
-  // Validate bid-ask spread range
+  // Validate bid-ask spread (only reject negative spreads - wide spreads are valid for illiquid markets)
   if let Some(ref spread) = market.bid_ask_spread_pct {
     if let Some(spread_f64) = spread.to_f64() {
-      if spread_f64 < 0.0 || spread_f64 > 100.0 {
-        return Err(format!("Invalid bid-ask spread: {:.4}% (must be 0-100%)", spread_f64));
+      if spread_f64 < 0.0 {
+        return Err(format!(
+          "Invalid bid-ask spread: {:.4}% (negative spreads indicate bad data)",
+          spread_f64
+        ));
+      }
+      // Note: Spreads > 100% are valid for illiquid crypto markets
+      if spread_f64 > 1000.0 {
+        return Err(format!("Unrealistic bid-ask spread: {:.4}% (likely data error)", spread_f64));
       }
     }
   }
+
+  // Validate numeric field ranges against database schema
+  // volume_24h: NUMERIC(30,2) - max ~9.99e27
+  let volume_24h = if let Some(ref vol) = market.volume_24h {
+    if let Some(vol_f64) = vol.to_f64() {
+      if vol_f64 > 1e27 {
+        return Err(format!("volume_24h too large: {:.2e} (exceeds NUMERIC(30,2) limit)", vol_f64));
+      }
+    }
+    market.volume_24h.clone()
+  } else {
+    None
+  };
+
+  // volume_percentage: NUMERIC(11,2) - max 999999999.99 (100% max in practice)
+  let volume_percentage = if let Some(ref pct) = market.volume_percentage {
+    if let Some(pct_f64) = pct.to_f64() {
+      if pct_f64.abs() > 999999999.0 {
+        return Err(format!(
+          "volume_percentage too large: {:.2}% (exceeds NUMERIC(11,2) limit)",
+          pct_f64
+        ));
+      }
+    }
+    market.volume_percentage.clone()
+  } else {
+    None
+  };
+
+  // bid_ask_spread_pct: NUMERIC(10,4) - max 999999.9999 (already validated < 1000% above)
+  let bid_ask_spread_pct = market.bid_ask_spread_pct.clone();
 
   // Parse datetime strings
   let last_traded_at = market
@@ -418,9 +456,9 @@ fn convert_to_new_crypto_market(market: &CryptoMarketData) -> Result<NewCryptoMa
     base: market.base.clone(),
     target: market.target.clone(),
     market_type: market.market_type.clone(),
-    volume_24h: market.volume_24h.clone(),
-    volume_percentage: market.volume_percentage.clone(),
-    bid_ask_spread_pct: market.bid_ask_spread_pct.clone(),
+    volume_24h,
+    volume_percentage,
+    bid_ask_spread_pct,
     liquidity_score: market.liquidity_score.clone(),
     is_active: Some(market.is_active),
     is_anomaly: Some(market.is_anomaly),

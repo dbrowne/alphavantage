@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -33,9 +33,10 @@ use clap::Args;
 use std::sync::Arc;
 
 use av_client::AlphaVantageClient;
+use av_database_postgres::repository::DatabaseContext;
 use av_loaders::{
   DataLoader, LoaderConfig, LoaderContext, ProcessTracker,
-  top_movers_loader::{TopMoversLoader, TopMoversLoaderInput},
+  top_movers_loader::{TopMoversConfig, TopMoversLoader, TopMoversLoaderInput},
 };
 
 use crate::config::Config;
@@ -53,6 +54,18 @@ pub struct TopMoversArgs {
   /// Show verbose output
   #[arg(short = 'v', long)]
   verbose: bool,
+
+  /// Disable caching
+  #[arg(long)]
+  no_cache: bool,
+
+  /// Force refresh (bypass cache)
+  #[arg(long)]
+  force_refresh: bool,
+
+  /// Cache TTL in hours (default: 24)
+  #[arg(long, default_value = "24")]
+  cache_ttl: i64,
 }
 
 pub async fn execute(args: TopMoversArgs, config: Config) -> Result<()> {
@@ -72,16 +85,38 @@ pub async fn execute(args: TopMoversArgs, config: Config) -> Result<()> {
   // Create loader context
   let mut context = LoaderContext::new(client, loader_config);
 
-  // Setup process tracker unless dry run
+  // Setup database context and repositories
+  let db_context = DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow::anyhow!("Failed to create database context: {}", e))?;
+
   if !args.dry_run {
+    let news_repo: Arc<dyn av_database_postgres::repository::NewsRepository> =
+      Arc::new(db_context.news_repository());
+    context = context.with_news_repository(news_repo);
+
+    // Setup process tracker
     let tracker = ProcessTracker::new();
     context = context.with_process_tracker(tracker);
   }
 
+  // Setup cache repository (even for dry run, to enable cache reads)
+  if !args.no_cache {
+    let cache_repo: Arc<dyn av_database_postgres::repository::CacheRepository> =
+      Arc::new(db_context.cache_repository());
+    context = context.with_cache_repository(cache_repo);
+  }
+
+  // Create loader configuration
+  let loader_config = TopMoversConfig {
+    track_missing_symbols: !args.dry_run,
+    enable_cache: !args.no_cache,
+    cache_ttl_hours: args.cache_ttl,
+    force_refresh: args.force_refresh,
+  };
+
   // Setup loader with database URL (None only for dry run)
   let database_url = if args.dry_run { None } else { Some(config.database_url.clone()) };
-
-  let loader = TopMoversLoader::new(database_url);
+  let loader = TopMoversLoader::new(loader_config, database_url);
 
   // Parse date if provided
   let date = args.date.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
@@ -122,6 +157,13 @@ pub async fn execute(args: TopMoversArgs, config: Config) -> Result<()> {
     println!();
   }
 
+  // Show cache status
+  if output.from_cache {
+    println!("\n📦 Data Source: Cache (TTL: {} hours)", args.cache_ttl);
+  } else {
+    println!("\n🌐 Data Source: API (fresh data)");
+  }
+
   if args.dry_run {
     println!("\n⚠️  Dry run mode - no data saved to database");
   } else {
@@ -129,6 +171,7 @@ pub async fn execute(args: TopMoversArgs, config: Config) -> Result<()> {
     println!("   Records saved: {}", output.records_saved);
     if !output.missing_symbols.is_empty() {
       println!("   ⚠️  Missing symbols: {}", output.missing_symbols.len());
+      println!("   📝 Missing symbols recorded: {}", output.missing_recorded);
       if args.verbose {
         println!("   Missing symbols:");
         for symbol in &output.missing_symbols {

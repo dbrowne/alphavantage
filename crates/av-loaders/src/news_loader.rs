@@ -250,19 +250,10 @@ impl NewsLoader {
     &self,
     news: &NewsSentiment,
     symbols: &[SymbolInfo],
+    symbol_to_sid: &HashMap<String, i64>,
     news_repo: &Arc<dyn av_database_postgres::repository::NewsRepository>,
   ) -> Vec<NewsData> {
-    // Load ALL symbols from database for sentiment mapping
-    let symbol_to_sid: HashMap<String, i64> = match Self::load_all_symbols(news_repo).await {
-      Ok(map) => {
-        info!("Loaded {} symbols for sentiment mapping", map.len());
-        map
-      }
-      Err(e) => {
-        warn!("Failed to load symbol mapping, sentiment data may be incomplete: {}", e);
-        HashMap::new()
-      }
-    };
+    // Use the pre-loaded symbol mapping
 
     let mut result = Vec::new();
     let mut global_missed_tickers: std::collections::HashSet<String> =
@@ -430,6 +421,18 @@ impl DataLoader for NewsLoader {
       LoaderError::ConfigurationError("News repository not provided in context".to_string())
     })?;
 
+    // Load ALL symbols ONCE for sentiment mapping (avoid N+1 queries)
+    let symbol_to_sid = match Self::load_all_symbols(news_repo).await {
+      Ok(map) => {
+        info!("📊 Loaded {} symbols for sentiment mapping (cached for this batch)", map.len());
+        map
+      }
+      Err(e) => {
+        warn!("Failed to load symbol mapping, sentiment data may be incomplete: {}", e);
+        HashMap::new()
+      }
+    };
+
     info!("Processing {} symbols individually for maximum news coverage", input.symbols.len());
 
     let mut all_news_data = Vec::new();
@@ -464,8 +467,9 @@ impl DataLoader for NewsLoader {
           output.no_data_count += 1;
         } else {
           info!("  Found {} cached articles for {}", cached_news.feed.len(), symbol_info.symbol);
-          let batch_data =
-            self.convert_news_to_data(&cached_news, &[symbol_info.clone()], news_repo).await;
+          let batch_data = self
+            .convert_news_to_data(&cached_news, &[symbol_info.clone()], &symbol_to_sid, news_repo)
+            .await;
           output.articles_processed += cached_news.feed.len();
           output.loaded_count += batch_data.len();
           all_news_data.extend(batch_data);
@@ -504,8 +508,9 @@ impl DataLoader for NewsLoader {
               info!("  Found {} articles for {}", news.feed.len(), symbol_info.symbol);
 
               // Convert to internal format - pass as single-element slice
-              let batch_data =
-                self.convert_news_to_data(&news, &[symbol_info.clone()], news_repo).await;
+              let batch_data = self
+                .convert_news_to_data(&news, &[symbol_info.clone()], &symbol_to_sid, news_repo)
+                .await;
 
               output.articles_processed += news.feed.len();
               output.loaded_count += batch_data.len();

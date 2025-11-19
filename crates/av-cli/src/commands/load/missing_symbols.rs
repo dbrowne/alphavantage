@@ -5,7 +5,7 @@
  *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
- * dwight[-dot-]browne[-at-]dwightjbrowne[-dot-]com
+ * dwight[-at-]dwightjbrowne[-dot-]com
  *
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -42,6 +42,7 @@ use av_core::types::market::SecurityType;
 use av_database_postgres::models::{MissingSymbol, NewSymbolOwned};
 use av_database_postgres::schema::{missing_symbols, symbols};
 
+const NO_PRIORITY: i32 = 9_999_999;
 #[derive(Args, Debug)]
 pub struct MissingSymbolsArgs {
   /// Source filter (e.g., 'news_feed')
@@ -335,7 +336,7 @@ async fn fetch_and_store_overview(
           let new_symbol = NewSymbolOwned {
             sid: new_sid,
             symbol: symbol_str.clone(),
-            priority: 9999999,
+            priority: NO_PRIORITY,
             name: name.clone(),
             sec_type: format!("{:?}", security_type), // Matches securities.rs pattern
             region: "US".to_string(),
