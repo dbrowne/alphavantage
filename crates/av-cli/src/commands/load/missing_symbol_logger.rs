@@ -45,7 +45,7 @@ use tracing::{debug, warn};
 /// * `Ok(())` - Symbol was logged successfully
 /// * `Err(e)` - Database error occurred
 pub fn log_missing_symbol(
-  conn: &mut PgConnection,
+  conn: &mut PgConnection, //todo: decouple from postgres
   symbol: &str,
   source: &str,
 ) -> Result<(), diesel::result::Error> {
