@@ -376,7 +376,7 @@ impl SecurityType {
       SecurityType::TreasuryBill => (TYPE_T_BILL as i64) << SHIFT_6BIT | id as i64,
       SecurityType::Other => (TYPE_OTHER as i64) << SHIFT_6BIT | id as i64,
     };
-    unsigned_result as i64
+    unsigned_result
   }
 
   /// Decode SecurityType from an encoded SID

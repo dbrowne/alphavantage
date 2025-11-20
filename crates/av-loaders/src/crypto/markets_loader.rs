@@ -536,7 +536,7 @@ impl CryptoMarketsLoader {
             // Log first 200 chars for debugging
             if response_text.len() > 200 {
               info!("📄 Response preview for {}: {}...", symbol.symbol, &response_text[..200]);
-            } else if response_text.len() > 0 {
+            } else if !response_text.is_empty() {
               info!("📄 Full response for {}: {}", symbol.symbol, response_text);
             }
 

@@ -181,8 +181,8 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
   // Create database context and crypto repository
   let db_context = av_database_postgres::repository::DatabaseContext::new(&config.database_url)
     .map_err(|e| anyhow::anyhow!("Failed to create database context: {}", e))?;
-  let crypto_repo: Arc<dyn av_database_postgres::repository::CryptoRepository> =
-    Arc::new(db_context.crypto_repository());
+  let _crypto_repo: Arc<dyn av_database_postgres::repository::CryptoRepository> =
+    Arc::new(db_context.crypto_repository()); // todo: Fix this!!!
 
   // Create cache repository for API response caching
   let cache_repo: Arc<dyn av_database_postgres::repository::CacheRepository> =
@@ -664,7 +664,7 @@ async fn save_crypto_symbols_to_db(
             let new_symbol = NewSymbolOwned {
               sid: new_sid,
               symbol: crypto_symbol.symbol.clone(),
-              priority: crypto_symbol.priority.clone(),
+              priority: crypto_symbol.priority,
               name: crypto_symbol.name.clone(),
               sec_type: "Cryptocurrency".to_string(),
               region: "Global".to_string(), // ADD this line

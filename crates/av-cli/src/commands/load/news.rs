@@ -121,7 +121,7 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
     return Err(anyhow!("Limit must be at least 1"));
   }
 
-  let continue_on_error = if args.stop_on_error { false } else { args.continue_on_error };
+  let _continue_on_error = if args.stop_on_error { false } else { args.continue_on_error }; //todo:: fix this
 
   // Create API client
   let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
