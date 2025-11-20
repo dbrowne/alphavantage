@@ -42,19 +42,16 @@ pub async fn update_crypto_command(args: UpdateCryptoArgs, _config: Config) -> R
   }
 
   if args.basic_only {
-    println!("Updating basic crypto data...");
+    unimplemented!("basic crypto data version date: TBD");
     // TODO: Implement basic crypto data update
   } else if args.social_only {
-    println!("Updating social crypto data...");
+    unimplemented!("social crypto data version date: TBD");
     // TODO: Implement social crypto data update
   } else if args.technical_only {
-    println!("Updating technical crypto data...");
+    unimplemented!("Technical crypto data   version date: TBD");
     // TODO: Implement technical crypto data update
   } else {
-    println!("Updating all crypto data...");
+    unimplemented!("Updating all crypto data version date: TBD");
     // TODO: Implement comprehensive crypto data update
   }
-
-  println!("Crypto update completed");
-  Ok(())
 }

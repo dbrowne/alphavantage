@@ -307,7 +307,7 @@ impl CryptoDbLoader {
     let mut symbol_groups: HashMap<String, Vec<&mut CryptoSymbolForDb>> = HashMap::new();
 
     for token in tokens.iter_mut() {
-      symbol_groups.entry(token.symbol.clone()).or_insert_with(Vec::new).push(token);
+      symbol_groups.entry(token.symbol.clone()).or_default().push(token);
     }
 
     // Process each symbol group

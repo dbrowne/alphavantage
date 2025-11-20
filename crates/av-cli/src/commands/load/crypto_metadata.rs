@@ -404,7 +404,7 @@ async fn save_metadata_to_db(
       .first::<i64>(&mut conn)
       .optional()?;
 
-    if let Some(_) = exists {
+    if exists.is_some() {
       if update_existing {
         // Update existing record
         diesel::update(crypto_metadata::table.find(meta.sid))

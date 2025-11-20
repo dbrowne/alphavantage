@@ -286,8 +286,7 @@ impl CryptoMetadataLoader {
     match self.load_alphavantage_metadata_fresh(symbol).await {
       Ok((metadata, response, url, _status)) => {
         // Cache the successful response
-        let response_json =
-          serde_json::to_value(&response).unwrap_or_else(|_| serde_json::Value::Null);
+        let response_json = serde_json::to_value(&response).unwrap_or(serde_json::Value::Null);
 
         self.cache_response(cache_repo, &cache_key, "alphavantage", &url, &response_json).await;
 

@@ -76,6 +76,12 @@ pub struct BatchResult<T> {
   pub total_processed: usize,
 }
 
+impl<T> Default for BatchResult<T> {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl<T> BatchResult<T> {
   pub fn new() -> Self {
     Self { success: Vec::new(), failures: Vec::new(), total_processed: 0 }
@@ -130,7 +136,7 @@ impl BatchProcessor {
     debug!("Processing {} items in batches of {}", total_items, self.config.batch_size);
 
     let mut batch_idx = 0;
-    let total_batches = (total_items + self.config.batch_size - 1) / self.config.batch_size;
+    let total_batches = total_items.div_ceil(self.config.batch_size);
 
     // Process items in chunks by draining from the vector
     while !items.is_empty() {

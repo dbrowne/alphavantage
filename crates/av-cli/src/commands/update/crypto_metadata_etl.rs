@@ -98,8 +98,12 @@ pub fn execute_metadata_etl(database_url: &str) -> Result<()> {
   }
 
   info!(
-    "ETL Complete: processed={}, basic={}, social={}, technical={}",
-    stats.total_processed, stats.basic_updated, stats.social_updated, stats.technical_updated
+    "ETL Complete: processed={}, basic={}, social={}, technical={}, errors={}",
+    stats.total_processed,
+    stats.basic_updated,
+    stats.social_updated,
+    stats.technical_updated,
+    stats.errors
   );
 
   Ok(())
@@ -272,7 +276,7 @@ fn process_social(conn: &mut PgConnection, sid: i64, data: &Value) -> Result<()>
   let discord_url = links
     .and_then(|l| l.get("chat_url"))
     .and_then(|urls| urls.as_array())
-    .and_then(|arr| arr.iter().find(|url| url.as_str().map_or(false, |s| s.contains("discord"))))
+    .and_then(|arr| arr.iter().find(|url| url.as_str().is_some_and(|s| s.contains("discord"))))
     .and_then(|v| v.as_str())
     .map(|s| s.to_string());
 

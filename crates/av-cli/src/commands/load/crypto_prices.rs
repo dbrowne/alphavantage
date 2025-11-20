@@ -330,7 +330,7 @@ async fn fetch_from_coingecko(
     })?;
 
   let timestamp = if let Some(ts) = coin_data.get("last_updated_at").and_then(|v| v.as_i64()) {
-    DateTime::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now())
+    DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now)
   } else {
     Utc::now()
   };
@@ -530,7 +530,7 @@ async fn fetch_price_parallel(
   client: &reqwest::Client,
   symbol_with_mappings: &SymbolWithMappings,
   source_priority: &[String],
-  parallel_fetch: bool,
+  _parallel_fetch: bool, //todo: fix this!!!
   coingecko_api_key: Option<&str>,
   coinmarketcap_api_key: Option<&str>,
   alphavantage_api_key: Option<&str>,
@@ -827,7 +827,7 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
       // Group mappings by sid
       let mut mappings_by_sid: HashMap<i64, Vec<SymbolMapping>> = HashMap::new();
       for mapping in all_mappings {
-        mappings_by_sid.entry(mapping.sid).or_insert_with(Vec::new).push(mapping);
+        mappings_by_sid.entry(mapping.sid).or_default().push(mapping);
       }
 
       // Combine symbols with their mappings
@@ -836,7 +836,7 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
         .map(|(sid, symbol)| SymbolWithMappings {
           sid,
           symbol,
-          mappings: mappings_by_sid.remove(&sid).unwrap_or_else(Vec::new),
+          mappings: mappings_by_sid.remove(&sid).unwrap_or_default(),
         })
         .collect();
 
@@ -938,7 +938,7 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
     }
 
     // Try cache first
-    let cache_key = generate_cache_key(sid, &symbol);
+    let cache_key = generate_cache_key(sid, symbol);
     let price = if let Some(cached) = get_cached_price(&cache_config, &cache_key).await {
       cache_hits += 1;
       Some(cached)
