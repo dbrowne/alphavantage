@@ -45,6 +45,12 @@ use std::path::Path;
 
 pub struct CsvProcessor;
 
+impl Default for CsvProcessor {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl CsvProcessor {
   pub fn new() -> Self {
     Self

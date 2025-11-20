@@ -492,7 +492,7 @@ impl DataLoader for CryptoIntradayLoader {
     let mut all_prices = Vec::new();
     let mut symbols_loaded = 0;
     let mut symbols_failed = 0;
-    let mut symbols_skipped = 0;
+    let symbols_skipped = 0;
     let mut failed_symbols = Vec::new();
 
     // Filter symbols if primary_only is set
@@ -523,7 +523,7 @@ impl DataLoader for CryptoIntradayLoader {
           progress.set_message(format!("Loading {} ({})", symbol, market));
 
           match loader
-            .fetch_crypto_intraday_csv(&context, &symbol, &market, &interval_str, sid)
+            .fetch_crypto_intraday_csv(context, &symbol, &market, &interval_str, sid)
             .await
           {
             Ok(prices) => {

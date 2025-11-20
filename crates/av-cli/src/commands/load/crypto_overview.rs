@@ -1301,7 +1301,7 @@ async fn fetch_github_data(
         let caps = re.captures(link)?;
         caps.get(1)?.as_str().parse::<i32>().ok()
       })
-      .or_else(|| Some(1))
+      .or(Some(1))
   } else {
     None
   };
@@ -1332,7 +1332,7 @@ async fn fetch_github_data(
         let caps = re.captures(link)?;
         caps.get(1)?.as_str().parse::<i32>().ok()
       })
-      .or_else(|| Some(1))
+      .or(Some(1))
   } else {
     None
   };
@@ -1359,7 +1359,7 @@ async fn fetch_github_data(
         let caps = re.captures(link)?;
         caps.get(1)?.as_str().parse::<i32>().ok()
       })
-      .or_else(|| Some(1))
+      .or(Some(1))
   } else {
     None
   };
