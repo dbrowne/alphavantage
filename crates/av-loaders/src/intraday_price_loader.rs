@@ -48,8 +48,9 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 /// Supported intervals for intraday data
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IntradayInterval {
+  #[default]
   Min1,
   Min5,
   Min15,
@@ -90,12 +91,6 @@ impl IntradayInterval {
       IntradayInterval::Min30 => 30,
       IntradayInterval::Min60 => 60,
     }
-  }
-}
-
-impl Default for IntradayInterval {
-  fn default() -> Self {
-    IntradayInterval::Min1 // Default to 1-minute intervals
   }
 }
 
@@ -332,6 +327,7 @@ impl IntradayPriceLoader {
     let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
 
     // Try to insert, if it fails due to duplicate, update instead
+
     let insert_result = sql_query(
       "INSERT INTO api_response_cache
              (cache_key, api_source, endpoint_url, response_data, status_code, expires_at, cached_at)
@@ -448,7 +444,7 @@ impl IntradayPriceLoader {
   /// Fetch intraday data in CSV format from API or cache
   async fn fetch_intraday_csv(
     &self,
-    context: &LoaderContext,
+    _context: &LoaderContext,
     symbol: &str,
     interval: &str,
     month: Option<&str>,
@@ -595,7 +591,7 @@ impl DataLoader for IntradayPriceLoader {
           progress.set_message(format!("Loading {}", symbol));
 
           match loader
-            .fetch_intraday_csv(&context, &symbol, &interval_str, month.as_deref(), sid)
+            .fetch_intraday_csv(context, &symbol, &interval_str, month.as_deref(), sid)
             .await
           {
             Ok(prices) => {

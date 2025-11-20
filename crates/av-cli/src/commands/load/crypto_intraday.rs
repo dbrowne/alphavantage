@@ -159,7 +159,7 @@ async fn get_latest_timestamps(
 async fn save_crypto_intraday_prices_optimized(
   config: &Config,
   prices: Vec<CryptoIntradayPriceData>,
-  update_existing: bool,
+  _update_existing: bool, //todo: fix this!!
   update_symbols: bool,
   check_each_record: bool,
   latest_timestamps: HashMap<i64, DateTime<Utc>>,
@@ -187,10 +187,10 @@ async fn save_crypto_intraday_prices_optimized(
       // Group prices by symbol for efficient processing
       let mut prices_by_symbol: HashMap<i64, Vec<CryptoIntradayPriceData>> = HashMap::new();
       for price in prices {
-        prices_by_symbol.entry(price.sid).or_insert_with(Vec::new).push(price);
+        prices_by_symbol.entry(price.sid).or_default().push(price);
       }
 
-      for (sid, mut symbol_prices) in prices_by_symbol {
+      for (sid, symbol_prices) in prices_by_symbol {
         let original_count = symbol_prices.len();
         let latest_existing = latest_timestamps.get(&sid);
 

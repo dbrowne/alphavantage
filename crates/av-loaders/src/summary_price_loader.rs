@@ -321,7 +321,7 @@ impl SummaryPriceLoader {
   /// Fetch daily prices in CSV format from API or cache
   async fn fetch_daily_csv(
     &self,
-    context: &LoaderContext,
+    _context: &LoaderContext, //todo:: fix this
     symbol: &str,
     outputsize: &str,
     sid: i64,
@@ -459,7 +459,7 @@ impl DataLoader for SummaryPriceLoader {
     let mut all_prices = Vec::new();
     let mut loaded_count = 0;
     let mut error_count = 0;
-    let mut skipped_count = 0;
+    let skipped_count = 0;
 
     // Process symbols sequentially with rate limiting
     for (sid, symbol) in input.symbols.iter() {

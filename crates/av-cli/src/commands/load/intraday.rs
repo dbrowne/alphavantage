@@ -27,7 +27,7 @@
  * SOFTWARE.
  */
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use diesel::prelude::*;
@@ -204,7 +204,7 @@ async fn get_latest_timestamps(
 async fn save_intraday_prices_optimized(
   config: &Config,
   prices: Vec<IntradayPriceData>,
-  update_existing: bool,
+  _update_existing: bool, //todo: FIX THIS!!
   update_symbols: bool,
   check_each_record: bool,
   latest_timestamps: HashMap<i64, DateTime<Utc>>,
@@ -232,10 +232,10 @@ async fn save_intraday_prices_optimized(
       // Group prices by symbol for efficient processing
       let mut prices_by_symbol: HashMap<i64, Vec<IntradayPriceData>> = HashMap::new();
       for price in prices {
-        prices_by_symbol.entry(price.sid).or_insert_with(Vec::new).push(price);
+        prices_by_symbol.entry(price.sid).or_default().push(price);
       }
 
-      for (sid, mut symbol_prices) in prices_by_symbol {
+      for (sid, symbol_prices) in prices_by_symbol {
         unique_sids.insert(sid);
         let original_count = symbol_prices.len();
         let latest_existing = latest_timestamps.get(&sid);
@@ -424,7 +424,9 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
 
   // Configure the loader
   let loader_cfg = IntradayPriceConfig {
-    interval: IntradayInterval::from_str(args.interval.as_str()).unwrap(),
+    interval: IntradayInterval::from_str(args.interval.as_str()).ok_or_else(|| {
+      anyhow!("Invalid interval: {}. Must be 1min, 5min, 15min, 30min, or 60min", args.interval)
+    })?,
     extended_hours: args.extended_hours,
     adjusted: args.adjusted,
     month: args.month.clone(),

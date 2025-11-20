@@ -162,7 +162,7 @@ impl OverviewLoader {
     &self,
     client: &Arc<av_client::AlphaVantageClient>,
     symbol: &str,
-    retry_delay: u64,
+    _retry_delay: u64, // todo::Fix this!!
   ) -> Result<Option<CompanyOverview>, av_client::Error> {
     match client.fundamentals().company_overview(symbol).await {
       Ok(overview) => {

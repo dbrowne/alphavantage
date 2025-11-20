@@ -51,20 +51,15 @@ use av_models::common::SymbolMatch;
 use av_models::time_series::SymbolSearch;
 
 /// Configuration for symbol matching behavior
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SymbolMatchMode {
   /// Only accept exact symbol matches (case-insensitive)
   ExactMatch,
   /// Accept all symbols returned from search
+  #[default]
   AllMatches,
   /// Accept top N matches based on match score
   TopMatches(usize),
-}
-
-impl Default for SymbolMatchMode {
-  fn default() -> Self {
-    SymbolMatchMode::AllMatches
-  }
 }
 
 /// Configuration for security loader caching behavior

@@ -73,7 +73,7 @@ pub struct NewsLoaderInput {
 }
 
 /// Output from news loader
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct NewsLoaderOutput {
   pub data: Vec<NewsData>,
   pub loaded_count: usize,
@@ -82,20 +82,6 @@ pub struct NewsLoaderOutput {
   pub api_calls: usize,
   pub errors: Vec<String>,
   pub no_data_count: usize,
-}
-
-impl Default for NewsLoaderOutput {
-  fn default() -> Self {
-    Self {
-      data: Vec::new(),
-      loaded_count: 0,
-      articles_processed: 0,
-      cache_hits: 0,
-      api_calls: 0,
-      errors: Vec::new(),
-      no_data_count: 0,
-    }
-  }
 }
 
 /// News loader implementation

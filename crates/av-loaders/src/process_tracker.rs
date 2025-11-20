@@ -58,6 +58,12 @@ pub struct ProcessTracker {
   processes: Arc<Mutex<Vec<ProcessInfo>>>,
 }
 
+impl Default for ProcessTracker {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl ProcessTracker {
   pub fn new() -> Self {
     Self { processes: Arc::new(Mutex::new(Vec::new())) }
