@@ -258,6 +258,10 @@ impl DataLoader for OverviewLoader {
           // Generate cache key
           let cache_key = loader.generate_cache_key(&symbol_info.symbol);
 
+          if let Some(pb) = &progress {
+            pb.inc(1);
+          }
+
           // Check cache first (if cache repository is available)
           let (overview_result, from_cache) = if let Some(cache_repo) = &cache_repo_opt {
             if let Some(cached_overview) = loader.get_cached_response(&cache_key, cache_repo).await
@@ -289,10 +293,6 @@ impl DataLoader for OverviewLoader {
               Err(e) => return Err((e, false)),
             }
           };
-
-          if let Some(pb) = &progress {
-            pb.inc(1);
-          }
 
           // Add delay to respect rate limits (only if not from cache)
           if !from_cache {
