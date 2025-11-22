@@ -176,7 +176,7 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
       cd ../crates/av-database/postgres
       diesel setup
       diesel migration generate base_tables
-      cp base_migrations/* migrations/20*base_tables
+      cp base_migration/* migrations/20*base_tables
       diesel migration run
 `      PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
 `      
