@@ -485,7 +485,7 @@ async fn main() -> Result<()> {
         info!("Manual updates completed: {} basic, {} social, {} technical",
             basic_count, social_count, technical_count);
     } else {
-        eprintln!("Manual updates contain validation errors, skipping...");
+        error!("Manual updates contain validation errors, skipping...");
     }
 
     // Final statistics
