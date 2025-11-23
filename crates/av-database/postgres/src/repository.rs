@@ -37,6 +37,7 @@ use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 use diesel::result::Error as DieselError;
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1427,7 +1428,7 @@ impl CryptoRepository for CryptoRepositoryImpl {
         match result {
           Ok(_) => total_affected += 1,
           Err(e) => {
-            eprintln!("Error upserting market {:?}/{:?}: {}", market.exchange, market.base, e)
+            error!("Error upserting market {:?}/{:?}: {}", market.exchange, market.base, e)
           }
         }
       }
@@ -1487,7 +1488,7 @@ impl CryptoRepository for CryptoRepositoryImpl {
 
         match result {
           Ok(_) => saved_count += 1,
-          Err(e) => eprintln!("Error upserting social data for sid {}: {}", social.sid, e),
+          Err(e) => error!("Error upserting social data for sid {}: {}", social.sid, e),
         }
       }
 
@@ -1549,7 +1550,7 @@ impl CryptoRepository for CryptoRepositoryImpl {
 
         match result {
           Ok(_) => saved_count += 1,
-          Err(e) => eprintln!("Error upserting technical data for sid {}: {}", technical.sid, e),
+          Err(e) => error!("Error upserting technical data for sid {}: {}", technical.sid, e),
         }
       }
 

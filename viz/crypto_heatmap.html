@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cryptocurrency Heatmap</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0a0e1a;
+            color: #e2e8f0;
+            overflow: hidden;
+        }
+
+        #header {
+            background: #1a1f2e;
+            padding: 20px;
+            border-bottom: 2px solid #2d3748;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 8px;
+        }
+
+        #metadata {
+            font-size: 14px;
+            color: #94a3b8;
+        }
+
+        .legend {
+            display: flex;
+            gap: 30px;
+            margin-top: 12px;
+            align-items: center;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+
+        .legend-gradient {
+            width: 200px;
+            height: 20px;
+            border-radius: 4px;
+            background: linear-gradient(to right, #ef4444, #fbbf24, #22c55e);
+        }
+
+        #heatmap-container {
+            width: 100vw;
+            height: calc(100vh - 140px);
+            position: relative;
+        }
+
+        #heatmap {
+            width: 100%;
+            height: 100%;
+        }
+
+        .crypto-cell {
+            stroke: #0a0e1a;
+            stroke-width: 2px;
+            cursor: pointer;
+            transition: all 0.2s;
+            filter: url(#cell-shadow);
+        }
+
+        .crypto-cell:hover {
+            opacity: 0.9;
+            stroke: #fff;
+            stroke-width: 3px;
+            filter: url(#cell-shadow-hover);
+        }
+
+        .crypto-label {
+            pointer-events: none;
+            font-size: 12px;
+            font-weight: 600;
+            fill: #fff;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.6);
+        }
+
+        .crypto-change {
+            pointer-events: none;
+            font-size: 11px;
+            fill: #fff;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8);
+        }
+
+        .crypto-price {
+            pointer-events: none;
+            font-size: 10px;
+            fill: #cbd5e1;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8);
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(10, 14, 26, 0.98);
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px;
+            pointer-events: none;
+            font-size: 13px;
+            max-width: 300px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.6);
+            z-index: 1000;
+        }
+
+        .tooltip.show {
+            opacity: 1;
+        }
+
+        .tooltip-title {
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #334155;
+        }
+
+        .tooltip-row {
+            margin: 4px 0;
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .tooltip-label {
+            color: #94a3b8;
+            font-size: 11px;
+        }
+
+        .tooltip-value {
+            color: #f1f5f9;
+            font-weight: 500;
+        }
+
+        .positive { color: #22c55e; }
+        .negative { color: #ef4444; }
+        .neutral { color: #94a3b8; }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-size: 18px;
+        }
+
+        .spinner {
+            border: 3px solid #334155;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 12px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>📊 Cryptocurrency Market Heatmap</h1>
+        <div id="metadata"></div>
+
+        <div class="legend">
+            <div class="legend-item">
+                <span>24h Change:</span>
+                <div class="legend-gradient"></div>
+                <span style="font-size: 11px; color: #94a3b8;">Red (down) → Yellow (flat) → Green (up)</span>
+            </div>
+            <div class="legend-item">
+                <span style="font-size: 11px; color: #94a3b8;">Size = Market Cap • Click to view details</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="heatmap-container">
+        <svg id="heatmap"></svg>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+    <div id="loading">
+        <div class="spinner"></div>
+        Loading crypto data...
+    </div>
+
+    <script>
+        const width = window.innerWidth;
+        const height = window.innerHeight - 140;
+
+        const svg = d3.select('#heatmap')
+            .attr('width', width)
+            .attr('height', height);
+
+        // Add shadow filters and gradients for 3D effect
+        const defs = svg.append('defs');
+
+        // Linear gradient for 3D lighting effect (top-to-bottom)
+        const lightGradient = defs.append('linearGradient')
+            .attr('id', 'light-gradient')
+            .attr('x1', '0%')
+            .attr('y1', '0%')
+            .attr('x2', '0%')
+            .attr('y2', '100%');
+
+        lightGradient.append('stop')
+            .attr('offset', '0%')
+            .attr('stop-color', '#ffffff')
+            .attr('stop-opacity', '0.4');
+
+        lightGradient.append('stop')
+            .attr('offset', '40%')
+            .attr('stop-color', '#ffffff')
+            .attr('stop-opacity', '0.1');
+
+        lightGradient.append('stop')
+            .attr('offset', '60%')
+            .attr('stop-color', '#000000')
+            .attr('stop-opacity', '0.1');
+
+        lightGradient.append('stop')
+            .attr('offset', '100%')
+            .attr('stop-color', '#000000')
+            .attr('stop-opacity', '0.4');
+
+        // Normal shadow with inner lighting
+        const filter = defs.append('filter')
+            .attr('id', 'cell-shadow')
+            .attr('height', '150%')
+            .attr('width', '150%');
+
+        filter.append('feGaussianBlur')
+            .attr('in', 'SourceAlpha')
+            .attr('stdDeviation', 5);
+
+        filter.append('feOffset')
+            .attr('dx', 3)
+            .attr('dy', 6)
+            .attr('result', 'offsetblur');
+
+        filter.append('feComponentTransfer')
+            .append('feFuncA')
+            .attr('type', 'linear')
+            .attr('slope', 0.75);
+
+        const feMerge = filter.append('feMerge');
+        feMerge.append('feMergeNode');
+        feMerge.append('feMergeNode')
+            .attr('in', 'SourceGraphic');
+
+        // Hover shadow (stronger and more lifted)
+        const filterHover = defs.append('filter')
+            .attr('id', 'cell-shadow-hover')
+            .attr('height', '150%')
+            .attr('width', '150%');
+
+        filterHover.append('feGaussianBlur')
+            .attr('in', 'SourceAlpha')
+            .attr('stdDeviation', 8);
+
+        filterHover.append('feOffset')
+            .attr('dx', 5)
+            .attr('dy', 10)
+            .attr('result', 'offsetblur');
+
+        filterHover.append('feComponentTransfer')
+            .append('feFuncA')
+            .attr('type', 'linear')
+            .attr('slope', 0.9);
+
+        const feMergeHover = filterHover.append('feMerge');
+        feMergeHover.append('feMergeNode');
+        feMergeHover.append('feMergeNode')
+            .attr('in', 'SourceGraphic');
+
+        const tooltip = d3.select('#tooltip');
+
+        // Color scale for price change
+        const colorScale = d3.scaleLinear()
+            .domain([-10, 0, 10])  // -10% to +10%
+            .range(['#ef4444', '#fbbf24', '#22c55e'])
+            .clamp(true);
+
+        // Load crypto data
+        d3.json('crypto_data.json').then(data => {
+            document.getElementById('loading').style.display = 'none';
+
+            // Update metadata
+            const metadata = data.metadata;
+            document.getElementById('metadata').innerHTML = `
+                ${metadata.description}<br>
+                <strong>Generated:</strong> ${new Date(metadata.generated_at).toLocaleString()} •
+                <strong>Total Cryptos:</strong> ${metadata.total_cryptos}
+            `;
+
+            // Prepare data for treemap
+            const cryptos = data.cryptos.filter(c => c.market_cap > 0);
+
+            const root = d3.hierarchy({children: cryptos})
+                .sum(d => d.market_cap || 0)
+                .sort((a, b) => b.value - a.value);
+
+            // Create treemap layout
+            const treemap = d3.treemap()
+                .size([width, height])
+                .padding(2)
+                .round(true);
+
+            treemap(root);
+
+            // Draw cells
+            const cells = svg.selectAll('g')
+                .data(root.leaves())
+                .join('g')
+                .attr('transform', d => `translate(${d.x0},${d.y0})`);
+
+            // Add base rectangles with color
+            cells.append('rect')
+                .attr('class', 'crypto-cell')
+                .attr('width', d => d.x1 - d.x0)
+                .attr('height', d => d.y1 - d.y0)
+                .attr('fill', d => colorScale(d.data.price_change_pct_24h || 0))
+                .on('mouseover', showTooltip)
+                .on('mouseout', hideTooltip)
+                .on('click', handleClick);
+
+            // Add gradient overlay for 3D lighting effect
+            cells.append('rect')
+                .attr('width', d => d.x1 - d.x0)
+                .attr('height', d => d.y1 - d.y0)
+                .attr('fill', 'url(#light-gradient)')
+                .attr('pointer-events', 'none');
+
+            // Add symbol labels
+            cells.append('text')
+                .attr('class', 'crypto-label')
+                .attr('x', d => (d.x1 - d.x0) / 2)
+                .attr('y', d => (d.y1 - d.y0) / 2 - 8)
+                .attr('text-anchor', 'middle')
+                .text(d => {
+                    const width = d.x1 - d.x0;
+                    return width > 60 ? d.data.symbol : '';
+                })
+                .style('font-size', d => {
+                    const width = d.x1 - d.x0;
+                    return width > 100 ? '14px' : '11px';
+                });
+
+            // Add price change labels
+            cells.append('text')
+                .attr('class', 'crypto-change')
+                .attr('x', d => (d.x1 - d.x0) / 2)
+                .attr('y', d => (d.y1 - d.y0) / 2 + 8)
+                .attr('text-anchor', 'middle')
+                .text(d => {
+                    const width = d.x1 - d.x0;
+                    const change = d.data.price_change_pct_24h;
+                    if (width > 60 && change != null) {
+                        return `${change > 0 ? '+' : ''}${change.toFixed(2)}%`;
+                    }
+                    return '';
+                });
+
+            // Add price labels (for larger cells)
+            cells.append('text')
+                .attr('class', 'crypto-price')
+                .attr('x', d => (d.x1 - d.x0) / 2)
+                .attr('y', d => (d.y1 - d.y0) / 2 + 22)
+                .attr('text-anchor', 'middle')
+                .text(d => {
+                    const width = d.x1 - d.x0;
+                    const height = d.y1 - d.y0;
+                    if (width > 100 && height > 50 && d.data.current_price != null) {
+                        return `$${formatPrice(d.data.current_price)}`;
+                    }
+                    return '';
+                });
+
+        }).catch(error => {
+            document.getElementById('loading').innerHTML = `
+                <div class="spinner"></div>
+                Error loading data: ${error.message}<br>
+                <small style="margin-top: 12px; display: block; color: #94a3b8;">
+                    Make sure you've run ./extract_crypto.sh first
+                </small>
+            `;
+        });
+
+        function formatPrice(price) {
+            if (price >= 1000) return price.toLocaleString('en-US', {maximumFractionDigits: 0});
+            if (price >= 1) return price.toFixed(2);
+            if (price >= 0.01) return price.toFixed(4);
+            return price.toFixed(6);
+        }
+
+        function formatNumber(num) {
+            if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
+            if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+            if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+            if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
+            return num.toFixed(2);
+        }
+
+        function showTooltip(event, d) {
+            const crypto = d.data;
+            const changeClass = crypto.price_change_pct_24h > 0 ? 'positive' :
+                               crypto.price_change_pct_24h < 0 ? 'negative' : 'neutral';
+
+            const content = `
+                <div class="tooltip-title">${crypto.symbol} - ${crypto.name}</div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Price:</span>
+                    <span class="tooltip-value">$${formatPrice(crypto.current_price)}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">24h Change:</span>
+                    <span class="tooltip-value ${changeClass}">
+                        ${crypto.price_change_pct_24h > 0 ? '+' : ''}${crypto.price_change_pct_24h?.toFixed(2) || 'N/A'}%
+                    </span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">7d Change:</span>
+                    <span class="tooltip-value">
+                        ${crypto.price_change_pct_7d != null ?
+                            (crypto.price_change_pct_7d > 0 ? '+' : '') + crypto.price_change_pct_7d.toFixed(2) + '%' :
+                            'N/A'}
+                    </span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Market Cap:</span>
+                    <span class="tooltip-value">$${formatNumber(crypto.market_cap)}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">24h Volume:</span>
+                    <span class="tooltip-value">$${formatNumber(crypto.volume_24h)}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">Rank:</span>
+                    <span class="tooltip-value">#${crypto.market_cap_rank || 'N/A'}</span>
+                </div>
+            `;
+
+            // Set content first to get tooltip dimensions
+            tooltip
+                .html(content)
+                .classed('show', true);
+
+            // Get tooltip dimensions
+            const tooltipNode = tooltip.node();
+            const tooltipWidth = tooltipNode.offsetWidth;
+            const tooltipHeight = tooltipNode.offsetHeight;
+
+            // Calculate position with offset
+            let left = event.pageX + 10;
+            let top = event.pageY + 10;
+
+            // Check if tooltip goes off right edge
+            if (left + tooltipWidth > window.innerWidth) {
+                left = event.pageX - tooltipWidth - 10;
+            }
+
+            // Check if tooltip goes off bottom edge
+            if (top + tooltipHeight > window.innerHeight) {
+                top = event.pageY - tooltipHeight - 10;
+            }
+
+            // Ensure tooltip doesn't go off left edge
+            if (left < 0) {
+                left = 10;
+            }
+
+            // Ensure tooltip doesn't go off top edge
+            if (top < 0) {
+                top = 10;
+            }
+
+            tooltip
+                .style('left', left + 'px')
+                .style('top', top + 'px');
+        }
+
+        function hideTooltip() {
+            tooltip.classed('show', false);
+        }
+
+        function handleClick(event, d) {
+            // Use CoinGecko if available, otherwise fallback to CoinMarketCap
+            if (d.data.coingecko_id) {
+                window.open(`https://www.coingecko.com/en/coins/${d.data.coingecko_id}`, '_blank');
+            } else if (d.data.coinmarketcap_id) {
+                window.open(`https://coinmarketcap.com/currencies/${d.data.coinmarketcap_id}/`, '_blank');
+            }
+            // If neither mapping exists, do nothing
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            location.reload(); // Simple approach for POC
+        });
+    </script>
+</body>
+</html>

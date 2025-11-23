@@ -42,6 +42,7 @@ use av_core::{Config, Error};
 use av_models::news::NewsSentiment;
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant, sleep};
+use tracing::error;
 
 /// Sentiment analysis results for a group of securities
 #[derive(Debug)]
@@ -101,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   // Load configuration
   let config = Config::from_env().map_err(|e| {
-    eprintln!("Failed to load configuration. Make sure ALPHA_VANTAGE_API_KEY is set.");
+    error!("Failed to load configuration. Make sure ALPHA_VANTAGE_API_KEY is set.");
     e
   })?;
 
