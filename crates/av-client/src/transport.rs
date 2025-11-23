@@ -101,11 +101,18 @@ impl Transport {
             return Ok(data);
           }
           Err(e) => {
-            error!("Failed to parse response for function {:?}: {}", function, e);
-            return Err(Error::Parse(format!(
-              "Failed to parse response for function {:?}: {}",
-              function, e
-            )));
+            if e.to_string().contains("Failed to deserialize response") {
+              return Err(Error::Parse(format!(
+                "Failed to parse response for function {:?}: {}",
+                function, e
+              )));
+            } else {
+              error!("Failed to parse response for function {:?}: {}", function, e);
+              return Err(Error::Parse(format!(
+                "Failed to parse response for function {:?}: {}",
+                function, e
+              )));
+            }
           }
         },
         Err(e) => {
