@@ -195,6 +195,10 @@ impl OverviewLoader {
         } else if e.to_string().contains("Invalid API call") {
           // No data available
           Ok(None)
+        } else if e.to_string().contains("Parse error") {
+          // No data available
+          info!("🌐 API miss - no overview data available for {}", symbol);
+          Ok(None)
         } else {
           Err(e)
         }
