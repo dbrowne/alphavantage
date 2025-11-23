@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- quick and dirty code here This is proof of concept work for future development -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>News Relationship Network - POC</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            overflow: hidden;
+        }
+
+        #header {
+            background: #1e293b;
+            padding: 20px;
+            border-bottom: 2px solid #334155;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 8px;
+        }
+
+        #metadata {
+            font-size: 14px;
+            color: #94a3b8;
+        }
+
+        #controls {
+            display: flex;
+            gap: 20px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        label {
+            font-size: 13px;
+            color: #cbd5e1;
+            font-weight: 500;
+        }
+
+        select, input[type="range"] {
+            padding: 6px 12px;
+            background: #334155;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        select:hover, input[type="range"]:hover {
+            border-color: #64748b;
+        }
+
+        input[type="range"] {
+            width: 150px;
+        }
+
+        .legend {
+            display: flex;
+            gap: 20px;
+            margin-top: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+        }
+
+        #viz-container {
+            width: 100vw;
+            height: calc(100vh - 180px);
+            position: relative;
+        }
+
+        #network {
+            width: 100%;
+            height: 100%;
+        }
+
+        #stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(30, 41, 59, 0.95);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            font-size: 13px;
+            min-width: 200px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        #stats h3 {
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: #f1f5f9;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 8px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 6px 0;
+            color: #cbd5e1;
+        }
+
+        .stat-label {
+            color: #94a3b8;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(15, 23, 42, 0.98);
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px;
+            pointer-events: none;
+            font-size: 13px;
+            max-width: 300px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+            z-index: 1000;
+        }
+
+        .tooltip.show {
+            opacity: 1;
+        }
+
+        .tooltip-title {
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #334155;
+        }
+
+        .tooltip-content {
+            color: #cbd5e1;
+            line-height: 1.5;
+        }
+
+        .tooltip-row {
+            margin: 4px 0;
+        }
+
+        .tooltip-label {
+            color: #94a3b8;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .node {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .node:hover {
+            stroke-width: 3px;
+        }
+
+        .node-label {
+            font-size: 11px;
+            pointer-events: none;
+            text-anchor: middle;
+            fill: #e2e8f0;
+            text-shadow: 0 0 4px #0f172a, 0 0 4px #0f172a;
+        }
+
+        .link {
+            stroke-opacity: 0.6;
+            transition: stroke-opacity 0.2s;
+        }
+
+        .link:hover {
+            stroke-opacity: 1;
+        }
+
+        .sentiment-positive { color: #22c55e; }
+        .sentiment-negative { color: #ef4444; }
+        .sentiment-neutral { color: #94a3b8; }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-size: 18px;
+        }
+
+        .spinner {
+            border: 3px solid #334155;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 12px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>📊 News Article-Symbol Network Visualization</h1>
+        <div id="metadata"></div>
+
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #3b82f6;"></div>
+                <span>Stock Symbols</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #a855f7;"></div>
+                <span>Articles</span>
+            </div>
+            <div class="legend-item">
+                <span style="font-size: 11px; color: #94a3b8;">Large nodes = more articles • Hover for details • Click articles to open</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="viz-container">
+        <svg id="network"></svg>
+        <div id="stats">
+            <h3>Network Stats</h3>
+            <div class="stat-row">
+                <span class="stat-label">Symbols:</span>
+                <span class="stat-value" id="symbolCount">-</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Articles:</span>
+                <span class="stat-value" id="articleCount">-</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Connections:</span>
+                <span class="stat-value" id="linkCount">-</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+    <div id="loading">
+        <div class="spinner"></div>
+        Loading data...
+    </div>
+
+    <script>
+        // Configuration
+        const width = window.innerWidth;
+        const height = window.innerHeight - 180;
+
+        // Color schemes
+        const typeColors = {
+            'Equity': '#3b82f6',
+            'Cryptocurrency': '#f59e0b',
+            'ETF': '#10b981',
+            'Other': '#6b7280',
+            'Article': '#a855f7'
+        };
+
+        const sentimentColor = d3.scaleLinear()
+            .domain([-1, 0, 1])
+            .range(['#ef4444', '#94a3b8', '#22c55e']);
+
+        // Setup SVG
+        const svg = d3.select('#network')
+            .attr('width', width)
+            .attr('height', height);
+
+        const g = svg.append('g');
+
+        // Zoom behavior
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 4])
+            .on('zoom', (event) => {
+                g.attr('transform', event.transform);
+            });
+
+        svg.call(zoom);
+
+        // Tooltip
+        const tooltip = d3.select('#tooltip');
+
+        // Load and visualize data
+        d3.json('news_data.json').then(data => {
+            document.getElementById('loading').style.display = 'none';
+
+            // Update metadata
+            const metadata = data.metadata;
+            document.getElementById('metadata').innerHTML = `
+                ${metadata.description || 'News article-symbol visualization'}<br>
+                <strong>Generated:</strong> ${metadata.generated_at ? new Date(metadata.generated_at).toLocaleString() : 'N/A'} •
+                <strong>Method:</strong> ${metadata.derivation_method || 'Derived from article titles'}
+            `;
+
+            // Process data
+            let nodes = [];
+            let links = [];
+
+            // Add symbol nodes
+            if (data.symbols) {
+                data.symbols.forEach(symbol => {
+                    nodes.push({
+                        id: `sym_${symbol.id}`,
+                        type: 'symbol',
+                        label: symbol.symbol,
+                        fullName: symbol.name,
+                        symbol: symbol.symbol,
+                        articleCount: symbol.article_count,
+                        secType: 'Equity', // For coloring
+                        size: Math.sqrt(symbol.article_count) * 3 + 15
+                    });
+                });
+            }
+
+            // Add article nodes
+            if (data.articles) {
+                data.articles.forEach(article => {
+                    nodes.push({
+                        id: `a_${article.id}`,
+                        type: 'article',
+                        label: article.title.substring(0, 30) + '...',
+                        fullTitle: article.title,
+                        date: new Date(article.date),
+                        url: article.url,
+                        sourceId: article.source_id,
+                        size: 8
+                    });
+                });
+            }
+
+            // Add links from relationships
+            if (data.relationships) {
+                data.relationships.forEach(rel => {
+                    links.push({
+                        source: `sym_${rel.symbol_id}`,
+                        target: `a_${rel.article_id}`,
+                        relevance: 0.8,  // Default relevance
+                        sentiment: 0,    // Neutral sentiment
+                        sentimentLabel: 'Neutral'
+                    });
+                });
+            }
+
+            // Create node and link lookup maps
+            const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+            // Store links globally for tooltip access
+            window.graphLinks = links;
+
+            // Initial render
+            render(nodes, links);
+
+            // Setup controls
+            setupControls(nodes, links);
+
+        }).catch(error => {
+            document.getElementById('loading').innerHTML = `
+                <div class="spinner"></div>
+                Error loading data: ${error.message}<br>
+                <small style="margin-top: 12px; display: block; color: #94a3b8;">
+                    Make sure you've run ./extract_data.sh first
+                </small>
+            `;
+        });
+
+        function render(nodes, links) {
+            // Clear existing elements
+            g.selectAll('*').remove();
+
+            // Update stats
+            const symbolNodes = nodes.filter(n => n.type === 'symbol');
+            const articleNodes = nodes.filter(n => n.type === 'article');
+            const avgSentiment = d3.mean(links, d => d.sentiment) || 0;
+
+            document.getElementById('symbolCount').textContent = symbolNodes.length;
+            document.getElementById('articleCount').textContent = articleNodes.length;
+            document.getElementById('linkCount').textContent = links.length;
+
+            // Create force simulation
+            const simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(links).id(d => d.id).distance(100))
+                .force('charge', d3.forceManyBody().strength(-300))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => d.size + 5));
+
+            // Create links
+            const link = g.append('g')
+                .selectAll('line')
+                .data(links)
+                .join('line')
+                .attr('class', 'link')
+                .attr('stroke', d => sentimentColor(d.sentiment))
+                .attr('stroke-width', d => Math.max(1, d.relevance * 3))
+                .on('mouseover', showLinkTooltip)
+                .on('mouseout', hideTooltip);
+
+            // Create nodes
+            const node = g.append('g')
+                .selectAll('circle')
+                .data(nodes)
+                .join('circle')
+                .attr('class', 'node')
+                .attr('r', d => d.size)
+                .attr('fill', d => d.type === 'symbol' ? typeColors.Equity : typeColors.Article)
+                .attr('stroke', '#1e293b')
+                .attr('stroke-width', 2)
+                .on('mouseover', showNodeTooltip)
+                .on('mouseout', hideTooltip)
+                .on('click', handleNodeClick)
+                .call(drag(simulation));
+
+            // Create labels
+            const label = g.append('g')
+                .selectAll('text')
+                .data(nodes)
+                .join('text')
+                .attr('class', 'node-label')
+                .attr('dy', d => d.size + 12)
+                .text(d => d.type === 'symbol' ? d.label : '');
+
+            // Update positions on tick
+            simulation.on('tick', () => {
+                link
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                node
+                    .attr('cx', d => d.x)
+                    .attr('cy', d => d.y);
+
+                label
+                    .attr('x', d => d.x)
+                    .attr('y', d => d.y);
+            });
+        }
+
+        function setupControls(allNodes, allLinks) {
+            // No controls for this simple version
+        }
+
+        function showNodeTooltip(event, d) {
+            let content = '';
+
+            if (d.type === 'symbol') {
+                // Count actual connections in the visualization
+                const actualConnections = window.graphLinks ?
+                    window.graphLinks.filter(link => link.source.id === d.id || link.source === d.id).length :
+                    d.articleCount;
+
+                const articleInfo = actualConnections === d.articleCount ?
+                    `${d.articleCount} articles` :
+                    `${actualConnections} of ${d.articleCount} articles shown`;
+
+                content = `
+                    <div class="tooltip-title">${d.symbol} - ${d.fullName}</div>
+                    <div class="tooltip-content">
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">Symbol:</span> ${d.symbol}
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">Articles:</span> ${articleInfo}
+                        </div>
+                    </div>
+                `;
+            } else {
+                content = `
+                    <div class="tooltip-title">${d.fullTitle}</div>
+                    <div class="tooltip-content">
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">Date:</span> ${d.date.toLocaleDateString()} ${d.date.toLocaleTimeString()}
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">Click to open</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            tooltip
+                .html(content)
+                .style('left', (event.pageX + 10) + 'px')
+                .style('top', (event.pageY + 10) + 'px')
+                .classed('show', true);
+        }
+
+        function showLinkTooltip(event, d) {
+            const content = `
+                <div class="tooltip-title">Symbol Mention</div>
+                <div class="tooltip-content">
+                    <div class="tooltip-row">
+                        Article mentions this symbol
+                    </div>
+                </div>
+            `;
+
+            tooltip
+                .html(content)
+                .style('left', (event.pageX + 10) + 'px')
+                .style('top', (event.pageY + 10) + 'px')
+                .classed('show', true);
+        }
+
+        function hideTooltip() {
+            tooltip.classed('show', false);
+        }
+
+        function handleNodeClick(event, d) {
+            if (d.type === 'article' && d.url) {
+                window.open(d.url, '_blank');
+            }
+        }
+
+        function drag(simulation) {
+            function dragstarted(event) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            }
+
+            function dragged(event) {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            }
+
+            function dragended(event) {
+                if (!event.active) simulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            }
+
+            return d3.drag()
+                .on('start', dragstarted)
+                .on('drag', dragged)
+                .on('end', dragended);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            location.reload(); // Simple approach for POC
+        });
+    </script>
+</body>
+</html>
