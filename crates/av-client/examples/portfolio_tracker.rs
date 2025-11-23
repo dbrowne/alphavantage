@@ -44,6 +44,7 @@ use std::io::{self, Write};
 use av_models::{fundamentals::TopGainersLosers, time_series::GlobalQuote};
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
+use tracing::error;
 
 /// Portfolio holding information
 #[derive(Debug, Clone)]
@@ -91,8 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   // Load configuration from environment
   let config = Config::from_env().map_err(|e| {
-    eprintln!("Failed to load configuration. Make sure ALPHA_VANTAGE_API_KEY is set.");
-    eprintln!("Error: {}", e);
+    error!("Failed to load configuration. Make sure ALPHA_VANTAGE_API_KEY is set. Error: {}", e);
     e
   })?;
 
