@@ -44,7 +44,7 @@ dotenvy = "0.15.0"
 
 # Logging and tracing
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 log = "0.4.28"
 
 # Time handling
