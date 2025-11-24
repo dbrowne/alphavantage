@@ -33,15 +33,15 @@ A high-performance, async Rust client library and comprehensive data pipeline fo
 - ✅ Symbol loading and persistence for equities, bonds, and mutual funds
 - ✅ Database schema with TimescaleDB support
 - ✅ AlphaVantage API client endpoints 
-- ✅Basic project structure and workspace organization
+- ✅ Basic project structure and workspace organization
 - ✅ Data loaders for equity price data
 - ✅ Data loaders for fundamentals, news, crypto
+- ✅ Data loaders for price data
+- ✅ CLI commands for data fetching and analysis
+- ✅ AlphaVantage API client endpoints for equity market price data
 
 ### In Development
--  🚧AlphaVantage API client endpoints for equity market price data
-- 🚧 CoinGecko API client endpoints
-- 🚧 Data loaders for price data
-- 🚧 CLI commands for data fetching and analysis
+- 🚧 CoinGecko  and Coinmarketcap API client endpoints
 - 🚧 Full integration between API client and database
 - 🚧 Corporate actions
 
@@ -50,7 +50,11 @@ A high-performance, async Rust client library and comprehensive data pipeline fo
 This project aims to provide a complete solution for fetching, storing, and analyzing financial market data from AlphaVantage and Coingecko. Built with Rust's async ecosystem, it will offer high-performance data loading capabilities with proper rate limiting, concurrent processing, and comprehensive error handling.
 
 
-
+## Security advisories for dependencies as of Nov 23 2025:
+- [RUSTSEC-2025-0047](https://rustsec.org/advisories/RUSTSEC-2025-0047)  slab: Out-of-bounds access in get_disjoint_mut due to incorrect bounds check
+- [RUSTSEC-2024-0375](https://rustsec.org/advisories/RUSTSEC-2024-0375)  atty is **UNMAINTAINED**
+- [RUSTSEC-2021-0141](https://rustsec.org/advisories/RUSTSEC-2021-0141)  dotenv is **UNMAINTAINED**
+- [RUSTSEC-2025-0119](https://rustsec.org/advisories/RUSTSEC-2025-0119)  number_prefix is **UNMAINTAINED**
 ## 📦 Project Structure
 
 ```
@@ -122,7 +126,7 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
 - Crypto currency symbol loader ✅
 - Crypto Overview loader ✅
 - News loader with sentiment analysis ✅
-- Price data loaders 🚧
+- Price data loaders ✅
 - Batch processing with progress tracking 🚧
 
 
@@ -146,7 +150,7 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
 ### Phase 5: Production Features
 - Comprehensive error handling
 - Retry logic
-- Caching layer
+- ✅ Caching layer
 
 
 
