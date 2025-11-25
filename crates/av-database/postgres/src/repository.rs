@@ -630,91 +630,99 @@ impl OverviewRepository for OverviewRepositoryImpl {
 
     tokio::task::spawn_blocking(move || {
       use crate::schema::{overviewexts, overviews as overviews_table, symbols};
+      use diesel::upsert::excluded;
 
       let mut conn = pool.get()?;
 
+      // PostgreSQL has a limit of 65535 parameters per query.
+      // NewOverviewOwned has ~22 columns, NewOverviewextOwned has ~27 columns.
+      // Use batch size of 500 to stay well under the limit (500 * 27 = 13,500 params).
+      const BATCH_SIZE: usize = 500;
+
       conn.transaction(|conn| {
-        // Separate overview and overview_ext records for batch insertion
-        let overview_records: Vec<_> = overviews.iter().map(|(ov, _)| ov.clone()).collect();
-        let overview_ext_records: Vec<_> =
-          overviews.iter().map(|(_, ov_ext)| ov_ext.clone()).collect();
-        let sids: Vec<i64> = overviews.iter().map(|(ov, _)| ov.sid).collect();
+        let total = overviews.len();
 
-        // Batch insert/update all overviews
-        use diesel::upsert::excluded;
+        for chunk in overviews.chunks(BATCH_SIZE) {
+          let overview_records: Vec<_> = chunk.iter().map(|(ov, _)| ov.clone()).collect();
+          let overview_ext_records: Vec<_> =
+            chunk.iter().map(|(_, ov_ext)| ov_ext.clone()).collect();
+          let sids: Vec<i64> = chunk.iter().map(|(ov, _)| ov.sid).collect();
 
-        diesel::insert_into(overviews_table::table)
-          .values(&overview_records)
-          .on_conflict(overviews_table::sid)
-          .do_update()
-          .set((
-            overviews_table::symbol.eq(excluded(overviews_table::symbol)),
-            overviews_table::name.eq(excluded(overviews_table::name)),
-            overviews_table::description.eq(excluded(overviews_table::description)),
-            overviews_table::cik.eq(excluded(overviews_table::cik)),
-            overviews_table::exchange.eq(excluded(overviews_table::exchange)),
-            overviews_table::currency.eq(excluded(overviews_table::currency)),
-            overviews_table::country.eq(excluded(overviews_table::country)),
-            overviews_table::sector.eq(excluded(overviews_table::sector)),
-            overviews_table::industry.eq(excluded(overviews_table::industry)),
-            overviews_table::address.eq(excluded(overviews_table::address)),
-            overviews_table::fiscal_year_end.eq(excluded(overviews_table::fiscal_year_end)),
-            overviews_table::latest_quarter.eq(excluded(overviews_table::latest_quarter)),
-            overviews_table::market_capitalization
-              .eq(excluded(overviews_table::market_capitalization)),
-            overviews_table::ebitda.eq(excluded(overviews_table::ebitda)),
-            overviews_table::pe_ratio.eq(excluded(overviews_table::pe_ratio)),
-            overviews_table::peg_ratio.eq(excluded(overviews_table::peg_ratio)),
-            overviews_table::book_value.eq(excluded(overviews_table::book_value)),
-            overviews_table::dividend_per_share.eq(excluded(overviews_table::dividend_per_share)),
-            overviews_table::dividend_yield.eq(excluded(overviews_table::dividend_yield)),
-            overviews_table::eps.eq(excluded(overviews_table::eps)),
-          ))
-          .execute(conn)?;
+          // Batch insert/update overviews
+          diesel::insert_into(overviews_table::table)
+            .values(&overview_records)
+            .on_conflict(overviews_table::sid)
+            .do_update()
+            .set((
+              overviews_table::symbol.eq(excluded(overviews_table::symbol)),
+              overviews_table::name.eq(excluded(overviews_table::name)),
+              overviews_table::description.eq(excluded(overviews_table::description)),
+              overviews_table::cik.eq(excluded(overviews_table::cik)),
+              overviews_table::exchange.eq(excluded(overviews_table::exchange)),
+              overviews_table::currency.eq(excluded(overviews_table::currency)),
+              overviews_table::country.eq(excluded(overviews_table::country)),
+              overviews_table::sector.eq(excluded(overviews_table::sector)),
+              overviews_table::industry.eq(excluded(overviews_table::industry)),
+              overviews_table::address.eq(excluded(overviews_table::address)),
+              overviews_table::fiscal_year_end.eq(excluded(overviews_table::fiscal_year_end)),
+              overviews_table::latest_quarter.eq(excluded(overviews_table::latest_quarter)),
+              overviews_table::market_capitalization
+                .eq(excluded(overviews_table::market_capitalization)),
+              overviews_table::ebitda.eq(excluded(overviews_table::ebitda)),
+              overviews_table::pe_ratio.eq(excluded(overviews_table::pe_ratio)),
+              overviews_table::peg_ratio.eq(excluded(overviews_table::peg_ratio)),
+              overviews_table::book_value.eq(excluded(overviews_table::book_value)),
+              overviews_table::dividend_per_share.eq(excluded(overviews_table::dividend_per_share)),
+              overviews_table::dividend_yield.eq(excluded(overviews_table::dividend_yield)),
+              overviews_table::eps.eq(excluded(overviews_table::eps)),
+            ))
+            .execute(conn)?;
 
-        // Batch insert/update all overview extensions
-        diesel::insert_into(overviewexts::table)
-          .values(&overview_ext_records)
-          .on_conflict(overviewexts::sid)
-          .do_update()
-          .set((
-            overviewexts::revenue_per_share_ttm.eq(excluded(overviewexts::revenue_per_share_ttm)),
-            overviewexts::profit_margin.eq(excluded(overviewexts::profit_margin)),
-            overviewexts::operating_margin_ttm.eq(excluded(overviewexts::operating_margin_ttm)),
-            overviewexts::return_on_assets_ttm.eq(excluded(overviewexts::return_on_assets_ttm)),
-            overviewexts::return_on_equity_ttm.eq(excluded(overviewexts::return_on_equity_ttm)),
-            overviewexts::revenue_ttm.eq(excluded(overviewexts::revenue_ttm)),
-            overviewexts::gross_profit_ttm.eq(excluded(overviewexts::gross_profit_ttm)),
-            overviewexts::diluted_eps_ttm.eq(excluded(overviewexts::diluted_eps_ttm)),
-            overviewexts::quarterly_earnings_growth_yoy
-              .eq(excluded(overviewexts::quarterly_earnings_growth_yoy)),
-            overviewexts::quarterly_revenue_growth_yoy
-              .eq(excluded(overviewexts::quarterly_revenue_growth_yoy)),
-            overviewexts::analyst_target_price.eq(excluded(overviewexts::analyst_target_price)),
-            overviewexts::trailing_pe.eq(excluded(overviewexts::trailing_pe)),
-            overviewexts::forward_pe.eq(excluded(overviewexts::forward_pe)),
-            overviewexts::price_to_sales_ratio_ttm
-              .eq(excluded(overviewexts::price_to_sales_ratio_ttm)),
-            overviewexts::price_to_book_ratio.eq(excluded(overviewexts::price_to_book_ratio)),
-            overviewexts::ev_to_revenue.eq(excluded(overviewexts::ev_to_revenue)),
-            overviewexts::ev_to_ebitda.eq(excluded(overviewexts::ev_to_ebitda)),
-            overviewexts::beta.eq(excluded(overviewexts::beta)),
-            overviewexts::week_high_52.eq(excluded(overviewexts::week_high_52)),
-            overviewexts::week_low_52.eq(excluded(overviewexts::week_low_52)),
-            overviewexts::day_moving_average_50.eq(excluded(overviewexts::day_moving_average_50)),
-            overviewexts::day_moving_average_200.eq(excluded(overviewexts::day_moving_average_200)),
-            overviewexts::shares_outstanding.eq(excluded(overviewexts::shares_outstanding)),
-            overviewexts::dividend_date.eq(excluded(overviewexts::dividend_date)),
-            overviewexts::ex_dividend_date.eq(excluded(overviewexts::ex_dividend_date)),
-          ))
-          .execute(conn)?;
+          // Batch insert/update overview extensions
+          diesel::insert_into(overviewexts::table)
+            .values(&overview_ext_records)
+            .on_conflict(overviewexts::sid)
+            .do_update()
+            .set((
+              overviewexts::revenue_per_share_ttm.eq(excluded(overviewexts::revenue_per_share_ttm)),
+              overviewexts::profit_margin.eq(excluded(overviewexts::profit_margin)),
+              overviewexts::operating_margin_ttm.eq(excluded(overviewexts::operating_margin_ttm)),
+              overviewexts::return_on_assets_ttm.eq(excluded(overviewexts::return_on_assets_ttm)),
+              overviewexts::return_on_equity_ttm.eq(excluded(overviewexts::return_on_equity_ttm)),
+              overviewexts::revenue_ttm.eq(excluded(overviewexts::revenue_ttm)),
+              overviewexts::gross_profit_ttm.eq(excluded(overviewexts::gross_profit_ttm)),
+              overviewexts::diluted_eps_ttm.eq(excluded(overviewexts::diluted_eps_ttm)),
+              overviewexts::quarterly_earnings_growth_yoy
+                .eq(excluded(overviewexts::quarterly_earnings_growth_yoy)),
+              overviewexts::quarterly_revenue_growth_yoy
+                .eq(excluded(overviewexts::quarterly_revenue_growth_yoy)),
+              overviewexts::analyst_target_price.eq(excluded(overviewexts::analyst_target_price)),
+              overviewexts::trailing_pe.eq(excluded(overviewexts::trailing_pe)),
+              overviewexts::forward_pe.eq(excluded(overviewexts::forward_pe)),
+              overviewexts::price_to_sales_ratio_ttm
+                .eq(excluded(overviewexts::price_to_sales_ratio_ttm)),
+              overviewexts::price_to_book_ratio.eq(excluded(overviewexts::price_to_book_ratio)),
+              overviewexts::ev_to_revenue.eq(excluded(overviewexts::ev_to_revenue)),
+              overviewexts::ev_to_ebitda.eq(excluded(overviewexts::ev_to_ebitda)),
+              overviewexts::beta.eq(excluded(overviewexts::beta)),
+              overviewexts::week_high_52.eq(excluded(overviewexts::week_high_52)),
+              overviewexts::week_low_52.eq(excluded(overviewexts::week_low_52)),
+              overviewexts::day_moving_average_50.eq(excluded(overviewexts::day_moving_average_50)),
+              overviewexts::day_moving_average_200
+                .eq(excluded(overviewexts::day_moving_average_200)),
+              overviewexts::shares_outstanding.eq(excluded(overviewexts::shares_outstanding)),
+              overviewexts::dividend_date.eq(excluded(overviewexts::dividend_date)),
+              overviewexts::ex_dividend_date.eq(excluded(overviewexts::ex_dividend_date)),
+            ))
+            .execute(conn)?;
 
-        // Batch update symbols table for all sids
-        diesel::update(symbols::table.filter(symbols::sid.eq_any(&sids)))
-          .set(symbols::overview.eq(true))
-          .execute(conn)?;
+          // Batch update symbols table
+          diesel::update(symbols::table.filter(symbols::sid.eq_any(&sids)))
+            .set(symbols::overview.eq(true))
+            .execute(conn)?;
+        }
 
-        Ok(overviews.len())
+        Ok(total)
       })
     })
     .await
