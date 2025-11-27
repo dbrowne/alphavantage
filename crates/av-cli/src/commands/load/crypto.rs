@@ -574,6 +574,7 @@ fn validate_api_keys(sources: &[CryptoDataSource], args: &CryptoArgs) -> Result<
 }
 
 /// Save crypto symbols to database using existing patterns
+#[allow(dead_code)] // Retained for potential direct database operations bypassing repository
 async fn save_crypto_symbols_to_db(
   database_url: &str,
   symbols: &[CryptoSymbol],

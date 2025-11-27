@@ -183,6 +183,7 @@ impl CryptoMarketsLoader {
     Self { config, client }
   }
   /// adding new mapping functionality
+  #[allow(dead_code)] // Reserved for future dynamic mapping implementation
   async fn fetch_market_data_for_symbol_with_dynamic_mapping(
     &self,
     symbol: CryptoSymbolForMarkets,
