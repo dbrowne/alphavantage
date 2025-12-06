@@ -44,6 +44,7 @@ use tracing::{debug, warn};
 /// # Returns
 /// * `Ok(())` - Symbol was logged successfully
 /// * `Err(e)` - Database error occurred
+#[allow(dead_code)] // Available for CLI commands that need direct DB access
 pub fn log_missing_symbol(
   conn: &mut PgConnection, //todo: decouple from postgres
   symbol: &str,
@@ -80,6 +81,7 @@ pub fn log_missing_symbol(
 ///
 /// # Returns
 /// Number of successfully logged symbols
+#[allow(dead_code)] // Available for CLI commands that need direct DB access
 pub fn log_missing_symbols_batch(
   conn: &mut PgConnection,
   symbols: &[String],

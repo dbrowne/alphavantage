@@ -637,6 +637,7 @@ impl OverviewRepository for OverviewRepositoryImpl {
       // PostgreSQL has a limit of 65535 parameters per query.
       // NewOverviewOwned has ~22 columns, NewOverviewextOwned has ~27 columns.
       // Use batch size of 500 to stay well under the limit (500 * 27 = 13,500 params).
+      // todo!:: Add progress bar when running attached to a terminal
       const BATCH_SIZE: usize = 500;
 
       conn.transaction(|conn| {

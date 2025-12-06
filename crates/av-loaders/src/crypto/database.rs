@@ -112,6 +112,7 @@ impl From<CryptoSymbol> for CryptoSymbolForDb {
 /// The actual database operations are performed by the CLI consumer.
 pub struct CryptoDbLoader {
   crypto_loader: CryptoSymbolLoader,
+  #[allow(dead_code)] // Reserved for future batch processing enhancements
   batch_processor: BatchProcessor,
   cache_repository: Option<Arc<dyn CacheRepository>>,
 }
@@ -230,6 +231,7 @@ impl CryptoDbLoader {
   }
 
   /// Find existing token by composite key (symbol + source + source_id)
+  #[allow(dead_code)] // Reserved for future deduplication logic
   async fn find_existing_token(
     &self,
     symbol: &str,
@@ -283,6 +285,7 @@ impl CryptoDbLoader {
   }
 
   /// Modified process_symbols method to use new multi-token approach
+  #[allow(dead_code)] // Alternative implementation for future multi-token support
   async fn process_symbols_multi_token(
     &self,
     symbols: Vec<CryptoSymbol>,

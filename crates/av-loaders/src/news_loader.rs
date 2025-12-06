@@ -87,6 +87,7 @@ pub struct NewsLoaderOutput {
 /// News loader implementation
 pub struct NewsLoader {
   config: NewsLoaderConfig,
+  #[allow(dead_code)] // Reserved for future concurrent request limiting
   concurrent_requests: usize,
 }
 
