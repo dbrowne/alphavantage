@@ -224,9 +224,9 @@ async fn save_summary_prices(
     let progress = ProgressBar::new(data.len() as u64);
     progress.set_style(
       ProgressStyle::default_bar()
-          .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-          .unwrap()
-          .progress_chars("##-"),
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+        .unwrap()
+        .progress_chars("##-"),
     );
     progress.set_message("Querying database for existing records to avoid duplicates");
 
