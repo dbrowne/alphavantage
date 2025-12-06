@@ -219,7 +219,7 @@ async fn save_summary_prices(
     let mut records_to_insert = Vec::new();
     let mut records_to_update = Vec::new();
     let mut skipped_count = 0;
-    
+
     // Set up progress bar for database retrieval operations
     let progress = ProgressBar::new(data.len() as u64);
     progress.set_style(
