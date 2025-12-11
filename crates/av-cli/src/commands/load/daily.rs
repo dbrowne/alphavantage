@@ -327,7 +327,7 @@ async fn save_summary_prices(
     let mut total_updated = 0;
 
     // Insert new records in batches
-    const BATCH_SIZE: usize = 10_000;
+    const BATCH_SIZE: usize = 1000;
     if !records_to_insert.is_empty() {
       info!("Inserting {} new price records", records_to_insert.len());
       for chunk in records_to_insert.chunks(BATCH_SIZE) {
