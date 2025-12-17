@@ -220,6 +220,16 @@ async fn save_summary_prices(
     let mut records_to_update = Vec::new();
     let mut skipped_count = 0;
 
+    // Set up progress bar for database retrieval operations
+    let progress = ProgressBar::new(data.len() as u64);
+    progress.set_style(
+      ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    progress.set_message("Querying database for existing records to avoid duplicates");
+
     for price_data in data {
       // Check if record already exists for this (sid, date)
       // Get the FIRST eventid for this combination (should be unique)
@@ -288,6 +298,7 @@ async fn save_summary_prices(
           price_source_id: 1,
         });
       }
+      progress.inc(1);
     }
 
     // Collect unique SIDs for updating symbols table
@@ -302,7 +313,7 @@ async fn save_summary_prices(
 
     let total_records = records_to_insert.len() + records_to_update.len();
 
-    // Set up progress bar for database operations
+    // Set up progress bar for database insert/update operations
     let progress = ProgressBar::new(total_records as u64);
     progress.set_style(
       ProgressStyle::default_bar()
@@ -486,12 +497,12 @@ pub async fn execute(args: DailyArgs, config: Config) -> Result<()> {
 
   // Display summary
   println!("\n╔════════════════════════════════════════════╗");
-  println!("║          DAILY PRICE LOADING SUMMARY        ║");
+  println!("║          DAILY PRICE LOADING SUMMARY       ║");
   println!("╠════════════════════════════════════════════╣");
-  println!("║ Symbols Loaded:     {:<24} ║", output.symbols_loaded);
-  println!("║ Symbols Failed:     {:<24} ║", output.symbols_failed);
-  println!("║ Symbols Skipped:    {:<24} ║", output.symbols_skipped);
-  println!("║ Total Records:      {:<24} ║", output.data.len());
+  println!("║ Symbols Loaded:     {:<22} ║", output.symbols_loaded);
+  println!("║ Symbols Failed:     {:<22} ║", output.symbols_failed);
+  println!("║ Symbols Skipped:    {:<22} ║", output.symbols_skipped);
+  println!("║ Total Records:      {:<22} ║", output.data.len());
   println!("╚════════════════════════════════════════════╝");
 
   // Save to database unless dry run
