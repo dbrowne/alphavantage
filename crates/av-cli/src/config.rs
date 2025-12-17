@@ -48,7 +48,7 @@ impl Config {
       env::var("DATABASE_URL").context("DATABASE_URL environment variable not set")?;
 
     let nasdaq_csv_path =
-      env::var("NASDAQ_LISTED").unwrap_or_else(|_| "./data/nasdaq-listed_csv.csv".to_string());
+      env::var("NASDAQ_LISTED").unwrap_or_else(|_| "./data/nasdaq-listed.csv".to_string());
 
     let nyse_csv_path =
       env::var("OTHER_LISTED").unwrap_or_else(|_| "./data/nyse-listed.csv".to_string());
