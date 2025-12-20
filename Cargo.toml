@@ -10,9 +10,9 @@ members = [
   resolver = "2"
 [workspace.package]
 version = "0.1.0"
-authors = ["Dwight Browne <dwight@dwightjbrowne.com"]
+authors = ["Dwight Browne <dwight@dwightjbrowne.com>"]
 edition = "2021"
-rust-version = "1.86.0"
+rust-version = "1.92.0"
 readme = "README.md"
 repository = "https://github.com/dbrowne/alphavantage"
 homepage = "https://github.com/dbrowne/alphavantage"

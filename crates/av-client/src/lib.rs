@@ -27,6 +27,32 @@
  * SOFTWARE.
  */
 
+//! # av-client
+//!
+//! Async HTTP client for the AlphaVantage financial data API.
+//!
+//! This crate provides a rate-limited, async client for accessing AlphaVantage endpoints
+//! including time series, fundamentals, forex, cryptocurrency, and news sentiment data.
+//!
+//! ## Features
+//!
+//! - **Async/Await**: Built on tokio and reqwest
+//! - **Rate Limiting**: Automatic rate limiting (75/min free, 600/min premium)
+//! - **Type Safety**: Strongly-typed responses via `av-models`
+//! - **Organized Endpoints**: Modular access to API domains
+//!
+//! ## Example
+//!
+//! ```ignore
+//! use av_client::{AlphaVantageClient, Config};
+//!
+//! let config = Config::default_with_key("your_api_key".to_string());
+//! let client = AlphaVantageClient::new(config);
+//!
+//! // Fetch daily time series
+//! let data = client.time_series().daily("AAPL", false).await?;
+//! ```
+
 #![warn(clippy::all)]
 
 pub mod client;

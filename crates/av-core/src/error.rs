@@ -69,3 +69,106 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_error_display_config() {
+    let err = Error::Config("invalid timeout".to_string());
+    assert_eq!(err.to_string(), "Configuration error: invalid timeout");
+  }
+
+  #[test]
+  fn test_error_display_api_key() {
+    let err = Error::ApiKey("key not found".to_string());
+    assert_eq!(err.to_string(), "Failed to retrieve API key");
+  }
+
+  #[test]
+  fn test_error_display_missing_field() {
+    let err = Error::MissingField("symbol".to_string());
+    assert_eq!(err.to_string(), "Missing required field: symbol");
+  }
+
+  #[test]
+  fn test_error_display_rate_limit() {
+    let err = Error::RateLimit("75 requests per minute exceeded".to_string());
+    assert_eq!(err.to_string(), "Rate limit exceeded: 75 requests per minute exceeded");
+  }
+
+  #[test]
+  fn test_error_display_invalid_response() {
+    let err = Error::InvalidResponse("empty body".to_string());
+    assert_eq!(err.to_string(), "Invalid API response: empty body");
+  }
+
+  #[test]
+  fn test_error_display_unexpected() {
+    let err = Error::Unexpected("unknown state".to_string());
+    assert_eq!(err.to_string(), "Unexpected error: unknown state");
+  }
+
+  #[test]
+  fn test_error_display_http() {
+    let err = Error::Http("connection refused".to_string());
+    assert_eq!(err.to_string(), "HTTP error: connection refused");
+  }
+
+  #[test]
+  fn test_error_display_api() {
+    let err = Error::Api("invalid symbol".to_string());
+    assert_eq!(err.to_string(), "API error: invalid symbol");
+  }
+
+  #[test]
+  fn test_error_display_parse() {
+    let err = Error::Parse("invalid number".to_string());
+    assert_eq!(err.to_string(), "Parse error: invalid number");
+  }
+
+  #[test]
+  fn test_error_from_env_var() {
+    let env_err = std::env::VarError::NotPresent;
+    let err = Error::from(env_err);
+    assert!(matches!(err, Error::EnvVar(_)));
+    assert!(err.to_string().contains("Environment variable error"));
+  }
+
+  #[test]
+  fn test_error_from_serde_json() {
+    let json_err = serde_json::from_str::<String>("invalid").unwrap_err();
+    let err = Error::from(json_err);
+    assert!(matches!(err, Error::Serde(_)));
+    assert_eq!(err.to_string(), "Serialization error");
+  }
+
+  #[test]
+  fn test_error_from_chrono_parse() {
+    let parse_err = chrono::NaiveDate::parse_from_str("invalid", "%Y-%m-%d").unwrap_err();
+    let err = Error::from(parse_err);
+    assert!(matches!(err, Error::ParseDate(_)));
+    assert_eq!(err.to_string(), "Date parsing error");
+  }
+
+  #[test]
+  fn test_error_debug_impl() {
+    let err = Error::Config("test".to_string());
+    let debug_str = format!("{:?}", err);
+    assert!(debug_str.contains("Config"));
+    assert!(debug_str.contains("test"));
+  }
+
+  #[test]
+  fn test_result_type_alias() {
+    fn returns_ok() -> Result<i32> {
+      Ok(42)
+    }
+    fn returns_err() -> Result<i32> {
+      Err(Error::Config("test".to_string()))
+    }
+    assert_eq!(returns_ok().unwrap(), 42);
+    assert!(returns_err().is_err());
+  }
+}

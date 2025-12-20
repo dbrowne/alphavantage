@@ -27,6 +27,29 @@
  * SOFTWARE.
  */
 
+//! # av-database-postgres
+//!
+//! TimescaleDB/PostgreSQL integration for AlphaVantage time-series data.
+//!
+//! This crate provides async database operations using Diesel ORM with BB8 connection
+//! pooling, optimized for storing and querying financial market data.
+//!
+//! ## Features
+//!
+//! - **Async Support**: Uses `diesel-async` with BB8 connection pool
+//! - **TimescaleDB**: Optimized for time-series data with hypertables
+//! - **Repository Pattern**: Clean abstractions for data access
+//! - **Caching**: Built-in response caching layer
+//!
+//! ## Example
+//!
+//! ```ignore
+//! use av_database_postgres::{establish_connection, Repository};
+//!
+//! let pool = establish_connection(&database_url).await?;
+//! let repo = Repository::new(pool);
+//! ```
+
 pub mod connection;
 pub mod models;
 pub mod repositories;

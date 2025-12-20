@@ -235,3 +235,260 @@ pub fn create_batches<T>(items: impl Iterator<Item = T>, batch_size: usize) -> V
 
   batches
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  // BatchConfig tests
+  #[test]
+  fn test_batch_config_default() {
+    let config = BatchConfig::default();
+    assert_eq!(config.batch_size, 100);
+    assert_eq!(config.max_concurrent_batches, 5);
+    assert!(config.continue_on_error);
+    assert_eq!(config.batch_delay_ms, Some(100));
+  }
+
+  #[test]
+  fn test_batch_config_custom() {
+    let config = BatchConfig {
+      batch_size: 50,
+      max_concurrent_batches: 10,
+      continue_on_error: false,
+      batch_delay_ms: None,
+    };
+    assert_eq!(config.batch_size, 50);
+    assert_eq!(config.max_concurrent_batches, 10);
+    assert!(!config.continue_on_error);
+    assert!(config.batch_delay_ms.is_none());
+  }
+
+  #[test]
+  fn test_batch_config_clone() {
+    let config = BatchConfig::default();
+    let cloned = config.clone();
+    assert_eq!(config.batch_size, cloned.batch_size);
+  }
+
+  #[test]
+  fn test_batch_config_debug() {
+    let config = BatchConfig::default();
+    let debug_str = format!("{:?}", config);
+    assert!(debug_str.contains("BatchConfig"));
+    assert!(debug_str.contains("batch_size"));
+  }
+
+  // BatchResult tests
+  #[test]
+  fn test_batch_result_new() {
+    let result: BatchResult<i32> = BatchResult::new();
+    assert!(result.success.is_empty());
+    assert!(result.failures.is_empty());
+    assert_eq!(result.total_processed, 0);
+  }
+
+  #[test]
+  fn test_batch_result_default() {
+    let result: BatchResult<String> = BatchResult::default();
+    assert_eq!(result.success_count(), 0);
+    assert_eq!(result.failure_count(), 0);
+  }
+
+  #[test]
+  fn test_batch_result_success_count() {
+    let mut result: BatchResult<i32> = BatchResult::new();
+    result.success.push(1);
+    result.success.push(2);
+    result.success.push(3);
+    assert_eq!(result.success_count(), 3);
+  }
+
+  #[test]
+  fn test_batch_result_failure_count() {
+    let mut result: BatchResult<i32> = BatchResult::new();
+    result.failures.push((0, LoaderError::InvalidData("test".to_string())));
+    result.failures.push((1, LoaderError::ApiError("fail".to_string())));
+    assert_eq!(result.failure_count(), 2);
+  }
+
+  #[test]
+  fn test_batch_result_success_rate_empty() {
+    let result: BatchResult<i32> = BatchResult::new();
+    assert_eq!(result.success_rate(), 0.0);
+  }
+
+  #[test]
+  fn test_batch_result_success_rate_all_success() {
+    let mut result: BatchResult<i32> = BatchResult::new();
+    result.success = vec![1, 2, 3, 4, 5];
+    result.total_processed = 5;
+    assert_eq!(result.success_rate(), 1.0);
+  }
+
+  #[test]
+  fn test_batch_result_success_rate_partial() {
+    let mut result: BatchResult<i32> = BatchResult::new();
+    result.success = vec![1, 2, 3];
+    result.failures.push((3, LoaderError::InvalidData("test".to_string())));
+    result.failures.push((4, LoaderError::InvalidData("test".to_string())));
+    result.total_processed = 5;
+    assert_eq!(result.success_rate(), 0.6);
+  }
+
+  #[test]
+  fn test_batch_result_success_rate_all_failures() {
+    let mut result: BatchResult<i32> = BatchResult::new();
+    result.failures.push((0, LoaderError::InvalidData("test".to_string())));
+    result.failures.push((1, LoaderError::InvalidData("test".to_string())));
+    result.total_processed = 2;
+    assert_eq!(result.success_rate(), 0.0);
+  }
+
+  // create_batches tests
+  #[test]
+  fn test_create_batches_empty() {
+    let items: Vec<i32> = vec![];
+    let batches = create_batches(items.into_iter(), 10);
+    assert!(batches.is_empty());
+  }
+
+  #[test]
+  fn test_create_batches_single_batch() {
+    let items = vec![1, 2, 3, 4, 5];
+    let batches = create_batches(items.into_iter(), 10);
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0], vec![1, 2, 3, 4, 5]);
+  }
+
+  #[test]
+  fn test_create_batches_exact_fit() {
+    let items = vec![1, 2, 3, 4, 5, 6];
+    let batches = create_batches(items.into_iter(), 3);
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[0], vec![1, 2, 3]);
+    assert_eq!(batches[1], vec![4, 5, 6]);
+  }
+
+  #[test]
+  fn test_create_batches_with_remainder() {
+    let items = vec![1, 2, 3, 4, 5, 6, 7];
+    let batches = create_batches(items.into_iter(), 3);
+    assert_eq!(batches.len(), 3);
+    assert_eq!(batches[0], vec![1, 2, 3]);
+    assert_eq!(batches[1], vec![4, 5, 6]);
+    assert_eq!(batches[2], vec![7]);
+  }
+
+  #[test]
+  fn test_create_batches_batch_size_one() {
+    let items = vec![1, 2, 3];
+    let batches = create_batches(items.into_iter(), 1);
+    assert_eq!(batches.len(), 3);
+    assert_eq!(batches[0], vec![1]);
+    assert_eq!(batches[1], vec![2]);
+    assert_eq!(batches[2], vec![3]);
+  }
+
+  #[test]
+  fn test_create_batches_large_batch_size() {
+    let items = vec![1, 2, 3];
+    let batches = create_batches(items.into_iter(), 1000);
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0], vec![1, 2, 3]);
+  }
+
+  // BatchProcessor tests
+  #[test]
+  fn test_batch_processor_new() {
+    let config = BatchConfig::default();
+    let processor = BatchProcessor::new(config.clone());
+    assert_eq!(processor.config.batch_size, config.batch_size);
+  }
+
+  #[test]
+  fn test_batch_processor_clone() {
+    let config = BatchConfig::default();
+    let processor = BatchProcessor::new(config);
+    let cloned = processor.clone();
+    assert_eq!(processor.config.batch_size, cloned.config.batch_size);
+  }
+
+  #[tokio::test]
+  async fn test_batch_processor_process_empty() {
+    let config = BatchConfig::default();
+    let processor = BatchProcessor::new(config);
+
+    let items: Vec<i32> = vec![];
+    let result =
+      processor.process_batches(items, |x| Box::pin(async move { Ok(x * 2) })).await.unwrap();
+
+    assert_eq!(result.total_processed, 0);
+    assert_eq!(result.success_count(), 0);
+    assert_eq!(result.failure_count(), 0);
+  }
+
+  #[tokio::test]
+  async fn test_batch_processor_process_all_success() {
+    let config = BatchConfig { batch_size: 2, batch_delay_ms: None, ..BatchConfig::default() };
+    let processor = BatchProcessor::new(config);
+
+    let items = vec![1, 2, 3, 4, 5];
+    let result =
+      processor.process_batches(items, |x| Box::pin(async move { Ok(x * 2) })).await.unwrap();
+
+    assert_eq!(result.total_processed, 5);
+    assert_eq!(result.success_count(), 5);
+    assert_eq!(result.failure_count(), 0);
+    assert!(result.success.contains(&2));
+    assert!(result.success.contains(&10));
+  }
+
+  #[tokio::test]
+  async fn test_batch_processor_process_with_failures_continue() {
+    let config = BatchConfig {
+      batch_size: 2,
+      continue_on_error: true,
+      batch_delay_ms: None,
+      ..BatchConfig::default()
+    };
+    let processor = BatchProcessor::new(config);
+
+    let items = vec![1, 2, 3, 4, 5];
+    let result = processor
+      .process_batches(items, |x| {
+        Box::pin(async move {
+          if x == 3 { Err(LoaderError::InvalidData("three is bad".to_string())) } else { Ok(x * 2) }
+        })
+      })
+      .await
+      .unwrap();
+
+    assert_eq!(result.total_processed, 5);
+    assert_eq!(result.success_count(), 4);
+    assert_eq!(result.failure_count(), 1);
+  }
+
+  #[tokio::test]
+  async fn test_batch_processor_process_with_failures_stop() {
+    let config = BatchConfig {
+      batch_size: 10,
+      continue_on_error: false,
+      batch_delay_ms: None,
+      ..BatchConfig::default()
+    };
+    let processor = BatchProcessor::new(config);
+
+    let items = vec![1, 2, 3, 4, 5];
+    let result = processor
+      .process_batches(items, |x| {
+        Box::pin(async move {
+          if x == 3 { Err(LoaderError::InvalidData("three is bad".to_string())) } else { Ok(x * 2) }
+        })
+      })
+      .await;
+
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), LoaderError::BatchProcessingError(_)));
+  }
+}
