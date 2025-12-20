@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Dwight Browne <dwight@dwightjbrowne.com>"]
 description = "Data loaders for AlphaVantage market data"
 license = "MIT"
-repository = "https://github.com/dbrowne/alphavantage.git"
+repository = "https://github.com/dbrowne/alphavantage"
 
 [lints]
 workspace = true

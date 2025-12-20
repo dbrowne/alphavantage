@@ -101,3 +101,119 @@ impl From<diesel::ConnectionError> for LoaderError {
 }
 
 pub type LoaderResult<T> = Result<T, LoaderError>;
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_loader_error_display_api_error() {
+    let err = LoaderError::ApiError("connection failed".to_string());
+    assert_eq!(err.to_string(), "API error: connection failed");
+  }
+
+  #[test]
+  fn test_loader_error_display_csv_error() {
+    let err = LoaderError::CsvError("invalid header".to_string());
+    assert_eq!(err.to_string(), "CSV parsing error: invalid header");
+  }
+
+  #[test]
+  fn test_loader_error_display_io_error() {
+    let err = LoaderError::IoError("file not found".to_string());
+    assert_eq!(err.to_string(), "IO error: file not found");
+  }
+
+  #[test]
+  fn test_loader_error_display_serialization_error() {
+    let err = LoaderError::SerializationError("invalid json".to_string());
+    assert_eq!(err.to_string(), "Serialization error: invalid json");
+  }
+
+  #[test]
+  fn test_loader_error_display_database_error() {
+    let err = LoaderError::DatabaseError("connection refused".to_string());
+    assert_eq!(err.to_string(), "Database error: connection refused");
+  }
+
+  #[test]
+  fn test_loader_error_display_rate_limit_exceeded() {
+    let err = LoaderError::RateLimitExceeded { retry_after: 60 };
+    assert_eq!(err.to_string(), "Rate limit exceeded, retry after 60 seconds");
+  }
+
+  #[test]
+  fn test_loader_error_display_invalid_data() {
+    let err = LoaderError::InvalidData("missing symbol".to_string());
+    assert_eq!(err.to_string(), "Invalid data: missing symbol");
+  }
+
+  #[test]
+  fn test_loader_error_display_process_tracking_error() {
+    let err = LoaderError::ProcessTrackingError("tracker failed".to_string());
+    assert_eq!(err.to_string(), "Process tracking error: tracker failed");
+  }
+
+  #[test]
+  fn test_loader_error_display_batch_processing_error() {
+    let err = LoaderError::BatchProcessingError("batch 3 failed".to_string());
+    assert_eq!(err.to_string(), "Batch processing error: batch 3 failed");
+  }
+
+  #[test]
+  fn test_loader_error_display_configuration_error() {
+    let err = LoaderError::ConfigurationError("invalid batch size".to_string());
+    assert_eq!(err.to_string(), "Configuration error: invalid batch size");
+  }
+
+  #[test]
+  fn test_loader_error_from_io_error() {
+    let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+    let err = LoaderError::from(io_err);
+    assert!(matches!(err, LoaderError::IoError(_)));
+    assert!(err.to_string().contains("file missing"));
+  }
+
+  #[test]
+  fn test_loader_error_from_serde_json_error() {
+    let json_err = serde_json::from_str::<String>("invalid").unwrap_err();
+    let err = LoaderError::from(json_err);
+    assert!(matches!(err, LoaderError::SerializationError(_)));
+  }
+
+  #[test]
+  fn test_loader_error_from_av_core_error() {
+    let core_err = av_core::Error::Config("bad config".to_string());
+    let err = LoaderError::from(core_err);
+    assert!(matches!(err, LoaderError::ApiError(_)));
+    assert!(err.to_string().contains("Configuration error"));
+  }
+
+  #[test]
+  fn test_loader_error_clone() {
+    let err = LoaderError::ApiError("test".to_string());
+    let cloned = err.clone();
+    assert_eq!(err.to_string(), cloned.to_string());
+  }
+
+  #[test]
+  fn test_loader_error_debug() {
+    let err = LoaderError::InvalidData("test".to_string());
+    let debug_str = format!("{:?}", err);
+    assert!(debug_str.contains("InvalidData"));
+    assert!(debug_str.contains("test"));
+  }
+
+  #[test]
+  fn test_loader_result_ok() {
+    let result: LoaderResult<i32> = Ok(42);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 42);
+  }
+
+  #[test]
+  fn test_loader_result_err() {
+    let result: LoaderResult<i32> = Err(LoaderError::InvalidData("bad".to_string()));
+    assert!(result.is_err());
+  }
+}
