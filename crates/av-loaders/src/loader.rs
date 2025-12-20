@@ -123,3 +123,92 @@ pub trait DataLoader: Send + Sync {
   /// Get loader name for logging/tracking
   fn name(&self) -> &'static str;
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_loader_config_default() {
+    let config = LoaderConfig::default();
+    assert_eq!(config.max_concurrent_requests, 10);
+    assert_eq!(config.retry_attempts, 3);
+    assert_eq!(config.retry_delay_ms, 1000);
+    assert!(config.show_progress);
+    assert!(config.track_process);
+    assert_eq!(config.batch_size, 1000);
+  }
+
+  #[test]
+  fn test_loader_config_custom() {
+    let config = LoaderConfig {
+      max_concurrent_requests: 5,
+      retry_attempts: 5,
+      retry_delay_ms: 2000,
+      show_progress: false,
+      track_process: false,
+      batch_size: 500,
+    };
+    assert_eq!(config.max_concurrent_requests, 5);
+    assert_eq!(config.retry_attempts, 5);
+    assert_eq!(config.retry_delay_ms, 2000);
+    assert!(!config.show_progress);
+    assert!(!config.track_process);
+    assert_eq!(config.batch_size, 500);
+  }
+
+  #[test]
+  fn test_loader_config_clone() {
+    let config = LoaderConfig::default();
+    let cloned = config.clone();
+    assert_eq!(config.max_concurrent_requests, cloned.max_concurrent_requests);
+    assert_eq!(config.batch_size, cloned.batch_size);
+  }
+
+  #[test]
+  fn test_loader_config_debug() {
+    let config = LoaderConfig::default();
+    let debug_str = format!("{:?}", config);
+    assert!(debug_str.contains("LoaderConfig"));
+    assert!(debug_str.contains("max_concurrent_requests"));
+  }
+
+  #[test]
+  fn test_loader_context_new() {
+    let av_config = av_core::Config::default_with_key("test_key".to_string());
+    let client = Arc::new(AlphaVantageClient::new(av_config));
+    let loader_config = LoaderConfig::default();
+
+    let context = LoaderContext::new(client.clone(), loader_config);
+
+    assert!(context.process_tracker.is_none());
+    assert!(context.cache_repository.is_none());
+    assert!(context.news_repository.is_none());
+    assert_eq!(context.config.batch_size, 1000);
+  }
+
+  #[test]
+  fn test_loader_context_with_process_tracker() {
+    let av_config = av_core::Config::default_with_key("test_key".to_string());
+    let client = Arc::new(AlphaVantageClient::new(av_config));
+    let loader_config = LoaderConfig::default();
+    let tracker = ProcessTracker::new();
+
+    let context = LoaderContext::new(client.clone(), loader_config).with_process_tracker(tracker);
+
+    assert!(context.process_tracker.is_some());
+  }
+
+  #[test]
+  fn test_loader_context_builder_chain() {
+    let av_config = av_core::Config::default_with_key("test_key".to_string());
+    let client = Arc::new(AlphaVantageClient::new(av_config));
+    let loader_config = LoaderConfig { batch_size: 50, ..LoaderConfig::default() };
+    let tracker = ProcessTracker::new();
+
+    let context = LoaderContext::new(client, loader_config).with_process_tracker(tracker);
+
+    assert!(context.process_tracker.is_some());
+    assert_eq!(context.config.batch_size, 50);
+  }
+}
