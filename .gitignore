@@ -4,6 +4,7 @@
 
 viz/*.json
 
+local_project_notes/*
 db_relations/*
 # User-specific stuff
 .idea/**/workspace.xml
