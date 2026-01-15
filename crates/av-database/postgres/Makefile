@@ -33,21 +33,21 @@ db-down:
 	@$(MAKE) -C $(TIMESCALE_DIR) down
 
 db-shell:
-	@cd $(TIMESCALE_DIR) && PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
+	@cd $(TIMESCALE_DIR) && PGPASSWORD=${DB_PASS} psql -U ${DB_USER} -h ${DB_HOST} -p ${DB_PORT} -d ${DB_NAME}
 
 migrate:
 	@echo "Running Diesel migrations..."
-	@export DATABASE_URL="postgres://ts_user:dev_pw@localhost:6433/sec_master" && \
+	@export DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}" && \
 		diesel migration run
 
 rollback:
 	@echo "Rolling back last migration..."
-	@export DATABASE_URL="postgres://ts_user:dev_pw@localhost:6433/sec_master" && \
+	@export DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}" && \
 		diesel migration revert
 
 test:
 	@echo "Running database tests..."
-	@export DATABASE_URL="postgres://ts_user:dev_pw@localhost:6433/sec_master" && \
+	@export DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}" && \
 		cargo test -- --test-threads=1
 
 
