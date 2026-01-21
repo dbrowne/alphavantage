@@ -33,6 +33,7 @@ use clap::Parser;
 use diesel::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
+use indicatif::{ProgressBar, ProgressStyle};
 use tracing::{error, info, warn};
 
 use av_client::AlphaVantageClient;
@@ -223,7 +224,15 @@ async fn save_intraday_prices_optimized(
 
       let mut conn = establish_connection(&database_url)?;
 
-      info!("💾 Processing {} intraday price records", prices.len());
+      // Set up progress bar for database insert/update operations
+      let progress = ProgressBar::new(prices.len() as u64);
+      progress.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+            .unwrap()
+            .progress_chars("##-"),
+      );
+      progress.set_message("Saving to database");
 
       let mut saved_count = 0;
       let mut skipped_count = 0;
@@ -299,6 +308,7 @@ async fn save_intraday_prices_optimized(
               .on_conflict_do_nothing() // Safety net
               .execute(&mut conn)?;
 
+            progress.inc(chunk.len() as u64);
             saved_count += inserted;
           }
 
@@ -327,6 +337,11 @@ async fn save_intraday_prices_optimized(
 
         info!("Updated symbols table for {} symbols", sids.len());
       }
+
+      progress.finish_with_message(format!(
+        "Saved {} new, , skipped {} already existing records",
+        saved_count, skipped_count
+      ));
 
       info!(
         "✅ Database operation complete: {} new records saved, {} skipped (already existed)",
