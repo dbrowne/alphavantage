@@ -31,9 +31,9 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use diesel::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::sync::Arc;
-use indicatif::{ProgressBar, ProgressStyle};
 use tracing::{error, info, warn};
 
 use av_client::AlphaVantageClient;
@@ -228,9 +228,9 @@ async fn save_intraday_prices_optimized(
       let progress = ProgressBar::new(prices.len() as u64);
       progress.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-            .unwrap()
-            .progress_chars("##-"),
+          .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+          .unwrap()
+          .progress_chars("##-"),
       );
       progress.set_message("Saving to database");
 
