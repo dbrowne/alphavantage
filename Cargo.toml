@@ -5,7 +5,8 @@ members = [
   "crates/av-models",
   "crates/av-client",
   "crates/av-loaders",
-  "crates/av-cli"
+  "crates/av-cli",
+  "crates/crypto-loaders"
 ]
   resolver = "2"
 [workspace.package]

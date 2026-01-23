@@ -1,0 +1,24 @@
+[package]
+name = "crypto-loaders"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dwight J. Browne <dwight@dwightjbrowne.com>"]
+license = "MIT"
+description = "Cryptocurrency data loaders for various exchanges and data providers"
+repository = "https://github.com/dbrowne/alphavantage"
+
+[dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+indicatif = "0.17"
+reqwest = { version = "0.12", features = ["json"] }
+rust_decimal = "1.36"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

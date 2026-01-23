@@ -27,7 +27,7 @@
  * SOFTWARE.
  */
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Args;
 use diesel::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -121,7 +121,8 @@ pub async fn execute(args: MissingSymbolsArgs, config: Config) -> Result<()> {
   }
 
   // Create API client
-  let client = AlphaVantageClient::new(config.api_config.clone());
+  let client = AlphaVantageClient::new(config.api_config.clone())
+    .map_err(|e| anyhow!("Failed to create API client: {}", e))?;
 
   // Initialize SID generator
   let mut sid_generator = tokio::task::spawn_blocking({

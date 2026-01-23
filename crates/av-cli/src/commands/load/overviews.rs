@@ -42,6 +42,20 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 
+/// Returns a default date (2000-01-01) for use when date parsing fails.
+/// This function is guaranteed not to panic as 2000-01-01 is always a valid date.
+fn default_date() -> NaiveDate {
+  // 2000-01-01 is always valid; from_ymd_opt returns Some for valid dates
+  match NaiveDate::from_ymd_opt(2000, 1, 1) {
+    Some(date) => date,
+    None => {
+      // This branch is unreachable for 2000-01-01, but we handle it
+      // by returning the Unix epoch start as an absolute fallback
+      NaiveDate::default()
+    }
+  }
+}
+
 #[derive(Args, Clone, Debug)]
 pub struct OverviewsArgs {
   /// Symbols to load (comma-separated)
@@ -99,7 +113,10 @@ pub async fn execute(args: OverviewsArgs, config: Config) -> Result<()> {
   }
 
   // Create API client
-  let client = Arc::new(AlphaVantageClient::new(config.api_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create loader configuration
   let loader_config = LoaderConfig {
@@ -240,9 +257,9 @@ async fn save_overviews_to_db(
   let overview_pairs: Vec<(NewOverviewOwned, NewOverviewextOwned)> = data
     .into_iter()
     .map(|overview_data| {
-      // Parse dates
-      let latest_quarter_date = parse_date(&overview_data.overview.latest_quarter)
-        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
+      // Parse dates - use default date (2000-01-01) if parsing fails
+      let latest_quarter_date =
+        parse_date(&overview_data.overview.latest_quarter).unwrap_or_else(default_date);
       let dividend_date_val = parse_date(&overview_data.overview.dividend_date);
       let ex_dividend_date_val = parse_date(&overview_data.overview.ex_dividend_date);
 

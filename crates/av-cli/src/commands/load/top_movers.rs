@@ -27,7 +27,7 @@
  * SOFTWARE.
  */
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chrono::NaiveDate;
 use clap::Args;
 use std::sync::Arc;
@@ -70,7 +70,10 @@ pub struct TopMoversArgs {
 
 pub async fn execute(args: TopMoversArgs, config: Config) -> Result<()> {
   // Create API client with the correct Config type
-  let client = Arc::new(AlphaVantageClient::new(config.api_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create loader configuration
   let loader_config = LoaderConfig {

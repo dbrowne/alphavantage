@@ -107,7 +107,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   })?;
 
   // Create client
-  let client = AlphaVantageClient::new(config);
+  let client = AlphaVantageClient::new(config).map_err(|e| {
+    error!("Failed to create API client: {}", e);
+    e
+  })?;
   println!("📰 AlphaVantage News Sentiment Analyzer");
   println!("═══════════════════════════════════════\n");
 

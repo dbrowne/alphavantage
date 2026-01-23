@@ -33,11 +33,9 @@
 //! and prepares it for insertion into the summaryprices table.
 
 use async_trait::async_trait;
+use av_database_postgres::repository::CacheRepository;
 use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc};
 use csv::Reader;
-use diesel::prelude::*;
-use diesel::sql_query;
-use diesel::sql_types;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -46,10 +44,11 @@ use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 
 /// Configuration for summary price loading
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SummaryPriceConfig {
   /// Maximum number of concurrent API requests
   pub max_concurrent: usize,
@@ -65,8 +64,23 @@ pub struct SummaryPriceConfig {
   pub cache_ttl_hours: u64,
   /// Force refresh (bypass cache)
   pub force_refresh: bool,
-  /// Database URL for caching
-  pub database_url: String,
+  /// Cache repository for unified database access
+  pub cache_repository: Option<Arc<dyn CacheRepository>>,
+}
+
+impl std::fmt::Debug for SummaryPriceConfig {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("SummaryPriceConfig")
+      .field("max_concurrent", &self.max_concurrent)
+      .field("update_existing", &self.update_existing)
+      .field("skip_non_trading_days", &self.skip_non_trading_days)
+      .field("api_delay_ms", &self.api_delay_ms)
+      .field("enable_cache", &self.enable_cache)
+      .field("cache_ttl_hours", &self.cache_ttl_hours)
+      .field("force_refresh", &self.force_refresh)
+      .field("cache_repository", &self.cache_repository.is_some())
+      .finish()
+  }
 }
 
 impl Default for SummaryPriceConfig {
@@ -77,10 +91,24 @@ impl Default for SummaryPriceConfig {
       skip_non_trading_days: true,
       api_delay_ms: 800, // 800ms for premium tier (75 calls/minute)
       enable_cache: true,
-      cache_ttl_hours: 24, // Cache for 24 hours
+      cache_ttl_hours: ttl::DAILY_PRICES as u64, // Cache for 24 hours
       force_refresh: false,
-      database_url: String::new(),
+      cache_repository: None,
     }
+  }
+}
+
+impl CacheConfigProvider for SummaryPriceConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours as i64
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
   }
 }
 
@@ -90,15 +118,6 @@ pub struct SummaryPriceLoader {
   semaphore: Arc<Semaphore>,
   config: SummaryPriceConfig,
   next_eventid: Arc<AtomicI64>,
-}
-
-// Cache query result structure
-#[derive(Debug, Clone, QueryableByName)]
-struct CacheQueryResult {
-  #[diesel(sql_type = diesel::sql_types::Text)]
-  response_data: String, // Store CSV data as text
-  #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-  expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl SummaryPriceLoader {
@@ -132,52 +151,49 @@ impl SummaryPriceLoader {
 
   /// Get cached CSV response if available and not expired
   async fn get_cached_csv(&self, cache_key: &str) -> Option<String> {
-    if !self.config.enable_cache || self.config.force_refresh || self.config.database_url.is_empty()
-    {
+    if !self.config.enable_cache || self.config.force_refresh {
       return None;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        debug!("Failed to connect for cache check: {}", e);
+    let cache_repo = match &self.config.cache_repository {
+      Some(repo) => repo,
+      None => {
+        debug!("No cache repository configured");
         return None;
       }
     };
 
-    let cached_entry: Option<CacheQueryResult> = sql_query(
-      "SELECT response_data::text as response_data, expires_at FROM api_response_cache
-       WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'alphavantage'",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .get_result(&mut conn)
-    .optional()
-    .unwrap_or(None);
-
-    if let Some(cache_result) = cached_entry {
-      info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
-      return Some(cache_result.response_data);
+    match cache_repo.get_json(cache_key, "alphavantage").await {
+      Ok(Some(json_value)) => {
+        info!("📦 Cache hit for {}", cache_key);
+        // Return the JSON as a string for parsing
+        Some(json_value.to_string())
+      }
+      Ok(None) => {
+        debug!("Cache miss for key: {}", cache_key);
+        None
+      }
+      Err(e) => {
+        debug!("Cache lookup error for {}: {}", cache_key, e);
+        None
+      }
     }
-
-    debug!("Cache miss for key: {}", cache_key);
-    None
   }
 
   /// Cache the CSV response
   async fn cache_csv_response(&self, cache_key: &str, csv_data: &str, symbol: &str) {
-    if !self.config.enable_cache || self.config.database_url.is_empty() {
+    if !self.config.enable_cache {
       return;
     }
 
-    let mut conn = match PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        warn!("Failed to connect for caching: {}", e);
+    let cache_repo = match &self.config.cache_repository {
+      Some(repo) => repo,
+      None => {
+        debug!("No cache repository configured for caching");
         return;
       }
     };
 
-    let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
     let endpoint_url = format!(
       "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={}&datatype=csv",
       symbol
@@ -189,43 +205,18 @@ impl SummaryPriceLoader {
       "format": "csv"
     });
 
-    let insert_result = sql_query(
-      "INSERT INTO api_response_cache
-       (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (cache_key) DO NOTHING",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .bind::<sql_types::Text, _>("alphavantage")
-    .bind::<sql_types::Text, _>(&endpoint_url)
-    .bind::<sql_types::Jsonb, _>(cache_value.clone())
-    .bind::<sql_types::Integer, _>(200)
-    .bind::<sql_types::Timestamptz, _>(expires_at)
-    .execute(&mut conn);
-
-    match insert_result {
-      Ok(_) => info!("💾 Cached daily CSV prices for {} (expires: {})", symbol, expires_at),
-      Err(_) => {
-        // If insert failed due to conflict, try update
-        let update_result = sql_query(
-          "UPDATE api_response_cache
-           SET response_data = $3, status_code = $4, expires_at = $5, cached_at = NOW()
-           WHERE cache_key = $1 AND api_source = $2",
-        )
-        .bind::<sql_types::Text, _>(cache_key)
-        .bind::<sql_types::Text, _>("alphavantage")
-        .bind::<sql_types::Jsonb, _>(cache_value)
-        .bind::<sql_types::Integer, _>(200)
-        .bind::<sql_types::Timestamptz, _>(expires_at)
-        .execute(&mut conn);
-
-        match update_result {
-          Ok(_) => {
-            info!("✅ Updated cached daily CSV prices for {} (expires: {})", symbol, expires_at)
-          }
-          Err(e) => warn!("Failed to cache daily CSV prices: {}", e),
-        }
-      }
+    match cache_repo
+      .set_json(
+        cache_key,
+        "alphavantage",
+        &endpoint_url,
+        cache_value,
+        self.config.cache_ttl_hours as i64,
+      )
+      .await
+    {
+      Ok(_) => info!("💾 Cached daily CSV prices for {}", symbol),
+      Err(e) => warn!("Failed to cache daily CSV prices for {}: {}", symbol, e),
     }
   }
 
@@ -397,31 +388,19 @@ impl SummaryPriceLoader {
   }
 
   /// Clean expired cache entries
-  pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, LoaderError> {
-    use tokio::task;
-
-    let db_url = database_url.to_string();
-
-    task::spawn_blocking(move || -> Result<usize, LoaderError> {
-      let mut conn = PgConnection::establish(&db_url)
-        .map_err(|e| LoaderError::DatabaseError(format!("Connection failed: {}", e)))?;
-
-      let deleted_count = sql_query(
-        "DELETE FROM api_response_cache
-         WHERE expires_at < NOW() AND api_source = 'alphavantage'
-         AND cache_key LIKE 'daily_prices_csv_%'",
-      )
-      .execute(&mut conn)
+  pub async fn cleanup_expired_cache(
+    cache_repository: &Arc<dyn CacheRepository>,
+  ) -> Result<usize, LoaderError> {
+    let deleted_count = cache_repository
+      .cleanup_expired("alphavantage")
+      .await
       .map_err(|e| LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e)))?;
 
-      if deleted_count > 0 {
-        info!("🧹 Cleaned up {} expired daily price cache entries", deleted_count);
-      }
+    if deleted_count > 0 {
+      info!("🧹 Cleaned up {} expired daily price cache entries", deleted_count);
+    }
 
-      Ok(deleted_count)
-    })
-    .await
-    .map_err(|e| LoaderError::DatabaseError(format!("Task join error: {}", e)))?
+    Ok(deleted_count)
   }
 }
 

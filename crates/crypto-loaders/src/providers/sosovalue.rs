@@ -27,10 +27,12 @@
  * SOFTWARE.
  */
 
-use super::CryptoDataProvider;
-use crate::crypto::{CryptoDataSource, CryptoLoaderError, CryptoSymbol};
+//! SosoValue cryptocurrency data provider.
+
+use crate::error::CryptoLoaderError;
+use crate::traits::{CryptoCache, CryptoDataProvider};
+use crate::types::{CryptoDataSource, CryptoSymbol};
 use async_trait::async_trait;
-use av_database_postgres::repository::CacheRepository;
 use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
@@ -38,6 +40,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+/// SosoValue data provider.
 pub struct SosoValueProvider {
   pub api_key: Option<String>,
 }
@@ -56,18 +59,18 @@ struct SosoValueResponse {
   #[allow(dead_code)]
   trace_id: Option<String>,
   #[allow(dead_code)]
-  tid: Option<String>, // Additional field in actual response
+  tid: Option<String>,
   data: Option<Vec<SosoValueCrypto>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SosoValueCrypto {
   #[serde(rename = "currencyId")]
-  currency_id: i64, // This is the ID field (was "id" in docs, actually "currencyId")
+  currency_id: i64,
   #[serde(rename = "currencyName")]
-  currency_name: String, // This is the symbol (was "name" in docs, actually "currencyName")
+  currency_name: String,
   #[serde(rename = "fullName")]
-  full_name: String, // This matches the docs
+  full_name: String,
   #[serde(flatten)]
   extra: HashMap<String, serde_json::Value>,
 }
@@ -77,7 +80,7 @@ impl CryptoDataProvider for SosoValueProvider {
   async fn fetch_symbols(
     &self,
     client: &Client,
-    _cache_repo: Option<&Arc<dyn CacheRepository>>,
+    _cache: Option<&Arc<dyn CryptoCache>>,
   ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from SosoValue");
 
@@ -111,11 +114,11 @@ impl CryptoDataProvider for SosoValueProvider {
       });
     }
 
-    // DEBUG: Get the raw response text first to see what we're actually receiving
+    // Get the raw response text first to see what we're actually receiving
     let response_text = response.text().await?;
     debug!("SosoValue raw response: {}", response_text);
 
-    // Try to parse the response text as JSON to see the structure
+    // Try to parse the response text as JSON
     let response_value: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
       error!("Failed to parse SosoValue response as JSON: {}", e);
       error!("Raw response was: {}", response_text);
@@ -127,7 +130,7 @@ impl CryptoDataProvider for SosoValueProvider {
 
     debug!("SosoValue parsed JSON: {:#}", response_value);
 
-    // Now try to deserialize into our expected structure
+    // Deserialize into our expected structure
     let api_response: SosoValueResponse =
       serde_json::from_value(response_value.clone()).map_err(|e| {
         error!("Failed to deserialize SosoValue response: {}", e);
@@ -165,8 +168,8 @@ impl CryptoDataProvider for SosoValueProvider {
         quote_currency: Some("USD".to_string()),
         market_cap_rank: None, // Not provided in the response
         source: CryptoDataSource::SosoValue,
-        source_id: crypto.currency_id.to_string(), // Use currencyId as source_id
-        is_active: true,                           // Assume all returned symbols are active
+        source_id: crypto.currency_id.to_string(),
+        is_active: true, // Assume all returned symbols are active
         created_at: Utc::now(),
         additional_data: crypto.extra,
       })
@@ -181,10 +184,10 @@ impl CryptoDataProvider for SosoValueProvider {
   }
 
   fn rate_limit_delay(&self) -> u64 {
-    500 // Conservative rate limiting
+    500
   }
 
   fn requires_api_key(&self) -> bool {
-    true // SosoValue requires API key
+    true
   }
 }

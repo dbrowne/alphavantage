@@ -27,10 +27,12 @@
  * SOFTWARE.
  */
 
-use super::CryptoDataProvider;
-use crate::crypto::{CryptoDataSource, CryptoLoaderError, CryptoSymbol};
+//! CoinPaprika cryptocurrency data provider.
+
+use crate::error::CryptoLoaderError;
+use crate::traits::{CryptoCache, CryptoDataProvider};
+use crate::types::{CryptoDataSource, CryptoSymbol};
 use async_trait::async_trait;
-use av_database_postgres::repository::CacheRepository;
 use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
@@ -38,6 +40,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
 
+/// CoinPaprika data provider.
 pub struct CoinPaprikaProvider;
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +59,7 @@ impl CryptoDataProvider for CoinPaprikaProvider {
   async fn fetch_symbols(
     &self,
     client: &Client,
-    _cache_repo: Option<&Arc<dyn CacheRepository>>,
+    _cache: Option<&Arc<dyn CryptoCache>>,
   ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from CoinPaprika");
 

@@ -69,7 +69,10 @@ pub async fn execute(args: CryptoDetailsArgs, config: Config) -> Result<()> {
     .map_err(|_| anyhow!("COINGECKO_API_KEY environment variable not set"))?;
 
   // Create API client
-  let client = Arc::new(AlphaVantageClient::new(config.api_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create loader configuration
   let loader_config = LoaderConfig {

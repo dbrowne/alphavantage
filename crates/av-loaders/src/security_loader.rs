@@ -41,6 +41,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
+use crate::cache::{CacheConfigProvider, ttl};
 use crate::error::LoaderError;
 use crate::{
   DataLoader, LoaderContext, LoaderResult, csv_processor::CsvProcessor,
@@ -77,9 +78,23 @@ impl Default for SecurityLoaderConfig {
   fn default() -> Self {
     Self {
       enable_cache: true,
-      cache_ttl_hours: 168, // 7 days - symbol data is relatively stable
+      cache_ttl_hours: ttl::SYMBOL_SEARCH, // 7 days - symbol data is relatively stable
       force_refresh: false,
     }
+  }
+}
+
+impl CacheConfigProvider for SecurityLoaderConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
   }
 }
 
