@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+use crate::cache::{CacheConfigProvider, ttl};
 use crate::{
   error::{LoaderError, LoaderResult},
   loader::{DataLoader, LoaderContext},
@@ -55,12 +56,26 @@ impl Default for NewsLoaderConfig {
       sort_order: Some("LATEST".to_string()),
       limit: Some(1000), // Higher limit per symbol
       enable_cache: true,
-      cache_ttl_hours: 24,
+      cache_ttl_hours: ttl::NEWS,
       force_refresh: false,
       continue_on_error: true,
       api_delay_ms: 800, // Default for standard tier (~75 calls per minute)
       progress_interval: 10,
     }
+  }
+}
+
+impl CacheConfigProvider for NewsLoaderConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
   }
 }
 

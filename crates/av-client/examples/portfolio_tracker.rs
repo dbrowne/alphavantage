@@ -97,7 +97,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   })?;
 
   // Create the AlphaVantage client
-  let client = AlphaVantageClient::new(config);
+  let client = AlphaVantageClient::new(config).map_err(|e| {
+    error!("Failed to create API client: {}", e);
+    e
+  })?;
   println!("📊 AlphaVantage Portfolio Tracker initialized");
   let (available, _reset_time) = client.rate_limit_status();
   println!("Rate limit: {} requests/minute\n", available);

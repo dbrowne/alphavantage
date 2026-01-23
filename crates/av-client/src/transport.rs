@@ -50,19 +50,22 @@ impl Transport {
   /// # Arguments
   ///
   /// * `config` - Configuration containing API key and other settings
-  pub fn new(config: Config) -> Self {
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the HTTP client cannot be created (e.g., TLS initialization failure).
+  pub fn new(config: Config) -> Result<Self> {
     let timeout = Duration::from_secs(config.timeout_secs);
 
     let client = Client::builder()
       .timeout(timeout)
       .user_agent("av-client/1.0")
       .build()
-      .map_err(|e| Error::Http(format!("Failed to create HTTP client: {}", e)))
-      .expect("Failed to create HTTP client");
+      .map_err(|e| Error::Http(format!("Failed to create HTTP client: {}", e)))?;
 
     let base_url = config.base_url;
 
-    Self { client, api_key: config.api_key, base_url }
+    Ok(Self { client, api_key: config.api_key, base_url })
   }
 
   /// Get access to the internal reqwest client for direct API calls
@@ -201,7 +204,7 @@ impl Transport {
 
   /// Create a mock transport for testing
   #[cfg(test)]
-  pub fn new_mock() -> Self {
+  pub fn new_mock() -> Result<Self> {
     let config = Config {
       api_key: "mock_key".to_string(),
       base_url: "https://mock.alphavantage.co".to_string(),
@@ -236,7 +239,7 @@ mod tests {
       max_retries: 3,
     };
 
-    let transport = Transport::new(config);
+    let transport = Transport::new(config).expect("Failed to create transport");
     assert_eq!(transport.base_url(), "https://www.alphavantage.co/query");
   }
 
@@ -251,13 +254,13 @@ mod tests {
       max_retries: 3,
     };
 
-    let transport = Transport::new(config);
+    let transport = Transport::new(config).expect("Failed to create transport");
     assert_eq!(transport.base_url(), custom_url);
   }
 
   #[tokio::test]
   async fn test_mock_transport() {
-    let transport = Transport::new_mock();
+    let transport = Transport::new_mock().expect("Failed to create mock transport");
     assert_eq!(transport.base_url(), "https://mock.alphavantage.co");
   }
 }

@@ -17,6 +17,7 @@ av-core = {path = "../av-core", version = "0.1.0"}
 av-client = { path = "../av-client", version = "0.1.0" }
 av-models = { path = "../av-models", version = "0.1.0" }
 av-database-postgres = { path = "../av-database/postgres", version = "0.1.0"}
+crypto-loaders = { path = "../crypto-loaders", version = "0.1.0" }
 # External dependencies
 tokio = { workspace = true}
 futures = { workspace = true}
@@ -31,6 +32,7 @@ indicatif = {workspace = true}
 diesel = {workspace = true}
 reqwest = {workspace = true}
 bigdecimal = {workspace = true}
+rust_decimal = "1.36"
 url = "2.5.4"
 [dev-dependencies]
 tokio-test = "0.4"

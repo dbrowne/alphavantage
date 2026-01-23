@@ -27,10 +27,12 @@
  * SOFTWARE.
  */
 
-use super::CryptoDataProvider;
-use crate::crypto::{CryptoDataSource, CryptoLoaderError, CryptoSymbol};
+//! CoinGecko cryptocurrency data provider.
+
+use crate::error::CryptoLoaderError;
+use crate::traits::{CryptoCache, CryptoDataProvider};
+use crate::types::{CryptoDataSource, CryptoSymbol};
 use async_trait::async_trait;
-use av_database_postgres::repository::CacheRepository;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// CoinGecko data provider.
 pub struct CoinGeckoProvider {
   pub api_key: Option<String>,
 }
@@ -51,15 +54,15 @@ impl CoinGeckoProvider {
   async fn fetch_all_coins_list(
     &self,
     client: &Client,
-    cache_repo: Option<&Arc<dyn CacheRepository>>,
+    cache: Option<&Arc<dyn CryptoCache>>,
   ) -> Result<Vec<CoinGeckoCoin>, CryptoLoaderError> {
     let cache_key = "coingecko_http_coins_list";
 
     // Check HTTP response cache first
-    if let Some(repo) = cache_repo {
-      if let Ok(Some(cached_data)) = repo.get_json(cache_key, "coingecko_http").await {
-        if let Ok(coins) = serde_json::from_value::<Vec<CoinGeckoCoin>>(cached_data) {
-          info!("📦 HTTP cache hit for /coins/list: {} coins from cache", coins.len());
+    if let Some(cache_ref) = cache {
+      if let Ok(Some(cached_data)) = cache_ref.get("coingecko_http", cache_key).await {
+        if let Ok(coins) = serde_json::from_str::<Vec<CoinGeckoCoin>>(&cached_data) {
+          info!("HTTP cache hit for /coins/list: {} coins from cache", coins.len());
           return Ok(coins);
         }
       }
@@ -77,7 +80,7 @@ impl CoinGeckoProvider {
 
     let url = format!("{}/coins/list", base_url);
 
-    info!("🌐 HTTP call: Fetching /coins/list from CoinGecko API");
+    info!("HTTP call: Fetching /coins/list from CoinGecko API");
 
     let response = client
       .get(&url)
@@ -97,18 +100,18 @@ impl CoinGeckoProvider {
     info!("Fetched {} total coins from CoinGecko /coins/list", coins.len());
 
     // Cache HTTP response immediately
-    if let Some(repo) = cache_repo {
-      if let Ok(json_data) = serde_json::to_value(&coins) {
-        match repo.set_json(cache_key, "coingecko_http", &url, json_data, 24).await {
+    if let Some(cache_ref) = cache {
+      if let Ok(json_data) = serde_json::to_string(&coins) {
+        match cache_ref.set("coingecko_http", cache_key, &json_data, 24).await {
           Ok(()) => {
-            info!("💾 Cached HTTP response for /coins/list (api_source: coingecko_http)");
+            info!("Cached HTTP response for /coins/list (api_source: coingecko_http)");
           }
           Err(e) => {
-            warn!("❌ Failed to cache HTTP response for /coins/list: {}", e);
+            warn!("Failed to cache HTTP response for /coins/list: {}", e);
           }
         }
       } else {
-        warn!("❌ Failed to serialize coins for HTTP caching");
+        warn!("Failed to serialize coins for HTTP caching");
       }
     }
 
@@ -149,7 +152,7 @@ impl CoinGeckoProvider {
 
     if !response.status().is_success() {
       warn!("Failed to fetch rankings page {}: HTTP {}", page, response.status());
-      return Ok(Vec::new()); // Return empty instead of failing
+      return Ok(Vec::new());
     }
 
     let coins: Vec<CoinGeckoMarketCoin> = response.json().await?;
@@ -223,12 +226,12 @@ impl CryptoDataProvider for CoinGeckoProvider {
   async fn fetch_symbols(
     &self,
     client: &Client,
-    cache_repo: Option<&Arc<dyn CacheRepository>>,
+    cache: Option<&Arc<dyn CryptoCache>>,
   ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching complete symbol universe from CoinGecko with rankings");
 
     // Step 1: Get complete universe of coins (with HTTP-level caching)
-    let all_coins = self.fetch_all_coins_list(client, cache_repo).await?;
+    let all_coins = self.fetch_all_coins_list(client, cache).await?;
 
     // Step 2: Build rankings map for top cryptocurrencies
     let rankings_map = self.build_rankings_map(client).await?;
@@ -271,7 +274,7 @@ impl CryptoDataProvider for CoinGeckoProvider {
   }
 
   fn rate_limit_delay(&self) -> u64 {
-    2000 // 2 second delay between major operations
+    2000
   }
 
   fn requires_api_key(&self) -> bool {
