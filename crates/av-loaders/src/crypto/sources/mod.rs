@@ -27,26 +27,74 @@
  * SOFTWARE.
  */
 
-pub mod coincap;
-pub mod coingecko;
-pub mod coinmarketcap;
-pub mod coinpaprika;
-pub mod sosovalue;
+//! Cryptocurrency data providers.
+//!
+//! This module re-exports providers from the `crypto-loaders` crate and provides
+//! an adapter for the av-database-postgres CacheRepository.
 
-use crate::crypto::{CryptoLoaderError, CryptoSymbol};
 use async_trait::async_trait;
 use av_database_postgres::repository::CacheRepository;
-use reqwest::Client;
 use std::sync::Arc;
 
+// Re-export types and providers from crypto-loaders
+pub use crypto_loaders::{
+  CoinCapProvider, CoinGeckoProvider, CoinMarketCapProvider, CoinPaprikaProvider,
+  CryptoCache, CryptoDataProvider, CryptoLoaderError, CryptoSymbol, SosoValueProvider,
+};
+
+/// Adapter that implements the crypto-loaders CryptoCache trait
+/// using the av-database-postgres CacheRepository.
+pub struct CacheRepositoryAdapter {
+  repo: Arc<dyn CacheRepository>,
+}
+
+impl CacheRepositoryAdapter {
+  pub fn new(repo: Arc<dyn CacheRepository>) -> Self {
+    Self { repo }
+  }
+
+  pub fn as_arc(repo: Arc<dyn CacheRepository>) -> Arc<dyn CryptoCache> {
+    Arc::new(Self::new(repo))
+  }
+}
+
 #[async_trait]
-pub trait CryptoDataProvider {
-  async fn fetch_symbols(
+impl CryptoCache for CacheRepositoryAdapter {
+  async fn get(&self, cache_type: &str, key: &str) -> Result<Option<String>, CryptoLoaderError> {
+    match self.repo.get_json(key, cache_type).await {
+      Ok(Some(value)) => {
+        // Convert serde_json::Value to String
+        Ok(Some(value.to_string()))
+      }
+      Ok(None) => Ok(None),
+      Err(e) => Err(CryptoLoaderError::CacheError(e.to_string())),
+    }
+  }
+
+  async fn set(
     &self,
-    client: &Client,
-    cache_repo: Option<&Arc<dyn CacheRepository>>,
-  ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError>;
-  fn source_name(&self) -> &'static str;
-  fn rate_limit_delay(&self) -> u64;
-  fn requires_api_key(&self) -> bool;
+    cache_type: &str,
+    key: &str,
+    value: &str,
+    ttl_hours: u32,
+  ) -> Result<(), CryptoLoaderError> {
+    // Parse the string value as JSON
+    let json_value: serde_json::Value =
+      serde_json::from_str(value).map_err(|e| CryptoLoaderError::CacheError(e.to_string()))?;
+
+    // Use empty string for endpoint since we don't have that info here
+    self
+      .repo
+      .set_json(key, cache_type, "", json_value, ttl_hours.into())
+      .await
+      .map_err(|e| CryptoLoaderError::CacheError(e.to_string()))
+  }
+
+  async fn cleanup_expired(&self, cache_type: &str) -> Result<usize, CryptoLoaderError> {
+    self
+      .repo
+      .cleanup_expired(cache_type)
+      .await
+      .map_err(|e| CryptoLoaderError::CacheError(e.to_string()))
+  }
 }

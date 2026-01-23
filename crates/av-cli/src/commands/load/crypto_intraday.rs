@@ -27,7 +27,7 @@
  * SOFTWARE.
  */
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use diesel::prelude::*;
@@ -480,7 +480,10 @@ pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   }
 
   // Create API client
-  let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config.clone())
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create loader configuration
   let loader_config = LoaderConfig {
