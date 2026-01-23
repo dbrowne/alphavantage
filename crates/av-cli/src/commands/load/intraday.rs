@@ -31,6 +31,7 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use diesel::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -39,6 +40,7 @@ use av_client::AlphaVantageClient;
 use av_database_postgres::{
   establish_connection,
   models::price::NewIntradayPrice,
+  repository::{CacheRepository, DatabaseContext},
   schema::{intradayprices, symbols},
 };
 use av_loaders::{
@@ -223,7 +225,15 @@ async fn save_intraday_prices_optimized(
 
       let mut conn = establish_connection(&database_url)?;
 
-      info!("💾 Processing {} intraday price records", prices.len());
+      // Set up progress bar for database insert/update operations
+      let progress = ProgressBar::new(prices.len() as u64);
+      progress.set_style(
+        ProgressStyle::default_bar()
+          .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+          .unwrap()
+          .progress_chars("##-"),
+      );
+      progress.set_message("Saving to database");
 
       let mut saved_count = 0;
       let mut skipped_count = 0;
@@ -299,6 +309,7 @@ async fn save_intraday_prices_optimized(
               .on_conflict_do_nothing() // Safety net
               .execute(&mut conn)?;
 
+            progress.inc(chunk.len() as u64);
             saved_count += inserted;
           }
 
@@ -328,6 +339,11 @@ async fn save_intraday_prices_optimized(
         info!("Updated symbols table for {} symbols", sids.len());
       }
 
+      progress.finish_with_message(format!(
+        "Saved {} new, , skipped {} already existing records",
+        saved_count, skipped_count
+      ));
+
       info!(
         "✅ Database operation complete: {} new records saved, {} skipped (already existed)",
         saved_count, skipped_count
@@ -344,9 +360,14 @@ async fn save_intraday_prices_optimized(
 pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
   info!("Starting intraday price loader");
 
+  // Create database context and cache repository
+  let db_context = DatabaseContext::new(&config.database_url)
+    .map_err(|e| anyhow!("Failed to create database context: {}", e))?;
+  let cache_repo: Arc<dyn CacheRepository> = Arc::new(db_context.cache_repository());
+
   // Clean up expired cache entries periodically
   if !args.dry_run {
-    match IntradayPriceLoader::cleanup_expired_cache(&config.database_url).await {
+    match IntradayPriceLoader::cleanup_expired_cache(&cache_repo).await {
       Ok(deleted) if deleted > 0 => info!("Cleaned up {} expired cache entries", deleted),
       Err(e) => warn!("Failed to cleanup expired cache: {}", e),
       _ => {}
@@ -398,7 +419,10 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
   }
 
   // Create API client
-  let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config.clone())
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create loader configuration
   let loader_config = LoaderConfig {
@@ -436,7 +460,7 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
     enable_cache: !args.force_refresh,
     cache_ttl_hours: 24, // Longer cache for equity data
     force_refresh: args.force_refresh,
-    database_url: config.database_url.clone(),
+    cache_repository: Some(cache_repo.clone()),
   };
 
   let loader = IntradayPriceLoader::new(args.concurrent)

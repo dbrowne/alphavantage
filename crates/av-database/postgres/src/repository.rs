@@ -41,6 +41,7 @@ use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 
 use crate::models::crypto::CryptoSummary;
@@ -50,6 +51,8 @@ pub type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 
 const MAX_POOL_SIZE: u32 = 50;
 const MIN_POOL_IDLE: u32 = 10;
+/// Connection timeout in seconds - pool will fail instead of retrying forever
+const CONNECTION_TIMEOUT_SECS: u64 = 30;
 
 /// Database repository errors
 #[derive(Error, Debug)]
@@ -228,11 +231,20 @@ pub struct DatabaseContext {
 
 impl DatabaseContext {
   /// Create a new database context with connection pooling
+  ///
+  /// Fails fast if the database is unavailable by testing the connection at startup.
+  /// This prevents the r2d2 pool from spawning background threads that retry forever.
   pub fn new(database_url: &str) -> RepositoryResult<Self> {
+    // Test connection BEFORE creating the pool to fail fast without background retry noise
+    PgConnection::establish(database_url).map_err(|e| {
+      RepositoryError::PoolError(format!("Failed to connect to database: {}", e))
+    })?;
+
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = Pool::builder()
       .max_size(MAX_POOL_SIZE)
       .min_idle(Some(MIN_POOL_IDLE))
+      .connection_timeout(Duration::from_secs(CONNECTION_TIMEOUT_SECS))
       .build(manager)
       .map_err(|e| RepositoryError::PoolError(e.to_string()))?;
 
@@ -240,15 +252,36 @@ impl DatabaseContext {
   }
 
   /// Create with custom pool configuration
+  ///
+  /// Fails fast if the database is unavailable by testing the connection at startup.
   pub fn with_pool_config(
     database_url: &str,
     max_size: u32,
     min_idle: u32,
   ) -> RepositoryResult<Self> {
+    Self::with_pool_config_and_timeout(database_url, max_size, min_idle, CONNECTION_TIMEOUT_SECS)
+  }
+
+  /// Create with custom pool configuration and connection timeout
+  ///
+  /// Fails fast if the database is unavailable by testing the connection at startup.
+  /// This prevents the r2d2 pool from spawning background threads that retry forever.
+  pub fn with_pool_config_and_timeout(
+    database_url: &str,
+    max_size: u32,
+    min_idle: u32,
+    timeout_secs: u64,
+  ) -> RepositoryResult<Self> {
+    // Test connection BEFORE creating the pool to fail fast without background retry noise
+    PgConnection::establish(database_url).map_err(|e| {
+      RepositoryError::PoolError(format!("Failed to connect to database: {}", e))
+    })?;
+
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = Pool::builder()
       .max_size(max_size)
       .min_idle(Some(min_idle))
+      .connection_timeout(Duration::from_secs(timeout_secs))
       .build(manager)
       .map_err(|e| RepositoryError::PoolError(e.to_string()))?;
 

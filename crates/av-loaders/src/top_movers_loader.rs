@@ -41,6 +41,7 @@ use av_database_postgres::{
 use av_models::fundamentals::{StockMover, TopGainersLosers};
 use diesel::PgConnection;
 
+use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 
 const SOURCE_NAME: &str = "top_movers";
@@ -74,9 +75,23 @@ impl Default for TopMoversConfig {
     Self {
       track_missing_symbols: true,
       enable_cache: true,
-      cache_ttl_hours: 24,
+      cache_ttl_hours: ttl::TOP_MOVERS,
       force_refresh: false,
     }
+  }
+}
+
+impl CacheConfigProvider for TopMoversConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
   }
 }
 

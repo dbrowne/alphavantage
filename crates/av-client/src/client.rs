@@ -84,6 +84,10 @@ impl AlphaVantageClient {
   ///
   /// * `config` - Configuration containing API key and other settings
   ///
+  /// # Errors
+  ///
+  /// Returns an error if the HTTP client cannot be created.
+  ///
   /// # Examples
   ///
   /// ```rust,no_run
@@ -91,9 +95,9 @@ impl AlphaVantageClient {
   /// use av_core::Config;
   ///
   /// let config = Config::from_env().expect("Missing API key");
-  /// let client = AlphaVantageClient::new(config);
+  /// let client = AlphaVantageClient::new(config).expect("Failed to create client");
   /// ```
-  pub fn new(config: Config) -> Self {
+  pub fn new(config: Config) -> Result<Self> {
     let rate_limit = config.rate_limit;
 
     // Ensure rate_limit is non-zero, fallback to default if invalid
@@ -103,9 +107,9 @@ impl AlphaVantageClient {
     let quota = Quota::per_minute(rate_limit_value);
     let rate_limiter = Arc::new(RateLimiter::direct(quota));
 
-    let transport = Arc::new(Transport::new(config));
+    let transport = Arc::new(Transport::new(config)?);
 
-    Self { transport, rate_limiter }
+    Ok(Self { transport, rate_limiter })
   }
 
   /// Create a new client with custom rate limiting
@@ -114,11 +118,15 @@ impl AlphaVantageClient {
   ///
   /// * `config` - Configuration containing API key and other settings
   /// * `rate_limiter` - Custom rate limiter instance
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the HTTP client cannot be created.
   pub fn with_rate_limiter(
     config: Config,
     rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
-  ) -> Self {
-    Self { transport: Arc::new(Transport::new(config)), rate_limiter }
+  ) -> Result<Self> {
+    Ok(Self { transport: Arc::new(Transport::new(config)?), rate_limiter })
   }
 
   /// Get access to time series endpoints
@@ -324,7 +332,7 @@ mod tests {
       base_url: av_core::ALPHA_VANTAGE_BASE_URL.to_string(),
     };
 
-    let client = AlphaVantageClient::new(config);
+    let client = AlphaVantageClient::new(config).expect("Failed to create client");
     let (available, _) = client.rate_limit_status();
     assert_eq!(available, 75); // Default rate limit
   }
@@ -339,7 +347,7 @@ mod tests {
       base_url: av_core::ALPHA_VANTAGE_BASE_URL.to_string(),
     };
 
-    let _client = AlphaVantageClient::new(config);
+    let _client = AlphaVantageClient::new(config).expect("Failed to create client");
     // Premium clients should use higher rate limits
   }
 }
