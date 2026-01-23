@@ -1,31 +1,13 @@
 /*
- *
- *
- *
- *
  * MIT License
  * Copyright (c) 2025. Dwight J. Browne
  * dwight[-at-]dwightjbrowne[-dot-]com
- *
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
  */
+
+//! Social data loader wrapper for av-loaders integration.
+//!
+//! This module provides a wrapper around the crypto-loaders SocialLoader
+//! that integrates with the av-database-postgres and av-loaders context.
 
 use crate::{LoaderError, LoaderResult};
 
@@ -33,115 +15,38 @@ use bigdecimal::BigDecimal;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
-// Define the struct locally instead of importing to avoid conflicts
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CryptoSymbolForSocial {
-  pub sid: i64,
-  pub symbol: String,
-  pub name: String,
-  pub coingecko_id: Option<String>,
-}
+// Re-export types from crypto-loaders for backward compatibility
+pub use crypto_loaders::{
+  CryptoSocialConfig, CryptoSocialInput, CryptoSymbolForSocial, ProcessedSocialData,
+  SocialLoader as BaseSocialLoader, SocialLoaderResult,
+};
 
-#[derive(Debug, Clone)]
-pub struct ProcessedSocialData {
-  pub sid: i64,
-  pub website_url: Option<String>,
-  pub whitepaper_url: Option<String>,
-  pub github_url: Option<String>,
-  pub twitter_handle: Option<String>,
-  pub twitter_followers: Option<i32>,
-  pub telegram_url: Option<String>,
-  pub telegram_members: Option<i32>,
-  pub discord_url: Option<String>,
-  pub discord_members: Option<i32>,
-  pub reddit_url: Option<String>,
-  pub reddit_subscribers: Option<i32>,
-  pub facebook_url: Option<String>,
-  pub facebook_likes: Option<i32>,
-  pub coingecko_score: Option<Decimal>,
-  pub developer_score: Option<Decimal>,
-  pub community_score: Option<Decimal>,
-  pub liquidity_score: Option<Decimal>,
-  pub public_interest_score: Option<Decimal>,
-  pub sentiment_votes_up_pct: Option<Decimal>,
-  pub sentiment_votes_down_pct: Option<Decimal>,
-}
-
-pub struct CryptoSocialConfig {
-  pub coingecko_api_key: Option<String>,
-  pub github_token: Option<String>,
-  pub skip_github: bool,
-  pub delay_ms: u64,
-  pub batch_size: usize,
-  pub max_retries: u32,
-  pub timeout_seconds: u64,
-}
-
-pub struct CryptoSocialInput {
-  pub symbols: Option<Vec<CryptoSymbolForSocial>>,
-  pub update_existing: bool,
-}
-
+/// Extended CryptoSocialLoader that supports av-loaders context and database operations.
+///
+/// This struct wraps the base SocialLoader from crypto-loaders and adds
+/// support for the LoaderContext and database persistence.
 #[allow(dead_code)]
 pub struct CryptoSocialLoader {
-  //todo:: Refacor
-  config: CryptoSocialConfig,
+  inner: BaseSocialLoader,
 }
 
 impl CryptoSocialLoader {
   pub fn new(config: CryptoSocialConfig) -> Self {
-    Self { config }
+    Self { inner: BaseSocialLoader::new(config) }
   }
 
+  /// Load social data using the inner loader.
   pub async fn load_data(
     &self,
     input: &CryptoSocialInput,
     _context: &crate::LoaderContext,
   ) -> LoaderResult<Vec<ProcessedSocialData>> {
-    // Placeholder implementation - you'll need to implement the actual data loading logic
-    let symbols = input
-      .symbols
-      .as_ref()
-      .ok_or_else(|| LoaderError::ApiError("No symbols provided".to_string()))?;
-
-    let mut results = Vec::new();
-
-    for symbol in symbols {
-      // Placeholder - implement actual API calls to fetch social data
-      let social_data = ProcessedSocialData {
-        sid: symbol.sid,
-        website_url: None,
-        whitepaper_url: None,
-        github_url: None,
-        twitter_handle: None,
-        twitter_followers: None,
-        telegram_url: None,
-        telegram_members: None,
-        discord_url: None,
-        discord_members: None,
-        reddit_url: None,
-        reddit_subscribers: None,
-        facebook_url: None,
-        facebook_likes: None,
-        coingecko_score: None,
-        developer_score: None,
-        community_score: None,
-        liquidity_score: None,
-        public_interest_score: None,
-        sentiment_votes_up_pct: None,
-        sentiment_votes_down_pct: None,
-      };
-
-      results.push(social_data);
-    }
-
-    Ok(results)
+    self.inner.load_data(input).await.map_err(|e| LoaderError::ApiError(e.to_string()))
   }
 
-  // Helper function to convert Decimal to BigDecimal
+  /// Helper function to convert Decimal to BigDecimal.
   fn decimal_to_bigdecimal(decimal: Option<Decimal>) -> Option<BigDecimal> {
     decimal.map(|d| {
       // Convert via string to avoid precision issues
@@ -149,7 +54,7 @@ impl CryptoSocialLoader {
     })
   }
 
-  // Make this method public and fix type conversion issues
+  /// Save social data to the database.
   pub async fn save_social_data(
     &self,
     conn: &mut PgConnection,
@@ -256,5 +161,11 @@ impl CryptoSocialLoader {
     }
 
     Ok((inserted, updated))
+  }
+}
+
+impl Clone for CryptoSocialLoader {
+  fn clone(&self) -> Self {
+    Self { inner: self.inner.clone() }
   }
 }

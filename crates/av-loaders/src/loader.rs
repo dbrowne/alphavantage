@@ -176,7 +176,7 @@ mod tests {
   #[test]
   fn test_loader_context_new() {
     let av_config = av_core::Config::default_with_key("test_key".to_string());
-    let client = Arc::new(AlphaVantageClient::new(av_config));
+    let client = Arc::new(AlphaVantageClient::new(av_config).expect("Failed to create client"));
     let loader_config = LoaderConfig::default();
 
     let context = LoaderContext::new(client.clone(), loader_config);
@@ -190,7 +190,7 @@ mod tests {
   #[test]
   fn test_loader_context_with_process_tracker() {
     let av_config = av_core::Config::default_with_key("test_key".to_string());
-    let client = Arc::new(AlphaVantageClient::new(av_config));
+    let client = Arc::new(AlphaVantageClient::new(av_config).expect("Failed to create client"));
     let loader_config = LoaderConfig::default();
     let tracker = ProcessTracker::new();
 
@@ -202,7 +202,7 @@ mod tests {
   #[test]
   fn test_loader_context_builder_chain() {
     let av_config = av_core::Config::default_with_key("test_key".to_string());
-    let client = Arc::new(AlphaVantageClient::new(av_config));
+    let client = Arc::new(AlphaVantageClient::new(av_config).expect("Failed to create client"));
     let loader_config = LoaderConfig { batch_size: 50, ..LoaderConfig::default() };
     let tracker = ProcessTracker::new();
 
