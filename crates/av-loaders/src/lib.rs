@@ -44,6 +44,7 @@
 //! by the consuming application.
 
 pub mod batch_processor;
+pub mod cache;
 pub mod crypto;
 pub mod csv_processor;
 pub mod error;
@@ -77,6 +78,7 @@ pub use top_movers_loader::{
 
 // Re-export commonly used types
 pub use batch_processor::{BatchConfig, BatchProcessor};
+pub use cache::{CacheConfig, CacheConfigProvider, CacheHelper, CacheResult};
 pub use error::{LoaderError, LoaderResult};
 pub use loader::{DataLoader, LoaderConfig, LoaderContext};
 pub use process_tracker::{ProcessState, ProcessTracker};
@@ -113,9 +115,10 @@ pub use crypto::{
     CryptoMarketData, CryptoMarketsConfig, CryptoMarketsInput, CryptoMarketsLoader,
     CryptoSymbolForMarkets,
   },
-  metadata_loader::{
-    CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader, CryptoMetadataOutput,
-    CryptoSymbolForMetadata, ProcessedCryptoMetadata,
+  metadata_loader::CryptoMetadataLoader,
+  metadata_types::{
+    CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataOutput, CryptoSymbolForMetadata,
+    MetadataSourceResult, ProcessedCryptoMetadata,
   },
 };
 
@@ -123,6 +126,11 @@ pub mod prelude {
   pub use crate::{
     BatchConfig,
     BatchProcessor,
+    // Cache types
+    CacheConfig,
+    CacheConfigProvider,
+    CacheHelper,
+    CacheResult,
     // Include crypto types in prelude
     CryptoDataSource,
     CryptoIntradayConfig,

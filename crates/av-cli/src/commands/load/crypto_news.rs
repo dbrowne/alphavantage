@@ -244,7 +244,10 @@ pub async fn execute(args: CryptoNewsArgs, config: Config) -> Result<()> {
   info!("Estimated processing time: {:.1} minutes", estimated_minutes);
 
   // Create API client
-  let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config.clone())
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create database context and repositories
   let db_context = DatabaseContext::new(&config.database_url)

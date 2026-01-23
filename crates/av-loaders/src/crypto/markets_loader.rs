@@ -196,7 +196,7 @@ impl CryptoMarketsLoader {
 
     // Use dynamic discovery instead of hardcoded mapping!
     match mapping_service.get_coingecko_id(crypto_repo, symbol.sid, &symbol.symbol).await {
-      Ok(Some(coingecko_id)) => {
+      Ok((Some(coingecko_id), _api_called)) => {
         info!("✅ {} has CoinGecko ID: {}", symbol.symbol, coingecko_id);
 
         match self.fetch_coingecko_markets(&coingecko_id, &symbol).await {
@@ -209,7 +209,7 @@ impl CryptoMarketsLoader {
           }
         }
       }
-      Ok(None) => {
+      Ok((None, _api_called)) => {
         warn!("⚠️ No CoinGecko ID found for {} after discovery attempt", symbol.symbol);
       }
       Err(e) => {

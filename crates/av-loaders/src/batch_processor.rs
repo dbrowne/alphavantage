@@ -204,8 +204,14 @@ impl BatchProcessor {
         let semaphore = semaphore.clone();
 
         async move {
-          let _permit =
-            semaphore.acquire().await.expect("Semaphore should not be closed during operation");
+          let _permit = match semaphore.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => {
+              return Err(LoaderError::BatchProcessingError(
+                "Semaphore closed unexpectedly".to_string(),
+              ))
+            }
+          };
           processor(item).await
         }
       })

@@ -29,13 +29,12 @@
 
 //! Intraday price loader for TIME_SERIES_INTRADAY data using CSV format
 
+use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 use async_trait::async_trait;
+use av_database_postgres::repository::CacheRepository;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use csv::Reader;
-use diesel::prelude::*;
-use diesel::sql_query;
-use diesel::sql_types;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::hash_map::DefaultHasher;
@@ -95,7 +94,7 @@ impl IntradayInterval {
 }
 
 /// Configuration for intraday price loading
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct IntradayPriceConfig {
   /// Time interval between data points
   pub interval: IntradayInterval,
@@ -117,8 +116,26 @@ pub struct IntradayPriceConfig {
   pub cache_ttl_hours: u64,
   /// Force refresh (bypass cache)
   pub force_refresh: bool,
-  /// Database URL for caching
-  pub database_url: String,
+  /// Cache repository for unified database access
+  pub cache_repository: Option<Arc<dyn CacheRepository>>,
+}
+
+impl std::fmt::Debug for IntradayPriceConfig {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("IntradayPriceConfig")
+      .field("interval", &self.interval)
+      .field("extended_hours", &self.extended_hours)
+      .field("adjusted", &self.adjusted)
+      .field("month", &self.month)
+      .field("max_concurrent", &self.max_concurrent)
+      .field("update_existing", &self.update_existing)
+      .field("api_delay_ms", &self.api_delay_ms)
+      .field("enable_cache", &self.enable_cache)
+      .field("cache_ttl_hours", &self.cache_ttl_hours)
+      .field("force_refresh", &self.force_refresh)
+      .field("cache_repository", &self.cache_repository.is_some())
+      .finish()
+  }
 }
 
 impl Default for IntradayPriceConfig {
@@ -132,10 +149,24 @@ impl Default for IntradayPriceConfig {
       update_existing: true,
       api_delay_ms: 800,
       enable_cache: true,
-      cache_ttl_hours: 2,
+      cache_ttl_hours: ttl::INTRADAY_PRICES as u64,
       force_refresh: false,
-      database_url: String::new(),
+      cache_repository: None,
     }
+  }
+}
+
+impl CacheConfigProvider for IntradayPriceConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours as i64
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
   }
 }
 
@@ -199,14 +230,6 @@ pub struct IntradayPriceLoader {
   next_eventid: Arc<AtomicI64>,
 }
 
-// Cache query result structure
-#[derive(Debug, Clone, QueryableByName)]
-struct CacheQueryResult {
-  #[diesel(sql_type = diesel::sql_types::Jsonb)]
-  response_data: serde_json::Value,
-  #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-  expires_at: chrono::DateTime<chrono::Utc>,
-}
 
 impl IntradayPriceLoader {
   /// Create a new intraday price loader
@@ -233,16 +256,17 @@ impl IntradayPriceLoader {
   }
 
   /// Clean up expired cache entries
-  pub async fn cleanup_expired_cache(database_url: &str) -> Result<usize, LoaderError> {
-    let mut conn = diesel::PgConnection::establish(database_url)
-      .map_err(|e| LoaderError::DatabaseError(format!("Failed to connect: {}", e)))?;
+  pub async fn cleanup_expired_cache(
+    cache_repository: &Arc<dyn CacheRepository>,
+  ) -> Result<usize, LoaderError> {
+    let deleted = cache_repository
+      .cleanup_expired("alphavantage")
+      .await
+      .map_err(|e| LoaderError::DatabaseError(format!("Cache cleanup failed: {}", e)))?;
 
-    let deleted = sql_query(
-      "DELETE FROM api_response_cache
-             WHERE expires_at < NOW() AND api_source = 'alphavantage'",
-    )
-    .execute(&mut conn)
-    .map_err(|e| LoaderError::DatabaseError(format!("Failed to cleanup cache: {}", e)))?;
+    if deleted > 0 {
+      info!("🧹 Cleaned up {} expired intraday price cache entries", deleted);
+    }
 
     Ok(deleted)
   }
@@ -265,56 +289,56 @@ impl IntradayPriceLoader {
 
   /// Get cached CSV response if available and not expired
   async fn get_cached_csv(&self, cache_key: &str) -> Option<String> {
-    if !self.config.enable_cache || self.config.force_refresh || self.config.database_url.is_empty()
-    {
+    if !self.config.enable_cache || self.config.force_refresh {
       return None;
     }
 
-    let mut conn = match diesel::PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        debug!("Failed to connect for cache check: {}", e);
+    let cache_repo = match &self.config.cache_repository {
+      Some(repo) => repo,
+      None => {
+        debug!("No cache repository configured");
         return None;
       }
     };
 
-    let cached_entry: Option<CacheQueryResult> = sql_query(
-      "SELECT response_data, expires_at FROM api_response_cache
-             WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'alphavantage'",
-    )
-    .bind::<sql_types::Text, _>(cache_key)
-    .get_result(&mut conn)
-    .optional()
-    .unwrap_or(None);
-
-    if let Some(cache_result) = cached_entry {
-      info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
-
-      // Extract CSV data from JSON wrapper
-      if let Some(csv_data) = cache_result.response_data.get("csv_data") {
-        if let Some(csv_str) = csv_data.as_str() {
-          return Some(csv_str.to_string());
+    match cache_repo.get_json(cache_key, "alphavantage").await {
+      Ok(Some(json_value)) => {
+        info!("📦 Cache hit for {}", cache_key);
+        // Extract CSV data from JSON wrapper
+        if let Some(csv_data) = json_value.get("csv_data") {
+          if let Some(csv_str) = csv_data.as_str() {
+            return Some(csv_str.to_string());
+          }
         }
+        // Fallback: return the whole JSON as string
+        Some(json_value.to_string())
+      }
+      Ok(None) => {
+        debug!("Cache miss for {}", cache_key);
+        None
+      }
+      Err(e) => {
+        debug!("Cache lookup error for {}: {}", cache_key, e);
+        None
       }
     }
-
-    debug!("Cache miss for {}", cache_key);
-    None
   }
 
   /// Cache the CSV response
   async fn cache_csv_response(&self, cache_key: &str, csv_data: &str, symbol: &str) {
-    if !self.config.enable_cache || self.config.database_url.is_empty() {
+    if !self.config.enable_cache {
       return;
     }
 
-    let mut conn = match diesel::PgConnection::establish(&self.config.database_url) {
-      Ok(conn) => conn,
-      Err(e) => {
-        debug!("Failed to connect for caching: {}", e);
+    let cache_repo = match &self.config.cache_repository {
+      Some(repo) => repo,
+      None => {
+        debug!("No cache repository configured for caching");
         return;
       }
     };
+
+    let endpoint_url = format!("TIME_SERIES_INTRADAY_CSV:{}", symbol);
 
     // Wrap CSV data in JSON for storage
     let cache_value = serde_json::json!({
@@ -324,46 +348,18 @@ impl IntradayPriceLoader {
         "cached_at": Utc::now()
     });
 
-    let expires_at = Utc::now() + chrono::Duration::hours(self.config.cache_ttl_hours as i64);
-
-    // Try to insert, if it fails due to duplicate, update instead
-
-    let insert_result = sql_query(
-      "INSERT INTO api_response_cache
-             (cache_key, api_source, endpoint_url, response_data, status_code, expires_at, cached_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())",
-    )
-        .bind::<sql_types::Text, _>(cache_key)
-        .bind::<sql_types::Text, _>("alphavantage")
-        .bind::<sql_types::Text, _>(format!("TIME_SERIES_INTRADAY_CSV:{}", symbol))
-        .bind::<sql_types::Jsonb, _>(cache_value.clone())
-        .bind::<sql_types::Integer, _>(200)
-        .bind::<sql_types::Timestamptz, _>(expires_at)
-        .execute(&mut conn);
-
-    match insert_result {
-      Ok(_) => debug!("✅ Cached equity intraday CSV for {} (expires: {})", symbol, expires_at),
-      Err(_) => {
-        // If insert failed, try update
-        let update_result = sql_query(
-          "UPDATE api_response_cache
-                     SET response_data = $3, status_code = $4, expires_at = $5, cached_at = NOW()
-                     WHERE cache_key = $1 AND api_source = $2",
-        )
-        .bind::<sql_types::Text, _>(cache_key)
-        .bind::<sql_types::Text, _>("alphavantage")
-        .bind::<sql_types::Jsonb, _>(cache_value)
-        .bind::<sql_types::Integer, _>(200)
-        .bind::<sql_types::Timestamptz, _>(expires_at)
-        .execute(&mut conn);
-
-        match update_result {
-          Ok(_) => {
-            debug!("✅ Updated cached equity intraday CSV for {} (expires: {})", symbol, expires_at)
-          }
-          Err(e) => warn!("Failed to cache equity intraday CSV: {}", e),
-        }
-      }
+    match cache_repo
+      .set_json(
+        cache_key,
+        "alphavantage",
+        &endpoint_url,
+        cache_value,
+        self.config.cache_ttl_hours as i64,
+      )
+      .await
+    {
+      Ok(_) => debug!("💾 Cached equity intraday CSV for {}", symbol),
+      Err(e) => warn!("Failed to cache equity intraday CSV for {}: {}", symbol, e),
     }
   }
 
