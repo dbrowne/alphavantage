@@ -35,6 +35,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
+use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderResult, process_tracker::ProcessState};
 use av_database_postgres::repository::CacheRepositoryExt;
 use av_models::fundamentals::CompanyOverview;
@@ -54,9 +55,23 @@ impl Default for OverviewLoaderConfig {
   fn default() -> Self {
     Self {
       enable_cache: true,
-      cache_ttl_hours: 720, // 30 days - fundamental data changes infrequently
+      cache_ttl_hours: ttl::OVERVIEW, // 30 days - fundamental data changes infrequently
       force_refresh: false,
     }
+  }
+}
+
+impl CacheConfigProvider for OverviewLoaderConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
   }
 }
 

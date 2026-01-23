@@ -27,7 +27,7 @@
  * SOFTWARE.
  */
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -38,11 +38,8 @@ use av_core::Config as AvConfig;
 use av_loaders::{
   DataLoader, LoaderConfig, LoaderContext,
   crypto::{
-    CryptoDataSource,
-    metadata_loader::{
-      CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader, CryptoSymbolForMetadata,
-      ProcessedCryptoMetadata,
-    },
+    CryptoDataSource, CryptoMetadataConfig, CryptoMetadataInput, CryptoMetadataLoader,
+    CryptoSymbolForMetadata, ProcessedCryptoMetadata,
   },
 };
 
@@ -236,7 +233,10 @@ pub async fn execute(args: CryptoMetadataArgs, config: &Config) -> Result<()> {
     max_retries: config.api_config.max_retries,
   };
 
-  let client = Arc::new(AlphaVantageClient::new(av_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(av_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   let loader_context = LoaderContext {
     client,
