@@ -85,10 +85,8 @@ impl CryptoSymbolLoader {
         }
         CryptoDataSource::CoinGecko => {
           if let Ok(api_key) = std::env::var("COINGECKO_API_KEY") {
-            providers.insert(
-              CryptoDataSource::CoinGecko,
-              Box::new(CoinGeckoProvider::new(Some(api_key))),
-            );
+            providers
+              .insert(CryptoDataSource::CoinGecko, Box::new(CoinGeckoProvider::new(Some(api_key))));
           } else {
             warn!("CoinGecko provider skipped: COINGECKO_API_KEY environment variable not set");
           }
@@ -101,10 +99,8 @@ impl CryptoSymbolLoader {
         }
         CryptoDataSource::SosoValue => {
           if let Ok(api_key) = std::env::var("SOSOVALUE_API_KEY") {
-            providers.insert(
-              CryptoDataSource::SosoValue,
-              Box::new(SosoValueProvider::new(Some(api_key))),
-            );
+            providers
+              .insert(CryptoDataSource::SosoValue, Box::new(SosoValueProvider::new(Some(api_key))));
           } else {
             warn!("SosoValue provider skipped: SOSOVALUE_API_KEY environment variable not set");
           }
@@ -143,9 +139,7 @@ impl CryptoSymbolLoader {
   }
 
   /// Load symbols from all configured sources.
-  pub async fn load_all_symbols(
-    &self,
-  ) -> Result<LoadAllSymbolsResult, CryptoLoaderError> {
+  pub async fn load_all_symbols(&self) -> Result<LoadAllSymbolsResult, CryptoLoaderError> {
     let start_time = Instant::now();
     info!("Loading symbols from {} sources", self.config.sources.len());
 
@@ -292,17 +286,15 @@ impl CryptoSymbolLoader {
       if let Some(cache) = &self.cache {
         info!("Checking cache for {} (key: {})", source, cache_key);
         match cache.get("crypto_loader", &cache_key).await {
-          Ok(Some(cached_data)) => {
-            match serde_json::from_str::<Vec<CryptoSymbol>>(&cached_data) {
-              Ok(symbols) => {
-                info!("Cache hit for {}: {} symbols loaded from cache", source, symbols.len());
-                return Ok(symbols);
-              }
-              Err(e) => {
-                warn!("Failed to deserialize cached data for {}: {}", source, e);
-              }
+          Ok(Some(cached_data)) => match serde_json::from_str::<Vec<CryptoSymbol>>(&cached_data) {
+            Ok(symbols) => {
+              info!("Cache hit for {}: {} symbols loaded from cache", source, symbols.len());
+              return Ok(symbols);
             }
-          }
+            Err(e) => {
+              warn!("Failed to deserialize cached data for {}: {}", source, e);
+            }
+          },
           Ok(None) => {
             info!("Cache miss for {} - no cached data found", source);
           }

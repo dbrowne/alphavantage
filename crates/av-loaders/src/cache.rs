@@ -85,7 +85,11 @@ impl Default for CacheConfig {
 impl CacheConfig {
   /// Create config for AlphaVantage data with custom TTL
   pub fn alphavantage(ttl_hours: i64) -> Self {
-    Self { cache_ttl_hours: ttl_hours, api_source: "alphavantage".to_string(), ..Default::default() }
+    Self {
+      cache_ttl_hours: ttl_hours,
+      api_source: "alphavantage".to_string(),
+      ..Default::default()
+    }
   }
 
   /// Create config for crypto data with custom TTL

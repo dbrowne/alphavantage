@@ -230,7 +230,6 @@ pub struct IntradayPriceLoader {
   next_eventid: Arc<AtomicI64>,
 }
 
-
 impl IntradayPriceLoader {
   /// Create a new intraday price loader
   pub fn new(max_concurrent: usize) -> Self {
