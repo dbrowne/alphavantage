@@ -72,9 +72,7 @@ impl CryptoSymbolLoader {
   }
 
   /// Load symbols from all configured sources.
-  pub async fn load_all_symbols(
-    &self,
-  ) -> crypto_loaders::CryptoLoaderResult<LoadAllSymbolsResult> {
+  pub async fn load_all_symbols(&self) -> crypto_loaders::CryptoLoaderResult<LoadAllSymbolsResult> {
     self.inner.load_all_symbols().await
   }
 

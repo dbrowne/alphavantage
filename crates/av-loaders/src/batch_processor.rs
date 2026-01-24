@@ -209,7 +209,7 @@ impl BatchProcessor {
             Err(_) => {
               return Err(LoaderError::BatchProcessingError(
                 "Semaphore closed unexpectedly".to_string(),
-              ))
+              ));
             }
           };
           processor(item).await

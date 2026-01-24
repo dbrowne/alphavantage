@@ -17,8 +17,8 @@ use tracing::info;
 
 // Re-export types from crypto-loaders for backward compatibility
 pub use crypto_loaders::{
-  discover_coingecko_id, discover_coinpaprika_id, CryptoMappingService as BaseCryptoMappingService,
-  MappingConfig, MappingRepository,
+  CryptoMappingService as BaseCryptoMappingService, MappingConfig, MappingRepository,
+  discover_coingecko_id, discover_coinpaprika_id,
 };
 
 use crypto_loaders::CryptoLoaderError;

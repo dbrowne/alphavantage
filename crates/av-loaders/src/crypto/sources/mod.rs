@@ -38,8 +38,8 @@ use std::sync::Arc;
 
 // Re-export types and providers from crypto-loaders
 pub use crypto_loaders::{
-  CoinCapProvider, CoinGeckoProvider, CoinMarketCapProvider, CoinPaprikaProvider,
-  CryptoCache, CryptoDataProvider, CryptoLoaderError, CryptoSymbol, SosoValueProvider,
+  CoinCapProvider, CoinGeckoProvider, CoinMarketCapProvider, CoinPaprikaProvider, CryptoCache,
+  CryptoDataProvider, CryptoLoaderError, CryptoSymbol, SosoValueProvider,
 };
 
 /// Adapter that implements the crypto-loaders CryptoCache trait
