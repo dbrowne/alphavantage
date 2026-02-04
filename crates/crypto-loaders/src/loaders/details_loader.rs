@@ -451,10 +451,10 @@ impl CoinGeckoDetailsLoader {
     let status = response.status();
     if !status.is_success() {
       let error_text = response.text().await.unwrap_or_else(|_| "Unable to read error".to_string());
-      return Err(CryptoLoaderError::ApiError(format!(
-        "HTTP {}: {} - {}",
-        status, coingecko_id, error_text
-      )));
+      return Err(CryptoLoaderError::ApiError {
+        provider: "CoinGecko".to_string(),
+        message: format!("HTTP {}: {} - {}", status, coingecko_id, error_text),
+      });
     }
 
     let response_text = response.text().await?;

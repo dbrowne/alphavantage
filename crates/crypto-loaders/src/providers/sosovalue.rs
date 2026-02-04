@@ -99,7 +99,10 @@ impl CryptoDataProvider for SosoValueProvider {
     let response = request.send().await?;
 
     if response.status().as_u16() == 429 {
-      return Err(CryptoLoaderError::RateLimitExceeded("SosoValue".to_string()));
+      return Err(CryptoLoaderError::RateLimitExceeded {
+        provider: "SosoValue".to_string(),
+        retry_after_secs: None,
+      });
     }
 
     if response.status().as_u16() == 401 {
@@ -109,7 +112,7 @@ impl CryptoDataProvider for SosoValueProvider {
     if !response.status().is_success() {
       warn!("SosoValue API returned status: {}", response.status());
       return Err(CryptoLoaderError::InvalidResponse {
-        api_source: "SosoValue".to_string(),
+        provider: "SosoValue".to_string(),
         message: format!("HTTP {}", response.status()),
       });
     }
@@ -123,7 +126,7 @@ impl CryptoDataProvider for SosoValueProvider {
       error!("Failed to parse SosoValue response as JSON: {}", e);
       error!("Raw response was: {}", response_text);
       CryptoLoaderError::InvalidResponse {
-        api_source: "SosoValue".to_string(),
+        provider: "SosoValue".to_string(),
         message: format!("Invalid JSON response: {}", e),
       }
     })?;
@@ -137,7 +140,7 @@ impl CryptoDataProvider for SosoValueProvider {
         error!("Expected structure: SosoValueResponse with code, msg, traceId, data fields");
         error!("Actual JSON: {:#}", response_value);
         CryptoLoaderError::InvalidResponse {
-          api_source: "SosoValue".to_string(),
+          provider: "SosoValue".to_string(),
           message: format!("Response structure mismatch: {}", e),
         }
       })?;
@@ -145,13 +148,13 @@ impl CryptoDataProvider for SosoValueProvider {
     if api_response.code != 0 {
       let error_msg = api_response.msg.unwrap_or_else(|| "Unknown error".to_string());
       return Err(CryptoLoaderError::InvalidResponse {
-        api_source: "SosoValue".to_string(),
+        provider: "SosoValue".to_string(),
         message: format!("API Error: {}", error_msg),
       });
     }
 
     let data = api_response.data.ok_or_else(|| CryptoLoaderError::InvalidResponse {
-      api_source: "SosoValue".to_string(),
+      provider: "SosoValue".to_string(),
       message: "No data field in response".to_string(),
     })?;
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2025-02-03
+
+### Changed
+- **crypto-loaders**: Consolidated error types with structured context
+  - `RateLimitExceeded` now includes `provider` and optional `retry_after_secs` fields
+  - `ApiError`, `InvalidResponse`, `ServerError`, `AccessDenied` now include `provider` field for source attribution
+  - Removed duplicate variants (`MissingAPIKey`, `InvalidAPIKey`, `CoinGeckoEndpoint`)
+- **av-loaders**: Improved error conversion from `CryptoLoaderError` to `LoaderError`
+  - Rate limit retry timing now preserved (previously hardcoded to 60s)
+  - All error variants handled explicitly (removed catch-all conversion)
+  - Provider context included in error messages
+
+
+
 ## [0.1.0] - 2025-01-15
 
 ### Added

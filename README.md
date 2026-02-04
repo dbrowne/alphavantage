@@ -25,16 +25,16 @@ A high-performance, async Rust client library and comprehensive data pipeline fo
 
 ### Core Capabilities
 
-| Feature | Description |
-|---------|-------------|
-| **Multi-Source Data Integration** | Unified access to AlphaVantage, CoinGecko, CoinMarketCap, CoinPaprika, CoinCap, and SosoValue APIs |
-| **Async/Await Architecture** | Built on Tokio runtime for maximum concurrency and throughput |
-| **Unified Caching System** | CacheRepository pattern with configurable TTLs per data type, reducing API calls and costs |
-| **TimescaleDB Integration** | Optimized time-series data storage with hypertables for efficient querying of historical data |
+| Feature | Description                                                                                      |
+|---------|--------------------------------------------------------------------------------------------------|
+| **Multi-Source Data Integration** | Unified access to AlphaVantage, CoinGecko, CoinMarketCap, APIs                                   |
+| **Async/Await Architecture** | Built on Tokio runtime for maximum concurrency and throughput                                    |
+| **Unified Caching System** | CacheRepository pattern with configurable TTLs per data type, reducing API calls and costs       |
+| **TimescaleDB Integration** | Optimized time-series data storage with hypertables for efficient querying of historical data    |
 | **Comprehensive Crypto Support** | Enhanced metadata, social metrics, market data, and technical indicators from multiple providers |
-| **Process Tracking** | ETL monitoring with automatic retry mechanisms and state persistence |
-| **Rate Limiting** | Intelligent rate limiting based on API tier to avoid throttling |
-| **Connection Pooling** | R2D2 connection pooling for efficient database access |
+| **Process Tracking** | ETL monitoring with automatic retry mechanisms and state persistence                             |
+| **Rate Limiting** | Intelligent rate limiting based on API tier to avoid throttling                                  |
+| **Connection Pooling** | R2D2 connection pooling for efficient database access                                            |
 
 ### Data Coverage
 
@@ -46,7 +46,7 @@ A high-performance, async Rust client library and comprehensive data pipeline fo
 
 #### Cryptocurrency
 - **10,000+ Coins**: Comprehensive coverage from multiple data providers
-- **Cross-Provider Mapping**: Unified symbol mapping across CoinGecko, CoinMarketCap, CoinPaprika, CoinCap
+- **Cross-Provider Mapping**: Unified symbol mapping across CoinGecko, CoinMarketCap, (CoinPaprika and CoinCap pending)
 - **Enhanced Metadata**: Descriptions, categories, platforms, contract addresses
 - **Social Metrics**: Twitter followers, Reddit subscribers, GitHub activity, community scores
 - **Market Data**: Exchange listings, trading pairs, volume, liquidity metrics
@@ -81,7 +81,7 @@ A high-performance, async Rust client library and comprehensive data pipeline fo
 - Additional cryptocurrency analytics and technical indicators
 - Corporate actions support (splits, dividends, mergers)
 - Real-time streaming data support
-
+- integration for CoinPaprika and CoinCap APIs
 ---
 
 ## Architecture Overview
@@ -224,9 +224,9 @@ alphavantage/
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── coingecko.rs    # CoinGecko API client
 │   │   │   │   ├── coinmarketcap.rs # CoinMarketCap API client
-│   │   │   │   ├── coinpaprika.rs  # CoinPaprika API client
-│   │   │   │   ├── coincap.rs      # CoinCap API client
-│   │   │   │   └── sosovalue.rs    # SosoValue API client
+│   │   │   │   ├── coinpaprika.rs  # CoinPaprika API client (stub)
+│   │   │   │   ├── coincap.rs      # CoinCap API client (stub)
+│   │   │   │   └── sosovalue.rs    # SosoValue API client (stub)
 │   │   │   ├── loaders/            # Data loaders
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── symbol_loader.rs    # Multi-provider symbol loading
@@ -392,9 +392,9 @@ Standalone crate for cryptocurrency data from non-AlphaVantage sources.
 |----------|------------|-------------|
 | CoinGecko | Prices, metadata, social, markets | 10-50 req/min |
 | CoinMarketCap | Prices, metadata, rankings | Tier-based |
-| CoinPaprika | Prices, metadata, events | 10 req/sec |
-| CoinCap | Real-time prices, history | 200 req/min |
-| SosoValue | ETF flows, institutional data | Varies |
+| CoinPaprika* | Prices, metadata, events | 10 req/sec |
+| CoinCap* | Real-time prices, history | 200 req/min |
+| SosoValue* | ETF flows, institutional data | Varies |
 
 **Features:**
 - `CryptoSymbolLoader`: Load symbols from multiple providers

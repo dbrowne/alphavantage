@@ -41,7 +41,10 @@ impl CryptoRepositoryMappingAdapter {
 #[async_trait]
 impl MappingRepository for CryptoRepositoryMappingAdapter {
   async fn get_api_id(&self, sid: i64, source: &str) -> Result<Option<String>, CryptoLoaderError> {
-    self.repo.get_api_id(sid, source).await.map_err(|e| CryptoLoaderError::ApiError(e.to_string()))
+    self.repo.get_api_id(sid, source).await.map_err(|e| CryptoLoaderError::ApiError {
+      provider: "MappingRepository".to_string(),
+      message: e.to_string(),
+    })
   }
 
   async fn upsert_api_mapping(
@@ -57,18 +60,20 @@ impl MappingRepository for CryptoRepositoryMappingAdapter {
       .repo
       .upsert_api_mapping(sid, source, api_id, api_slug, api_symbol, is_active)
       .await
-      .map_err(|e| CryptoLoaderError::ApiError(e.to_string()))
+      .map_err(|e| CryptoLoaderError::ApiError {
+        provider: "MappingRepository".to_string(),
+        message: e.to_string(),
+      })
   }
 
   async fn get_symbols_needing_mapping(
     &self,
     source: &str,
   ) -> Result<Vec<(i64, String, String)>, CryptoLoaderError> {
-    self
-      .repo
-      .get_symbols_needing_mapping(source)
-      .await
-      .map_err(|e| CryptoLoaderError::ApiError(e.to_string()))
+    self.repo.get_symbols_needing_mapping(source).await.map_err(|e| CryptoLoaderError::ApiError {
+      provider: "MappingRepository".to_string(),
+      message: e.to_string(),
+    })
   }
 }
 

@@ -115,10 +115,10 @@ impl CryptoMetadataLoader {
             if self.config.alphavantage_api_key.is_some() && source != CryptoDataSource::CoinGecko {
               alphavantage_provider.load_cached(&symbol, cache_repo).await
             } else {
-              Err(CryptoLoaderError::ApiError(format!(
-                "Source {:?} not supported for metadata",
-                source
-              )))
+              Err(CryptoLoaderError::ApiError {
+                provider: format!("{:?}", source),
+                message: "Source not supported for metadata".to_string(),
+              })
             }
           }
         };
