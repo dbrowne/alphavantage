@@ -100,6 +100,12 @@ impl From<diesel::ConnectionError> for LoaderError {
   }
 }
 
+impl From<loader_base::LoaderBaseError> for LoaderError {
+  fn from(err: loader_base::LoaderBaseError) -> Self {
+    LoaderError::ApiError(err.to_string())
+  }
+}
+
 pub type LoaderResult<T> = Result<T, LoaderError>;
 
 #[cfg(test)]

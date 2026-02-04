@@ -10,12 +10,11 @@ use crate::error::CryptoLoaderError;
 use crate::traits::CryptoCache;
 use chrono::NaiveDate;
 use futures::stream::{self, StreamExt};
-use indicatif::ProgressBar;
+use loader_base::{ConcurrentLoader, LoaderStatistics, ProgressManager, ProgressStyle};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tracing::{debug, error, info};
 
 /// CoinGecko detailed coin response
@@ -264,7 +263,7 @@ impl Default for DetailsLoaderConfig {
 /// Loader for CoinGecko detailed coin data
 pub struct CoinGeckoDetailsLoader {
   api_key: String,
-  semaphore: Arc<Semaphore>,
+  concurrent: ConcurrentLoader,
   cache: Option<Arc<dyn CryptoCache>>,
   config: DetailsLoaderConfig,
 }
@@ -273,7 +272,7 @@ impl CoinGeckoDetailsLoader {
   pub fn new(api_key: String, config: DetailsLoaderConfig) -> Self {
     Self {
       api_key,
-      semaphore: Arc::new(Semaphore::new(config.max_concurrent)),
+      concurrent: ConcurrentLoader::new(config.max_concurrent),
       cache: None,
       config,
     }
@@ -291,11 +290,12 @@ impl CoinGeckoDetailsLoader {
   ) -> Result<CoinGeckoDetailsOutput, CryptoLoaderError> {
     info!("Loading detailed CoinGecko data for {} coins", coins.len());
 
-    let progress = if self.config.show_progress {
-      Some(Arc::new(ProgressBar::new(coins.len() as u64)))
-    } else {
-      None
-    };
+    let progress = ProgressManager::new_optional(
+      coins.len() as u64,
+      self.config.show_progress,
+      ProgressStyle::Standard,
+      Some("Loading CoinGecko details"),
+    );
 
     let progress_for_finish = progress.clone();
 
@@ -314,7 +314,7 @@ impl CoinGeckoDetailsLoader {
     let results = stream::iter(coins.into_iter())
       .map(|coin_info| {
         let client = http_client.clone();
-        let semaphore = self.semaphore.clone();
+        let semaphore = self.concurrent.semaphore();
         let progress = progress.clone();
         let loader = self.clone();
 
@@ -322,15 +322,11 @@ impl CoinGeckoDetailsLoader {
           let _permit =
             semaphore.acquire().await.expect("Semaphore should not be closed during operation");
 
-          if let Some(pb) = &progress {
-            pb.set_message(format!("Processing {}", coin_info.symbol));
-          }
+          ProgressManager::set_message(&progress, &format!("Processing {}", coin_info.symbol));
 
           let result = loader.fetch_coin_details(&client, &coin_info.coingecko_id).await;
 
-          if let Some(pb) = &progress {
-            pb.inc(1);
-          }
+          ProgressManager::increment(&progress);
 
           match result {
             Ok(fetch_result) => {
@@ -363,44 +359,40 @@ impl CoinGeckoDetailsLoader {
       .collect::<Vec<_>>()
       .await;
 
-    if let Some(pb) = progress_for_finish {
-      pb.finish_with_message("CoinGecko details loading complete");
-    }
+    ProgressManager::finish(&progress_for_finish, "CoinGecko details loading complete");
 
-    // Process results and track cache hits / API calls
+    // Process results and track cache hits / API calls using LoaderStatistics
     let mut loaded = Vec::new();
-    let mut errors = 0;
-    let mut cache_hits = 0;
-    let mut api_calls = 0;
+    let stats = LoaderStatistics::new();
 
     for result in results {
       match result {
         Ok((data, from_cache)) => {
           loaded.push(data);
           if from_cache {
-            cache_hits += 1;
+            stats.record_cache_hit();
           } else {
-            api_calls += 1;
+            stats.record_api_call();
           }
         }
-        Err(_) => errors += 1,
+        Err(_) => stats.record_error(),
       }
     }
 
     info!(
       "CoinGecko details loading complete: {} loaded, {} errors, {} cache hits, {} API calls",
       loaded.len(),
-      errors,
-      cache_hits,
-      api_calls
+      stats.errors(),
+      stats.cache_hits(),
+      stats.api_calls()
     );
 
     Ok(CoinGeckoDetailsOutput {
-      total_coins: loaded.len() + errors,
+      total_coins: loaded.len() + stats.errors(),
       loaded_count: loaded.len(),
-      errors,
-      cache_hits,
-      api_calls,
+      errors: stats.errors(),
+      cache_hits: stats.cache_hits(),
+      api_calls: stats.api_calls(),
       data: loaded,
     })
   }
@@ -598,7 +590,7 @@ impl Clone for CoinGeckoDetailsLoader {
   fn clone(&self) -> Self {
     Self {
       api_key: self.api_key.clone(),
-      semaphore: Arc::clone(&self.semaphore),
+      concurrent: self.concurrent.clone(),
       cache: self.cache.clone(),
       config: self.config.clone(),
     }

@@ -290,6 +290,7 @@ dependencies = [
  "diesel",
  "futures",
  "indicatif 0.18.0",
+ "loader-base",
  "mockall",
  "reqwest",
  "rust_decimal",
@@ -619,6 +620,7 @@ dependencies = [
  "chrono",
  "futures",
  "indicatif 0.17.11",
+ "loader-base",
  "reqwest",
  "rust_decimal",
  "serde",
@@ -1630,6 +1632,15 @@ name = "litemap"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
+
+[[package]]
+name = "loader-base"
+version = "0.1.0"
+dependencies = [
+ "indicatif 0.17.11",
+ "thiserror 2.0.12",
+ "tokio",
+]
 
 [[package]]
 name = "lock_api"

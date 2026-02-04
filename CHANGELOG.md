@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **av-cli**: Fixed N+1 query performance issue in intraday price loader
+  - `get_latest_timestamps` now uses batched `GROUP BY` queries instead of per-symbol queries
+  - Reduced ~5400 sequential queries to ~11 batched queries (500 SIDs per batch)
+  - Timestamp retrieval time reduced from ~55 seconds to ~4 seconds
+
 ## [0.1.1] - 2025-02-03
 
 ### Changed
@@ -23,20 +29,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Extension trait is internal-only with default implementations
 
 ### Added
-- **av-loaders**: New `base` module with shared loader abstractions
+- **loader-base**: New shared crate with loader abstractions (extracted from av-loaders)
   - `CacheableConfig` trait for consistent cache configuration across loaders
   - `ConcurrentLoader` for semaphore-based concurrency management
   - `LoaderStatistics` for thread-safe statistics tracking (cache hits, API calls, errors)
-  - `ProgressManager` and `LoaderProgressStyle` for consistent progress bar creation
+  - `ProgressManager` and `ProgressStyle` for consistent progress bar creation
+  - Can now be used by both `av-loaders` and `crypto-loaders`
 
 ### Refactored
-- **av-loaders**: Migrated all loaders to use new base abstractions
+- **av-loaders**: Migrated all loaders to use `loader-base` abstractions
   - `OverviewLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `LoaderStatistics`, `ProgressManager`
   - `SecurityLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `LoaderStatistics`, `ProgressManager`
   - `TopMoversLoader`: Implements `CacheableConfig` for consistent cache behavior
   - `SummaryPriceLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `ProgressManager`
   - `IntradayPriceLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `ProgressManager`
   - `NewsLoader`: Implements `CacheableConfig` for consistent cache behavior
+- **crypto-loaders**: Migrated `CoinGeckoDetailsLoader` to use `loader-base` abstractions
+  - Uses `ConcurrentLoader` instead of manual semaphore management
+  - Uses `LoaderStatistics` for atomic statistics tracking
+  - Uses `ProgressManager` for progress bar creation
 
 
 

@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// # Example
 ///
 /// ```
-/// use av_loaders::base::LoaderStatistics;
+/// use loader_base::LoaderStatistics;
 ///
 /// let stats = LoaderStatistics::new();
 ///
@@ -87,7 +87,7 @@ impl LoaderStatistics {
     self.skipped.load(Ordering::Relaxed)
   }
 
-  /// Get the total number of items processed (cache hits + api calls).
+  /// Get the total number of items processed (cache hits + api calls + errors).
   pub fn total_processed(&self) -> usize {
     self.cache_hits() + self.api_calls() + self.errors()
   }

@@ -6,7 +6,8 @@ members = [
   "crates/av-client",
   "crates/av-loaders",
   "crates/av-cli",
-  "crates/crypto-loaders"
+  "crates/crypto-loaders",
+  "crates/loader-base"
 ]
   resolver = "2"
 [workspace.package]
@@ -73,6 +74,9 @@ dotenv = "0.15.0"
 # CLI
 clap = { version = "4.4", features = ["derive", "env"] }
 indicatif = "0.18.0"
+
+# Internal crates
+loader-base = { path = "crates/loader-base" }
 
 
 # Development dependencies

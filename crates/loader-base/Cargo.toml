@@ -1,0 +1,16 @@
+[package]
+name = "loader-base"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dwight J. Browne <dwight@dwightjbrowne.com>"]
+license = "MIT"
+description = "Shared base utilities for data loaders: concurrency, progress bars, statistics, and caching traits"
+repository = "https://github.com/dbrowne/alphavantage"
+
+[dependencies]
+indicatif = "0.17"
+thiserror = "2.0"
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

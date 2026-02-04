@@ -9,8 +9,6 @@
 /// Trait for loader configurations that support caching.
 ///
 /// Implement this trait to enable consistent cache behavior across loaders.
-/// This works with [`CacheConfigProvider`](crate::CacheConfigProvider) but provides
-/// a simpler interface for basic cache control.
 ///
 /// # Example
 ///

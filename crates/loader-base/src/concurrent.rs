@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::LoaderError;
+use crate::LoaderBaseError;
 
 /// Manages concurrent request limits using a semaphore.
 ///
@@ -19,7 +19,7 @@ use crate::LoaderError;
 /// # Example
 ///
 /// ```ignore
-/// use av_loaders::base::ConcurrentLoader;
+/// use loader_base::ConcurrentLoader;
 ///
 /// struct MyLoader {
 ///     concurrent: ConcurrentLoader,
@@ -79,12 +79,8 @@ impl ConcurrentLoader {
   ///
   /// Returns an error if the semaphore is closed (which should not happen
   /// during normal operation).
-  pub async fn acquire(&self) -> Result<SemaphorePermit<'_>, LoaderError> {
-    self
-      .semaphore
-      .acquire()
-      .await
-      .map_err(|e| LoaderError::ApiError(format!("Failed to acquire concurrency permit: {}", e)))
+  pub async fn acquire(&self) -> Result<SemaphorePermit<'_>, LoaderBaseError> {
+    self.semaphore.acquire().await.map_err(|e| LoaderBaseError::PermitError(e.to_string()))
   }
 
   /// Get a clone of the inner semaphore for use in async closures.
