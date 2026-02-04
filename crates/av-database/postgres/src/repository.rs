@@ -152,6 +152,11 @@ pub trait CacheRepository: Send + Sync {
 
 /// Extension trait for type-safe cache operations
 /// This provides the generic interface using the object-safe trait
+///
+/// Note: We allow `async_fn_in_trait` here because this is an internal extension trait
+/// with default implementations. The trait is only used within this codebase and the
+/// futures are always used in contexts where Send bounds are satisfied.
+#[allow(async_fn_in_trait)]
 pub trait CacheRepositoryExt: CacheRepository {
   /// Get a cached response with automatic deserialization
   async fn get<T>(&self, cache_key: &str, api_source: &str) -> RepositoryResult<Option<T>>

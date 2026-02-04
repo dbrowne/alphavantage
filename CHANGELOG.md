@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Rate limit retry timing now preserved (previously hardcoded to 60s)
   - All error variants handled explicitly (removed catch-all conversion)
   - Provider context included in error messages
+- **av-database-postgres**: Fixed async trait warnings in `CacheRepositoryExt`
+  - Added `#[allow(async_fn_in_trait)]` with documentation explaining the rationale
+  - Extension trait is internal-only with default implementations
 
 
 
