@@ -193,7 +193,7 @@ impl CryptoSymbolLoader {
           error!("Failed to load symbols from {}: {}", source, e);
           total_failed += 1;
 
-          let rate_limited = matches!(e, CryptoLoaderError::RateLimitExceeded(_));
+          let rate_limited = matches!(e, CryptoLoaderError::RateLimitExceeded { .. });
           source_results.insert(
             *source,
             SourceResult {

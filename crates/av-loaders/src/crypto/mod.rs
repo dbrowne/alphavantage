@@ -87,16 +87,30 @@ impl From<crypto_loaders::CryptoLoaderError> for crate::LoaderError {
     match err {
       CLE::RequestFailed(e) => crate::LoaderError::IoError(e.to_string()),
       CLE::JsonParseFailed(e) => crate::LoaderError::SerializationError(e.to_string()),
-      CLE::RateLimitExceeded(_msg) => crate::LoaderError::RateLimitExceeded { retry_after: 60 },
-      CLE::ApiKeyMissing(msg) => crate::LoaderError::ConfigurationError(msg),
-      CLE::InvalidResponse { api_source, message } => {
-        crate::LoaderError::ApiError(format!("{}: {}", api_source, message))
+      CLE::RateLimitExceeded { retry_after_secs, .. } => {
+        crate::LoaderError::RateLimitExceeded { retry_after: retry_after_secs.unwrap_or(60) }
+      }
+      CLE::ApiKeyMissing(source) => {
+        crate::LoaderError::ConfigurationError(format!("API key missing for {}", source))
+      }
+      CLE::InvalidResponse { provider, message } => {
+        crate::LoaderError::ApiError(format!("{}: {}", provider, message))
+      }
+      CLE::ServerError { provider, message } => {
+        crate::LoaderError::ApiError(format!("{} server error: {}", provider, message))
+      }
+      CLE::AccessDenied { provider, message } => {
+        crate::LoaderError::ApiError(format!("{} access denied: {}", provider, message))
+      }
+      CLE::SourceUnavailable(provider) => {
+        crate::LoaderError::ApiError(format!("Provider unavailable: {}", provider))
       }
       CLE::NetworkError(msg) => crate::LoaderError::IoError(msg),
-      CLE::ApiError(msg) => crate::LoaderError::ApiError(msg),
+      CLE::ApiError { provider, message } => {
+        crate::LoaderError::ApiError(format!("{}: {}", provider, message))
+      }
       CLE::ParseError(msg) => crate::LoaderError::SerializationError(msg),
       CLE::CacheError(msg) => crate::LoaderError::DatabaseError(msg),
-      _ => crate::LoaderError::ApiError(err.to_string()),
     }
   }
 }
@@ -119,12 +133,45 @@ mod tests {
 
   #[test]
   fn test_rate_limit_error() {
-    let crypto_err = CryptoLoaderError::RateLimitExceeded("CoinGecko".to_string());
+    let crypto_err = CryptoLoaderError::RateLimitExceeded {
+      provider: "CoinGecko".to_string(),
+      retry_after_secs: Some(120),
+    };
+    let loader_err: crate::LoaderError = crypto_err.into();
+
+    assert!(
+      matches!(loader_err, crate::LoaderError::RateLimitExceeded { retry_after: 120 }),
+      "Expected RateLimitExceeded with retry_after=120, got {:?}",
+      loader_err
+    );
+  }
+
+  #[test]
+  fn test_rate_limit_error_default() {
+    let crypto_err = CryptoLoaderError::RateLimitExceeded {
+      provider: "CoinGecko".to_string(),
+      retry_after_secs: None,
+    };
     let loader_err: crate::LoaderError = crypto_err.into();
 
     assert!(
       matches!(loader_err, crate::LoaderError::RateLimitExceeded { retry_after: 60 }),
-      "Expected RateLimitExceeded with retry_after=60, got {:?}",
+      "Expected RateLimitExceeded with default retry_after=60, got {:?}",
+      loader_err
+    );
+  }
+
+  #[test]
+  fn test_api_error_conversion() {
+    let crypto_err = CryptoLoaderError::ApiError {
+      provider: "CoinMarketCap".to_string(),
+      message: "invalid request".to_string(),
+    };
+    let loader_err: crate::LoaderError = crypto_err.into();
+
+    assert!(
+      matches!(loader_err, crate::LoaderError::ApiError(ref msg) if msg.contains("CoinMarketCap") && msg.contains("invalid request")),
+      "Expected ApiError containing source and message, got {:?}",
       loader_err
     );
   }

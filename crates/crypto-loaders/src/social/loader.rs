@@ -148,10 +148,10 @@ impl SocialLoader {
     &self,
     input: &CryptoSocialInput,
   ) -> SocialLoaderResult<Vec<ProcessedSocialData>> {
-    let symbols = input
-      .symbols
-      .as_ref()
-      .ok_or_else(|| CryptoLoaderError::ApiError("No symbols provided".to_string()))?;
+    let symbols = input.symbols.as_ref().ok_or_else(|| CryptoLoaderError::ApiError {
+      provider: "SocialLoader".to_string(),
+      message: "No symbols provided".to_string(),
+    })?;
 
     let mut results = Vec::with_capacity(symbols.len());
 

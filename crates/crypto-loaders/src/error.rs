@@ -40,41 +40,29 @@ pub enum CryptoLoaderError {
   #[error("JSON parsing failed: {0}")]
   JsonParseFailed(#[from] serde_json::Error),
 
-  #[error("Rate limit exceeded for source: {0}")]
-  RateLimitExceeded(String),
+  #[error("Rate limit exceeded for {provider}")]
+  RateLimitExceeded { provider: String, retry_after_secs: Option<u64> },
 
-  #[error("API key missing for source: {0}")]
+  #[error("API key missing for {0}")]
   ApiKeyMissing(String),
 
-  #[error("Invalid response format from {api_source}: {message}")]
-  InvalidResponse { api_source: String, message: String },
+  #[error("Invalid response from {provider}: {message}")]
+  InvalidResponse { provider: String, message: String },
 
-  #[error("Source not available: {0}")]
+  #[error("Provider not available: {0}")]
   SourceUnavailable(String),
 
-  #[error("Internal Server error: {0}")]
-  InternalServerError(String),
+  #[error("Server error from {provider}: {message}")]
+  ServerError { provider: String, message: String },
 
-  #[error("Service Unavailable: {0}")]
-  ServiceUnavailable(String),
-
-  #[error("Access denied: {0}")]
-  AccessDenied(String),
-
-  #[error("Access Endpoint: {0}")]
-  CoinGeckoEndpoint(String),
-
-  #[error("Missing API key: {0}")]
-  MissingAPIKey(String),
-
-  #[error("Invalid API key: {0}")]
-  InvalidAPIKey(String),
+  #[error("Access denied for {provider}: {message}")]
+  AccessDenied { provider: String, message: String },
 
   #[error("Network error: {0}")]
   NetworkError(String),
 
-  #[error("API error: {0}")]
-  ApiError(String),
+  #[error("API error from {provider}: {message}")]
+  ApiError { provider: String, message: String },
 
   #[error("Parse error: {0}")]
   ParseError(String),
@@ -98,7 +86,31 @@ mod tests {
 
   #[test]
   fn test_rate_limit_error() {
-    let err = CryptoLoaderError::RateLimitExceeded("CoinGecko".to_string());
+    let err = CryptoLoaderError::RateLimitExceeded {
+      provider: "CoinGecko".to_string(),
+      retry_after_secs: Some(60),
+    };
     assert!(err.to_string().contains("Rate limit"));
+    assert!(err.to_string().contains("CoinGecko"));
+  }
+
+  #[test]
+  fn test_api_error() {
+    let err = CryptoLoaderError::ApiError {
+      provider: "CoinMarketCap".to_string(),
+      message: "invalid symbol".to_string(),
+    };
+    assert!(err.to_string().contains("CoinMarketCap"));
+    assert!(err.to_string().contains("invalid symbol"));
+  }
+
+  #[test]
+  fn test_server_error() {
+    let err = CryptoLoaderError::ServerError {
+      provider: "CoinGecko".to_string(),
+      message: "internal error".to_string(),
+    };
+    assert!(err.to_string().contains("CoinGecko"));
+    assert!(err.to_string().contains("internal error"));
   }
 }

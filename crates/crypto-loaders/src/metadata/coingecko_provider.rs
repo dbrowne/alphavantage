@@ -108,21 +108,25 @@ impl<'a> CoinGeckoMetadataProvider<'a> {
     }
 
     let response =
-      request
-        .timeout(Duration::from_secs(self.config.timeout_seconds))
-        .send()
-        .await
-        .map_err(|e| CryptoLoaderError::ApiError(format!("CoinGecko request failed: {}", e)))?;
+      request.timeout(Duration::from_secs(self.config.timeout_seconds)).send().await.map_err(
+        |e| CryptoLoaderError::ApiError {
+          provider: "CoinGecko".to_string(),
+          message: format!("request failed: {}", e),
+        },
+      )?;
 
     if response.status() == 429 {
-      return Err(CryptoLoaderError::RateLimitExceeded("CoinGecko".to_string()));
+      return Err(CryptoLoaderError::RateLimitExceeded {
+        provider: "CoinGecko".to_string(),
+        retry_after_secs: None,
+      });
     }
 
     if !response.status().is_success() {
-      return Err(CryptoLoaderError::ApiError(format!(
-        "CoinGecko API returned status: {}",
-        response.status()
-      )));
+      return Err(CryptoLoaderError::ApiError {
+        provider: "CoinGecko".to_string(),
+        message: format!("API returned status: {}", response.status()),
+      });
     }
 
     let coin_data: Value = response.json().await.map_err(|e| {

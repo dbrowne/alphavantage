@@ -146,12 +146,15 @@ impl CryptoDataProvider for CoinMarketCapProvider {
     }
 
     if response.status().as_u16() == 429 {
-      return Err(CryptoLoaderError::RateLimitExceeded("CoinMarketCap".to_string()));
+      return Err(CryptoLoaderError::RateLimitExceeded {
+        provider: "CoinMarketCap".to_string(),
+        retry_after_secs: None,
+      });
     }
 
     if !response.status().is_success() {
       return Err(CryptoLoaderError::InvalidResponse {
-        api_source: "CoinMarketCap".to_string(),
+        provider: "CoinMarketCap".to_string(),
         message: format!("HTTP {}", response.status()),
       });
     }
@@ -160,7 +163,7 @@ impl CryptoDataProvider for CoinMarketCapProvider {
 
     if cmc_response.status.error_code != 0 {
       return Err(CryptoLoaderError::InvalidResponse {
-        api_source: "CoinMarketCap".to_string(),
+        provider: "CoinMarketCap".to_string(),
         message: cmc_response
           .status
           .error_message

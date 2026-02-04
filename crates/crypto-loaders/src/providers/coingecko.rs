@@ -91,7 +91,7 @@ impl CoinGeckoProvider {
 
     if !response.status().is_success() {
       return Err(CryptoLoaderError::InvalidResponse {
-        api_source: "CoinGecko".to_string(),
+        provider: "CoinGecko".to_string(),
         message: format!("HTTP {}", response.status()),
       });
     }

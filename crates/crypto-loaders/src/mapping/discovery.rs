@@ -37,11 +37,17 @@ pub async fn discover_coingecko_id(
   let response = client.get(&url).send().await?;
 
   if response.status() == 429 {
-    return Err(CryptoLoaderError::RateLimitExceeded("CoinGecko".to_string()));
+    return Err(CryptoLoaderError::RateLimitExceeded {
+      provider: "CoinGecko".to_string(),
+      retry_after_secs: None,
+    });
   }
 
   if !response.status().is_success() {
-    return Err(CryptoLoaderError::ApiError(format!("CoinGecko HTTP {}", response.status())));
+    return Err(CryptoLoaderError::ApiError {
+      provider: "CoinGecko".to_string(),
+      message: format!("HTTP {}", response.status()),
+    });
   }
 
   let coins: Vec<serde_json::Value> = response.json().await?;
@@ -78,11 +84,17 @@ pub async fn discover_coinpaprika_id(
   let response = client.get(url).send().await?;
 
   if response.status() == 429 {
-    return Err(CryptoLoaderError::RateLimitExceeded("CoinPaprika".to_string()));
+    return Err(CryptoLoaderError::RateLimitExceeded {
+      provider: "CoinPaprika".to_string(),
+      retry_after_secs: None,
+    });
   }
 
   if !response.status().is_success() {
-    return Err(CryptoLoaderError::ApiError(format!("CoinPaprika HTTP {}", response.status())));
+    return Err(CryptoLoaderError::ApiError {
+      provider: "CoinPaprika".to_string(),
+      message: format!("HTTP {}", response.status()),
+    });
   }
 
   let coins: Vec<serde_json::Value> = response.json().await?;
@@ -106,7 +118,10 @@ mod tests {
   #[tokio::test]
   async fn test_discovery_error_handling() {
     // Test that errors are properly typed
-    let err = CryptoLoaderError::RateLimitExceeded("CoinGecko".to_string());
+    let err = CryptoLoaderError::RateLimitExceeded {
+      provider: "CoinGecko".to_string(),
+      retry_after_secs: None,
+    };
     assert!(err.to_string().contains("CoinGecko"));
   }
 }

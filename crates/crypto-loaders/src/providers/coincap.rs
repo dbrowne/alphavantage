@@ -80,12 +80,15 @@ impl CryptoDataProvider for CoinCapProvider {
       let response = client.get(&url).send().await?;
 
       if response.status().as_u16() == 429 {
-        return Err(CryptoLoaderError::RateLimitExceeded("CoinCap".to_string()));
+        return Err(CryptoLoaderError::RateLimitExceeded {
+          provider: "CoinCap".to_string(),
+          retry_after_secs: None,
+        });
       }
 
       if !response.status().is_success() {
         return Err(CryptoLoaderError::InvalidResponse {
-          api_source: "CoinCap".to_string(),
+          provider: "CoinCap".to_string(),
           message: format!("HTTP {}", response.status()),
         });
       }

@@ -107,9 +107,11 @@ impl<'a> AlphaVantageMetadataProvider<'a> {
   ) -> Result<(ProcessedCryptoMetadata, CryptoDaily, String, u16), CryptoLoaderError> {
     debug!("Loading AlphaVantage metadata for {}", symbol.symbol);
 
-    let api_key = self.config.alphavantage_api_key.as_ref().ok_or_else(|| {
-      CryptoLoaderError::ApiError("AlphaVantage API key not provided".to_string())
-    })?;
+    let api_key = self
+      .config
+      .alphavantage_api_key
+      .as_ref()
+      .ok_or_else(|| CryptoLoaderError::ApiKeyMissing("AlphaVantage".to_string()))?;
 
     let url = format!(
       "https://www.alphavantage.co/query?function=DIGITAL_CURRENCY_DAILY&symbol={}&market=USD&apikey={}",
@@ -122,19 +124,23 @@ impl<'a> AlphaVantageMetadataProvider<'a> {
       .timeout(Duration::from_secs(self.config.timeout_seconds))
       .send()
       .await
-      .map_err(|e| CryptoLoaderError::ApiError(format!("AlphaVantage request failed: {}", e)))?;
+      .map_err(|e| CryptoLoaderError::ApiError {
+        provider: "AlphaVantage".to_string(),
+        message: format!("request failed: {}", e),
+      })?;
 
     let status = response.status().as_u16();
 
     if !response.status().is_success() {
-      return Err(CryptoLoaderError::ApiError(format!(
-        "AlphaVantage API returned status: {}",
-        response.status()
-      )));
+      return Err(CryptoLoaderError::ApiError {
+        provider: "AlphaVantage".to_string(),
+        message: format!("API returned status: {}", response.status()),
+      });
     }
 
-    let response_text = response.text().await.map_err(|e| {
-      CryptoLoaderError::ApiError(format!("Failed to read AlphaVantage response: {}", e))
+    let response_text = response.text().await.map_err(|e| CryptoLoaderError::ApiError {
+      provider: "AlphaVantage".to_string(),
+      message: format!("Failed to read response: {}", e),
     })?;
 
     let crypto_daily: CryptoDaily = serde_json::from_str(&response_text).map_err(|e| {

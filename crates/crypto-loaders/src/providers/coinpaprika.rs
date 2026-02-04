@@ -67,12 +67,15 @@ impl CryptoDataProvider for CoinPaprikaProvider {
     let response = client.get(url).send().await?;
 
     if response.status().as_u16() == 429 {
-      return Err(CryptoLoaderError::RateLimitExceeded("CoinPaprika".to_string()));
+      return Err(CryptoLoaderError::RateLimitExceeded {
+        provider: "CoinPaprika".to_string(),
+        retry_after_secs: None,
+      });
     }
 
     if !response.status().is_success() {
       return Err(CryptoLoaderError::InvalidResponse {
-        api_source: "CoinPaprika".to_string(),
+        provider: "CoinPaprika".to_string(),
         message: format!("HTTP {}", response.status()),
       });
     }
