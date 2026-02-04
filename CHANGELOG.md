@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `#[allow(async_fn_in_trait)]` with documentation explaining the rationale
   - Extension trait is internal-only with default implementations
 
+### Added
+- **av-loaders**: New `base` module with shared loader abstractions
+  - `CacheableConfig` trait for consistent cache configuration across loaders
+  - `ConcurrentLoader` for semaphore-based concurrency management
+  - `LoaderStatistics` for thread-safe statistics tracking (cache hits, API calls, errors)
+  - `ProgressManager` and `LoaderProgressStyle` for consistent progress bar creation
+
 
 
 ## [0.1.0] - 2025-01-15

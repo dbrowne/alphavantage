@@ -43,6 +43,7 @@
 //! and return it for further processing. Database operations should be handled
 //! by the consuming application.
 
+pub mod base;
 pub mod batch_processor;
 pub mod cache;
 pub mod crypto;
@@ -77,6 +78,10 @@ pub use top_movers_loader::{
 };
 
 // Re-export commonly used types
+pub use base::{
+  CacheableConfig, ConcurrentLoader, LoaderProgressStyle, LoaderStatistics, ProgressManager,
+  StatisticsSummary,
+};
 pub use batch_processor::{BatchConfig, BatchProcessor};
 pub use cache::{CacheConfig, CacheConfigProvider, CacheHelper, CacheResult};
 pub use error::{LoaderError, LoaderResult};
