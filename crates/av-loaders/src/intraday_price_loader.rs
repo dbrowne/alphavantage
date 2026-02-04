@@ -29,6 +29,7 @@
 
 //! Intraday price loader for TIME_SERIES_INTRADAY data using CSV format
 
+use crate::base::{CacheableConfig, ConcurrentLoader, ProgressManager, LoaderProgressStyle};
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 use async_trait::async_trait;
@@ -36,13 +37,11 @@ use av_database_postgres::repository::CacheRepository;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use csv::Reader;
 use futures::stream::{self, StreamExt};
-use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
-use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
@@ -170,6 +169,20 @@ impl CacheConfigProvider for IntradayPriceConfig {
   }
 }
 
+impl CacheableConfig for IntradayPriceConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours as i64
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
+  }
+}
+
 /// Symbol information for loading
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
@@ -225,7 +238,7 @@ pub struct IntradayPriceLoaderOutput {
 /// Intraday price loader implementation
 #[derive(Clone)]
 pub struct IntradayPriceLoader {
-  semaphore: Arc<Semaphore>,
+  concurrent: ConcurrentLoader,
   config: IntradayPriceConfig,
   next_eventid: Arc<AtomicI64>,
 }
@@ -234,7 +247,7 @@ impl IntradayPriceLoader {
   /// Create a new intraday price loader
   pub fn new(max_concurrent: usize) -> Self {
     Self {
-      semaphore: Arc::new(Semaphore::new(max_concurrent)),
+      concurrent: ConcurrentLoader::new(max_concurrent),
       config: IntradayPriceConfig { max_concurrent, ..Default::default() },
       next_eventid: Arc::new(AtomicI64::new(0)),
     }
@@ -244,7 +257,7 @@ impl IntradayPriceLoader {
   pub fn with_config(mut self, config: IntradayPriceConfig) -> Self {
     let max_concurrent = config.max_concurrent;
     self.config = config;
-    self.semaphore = Arc::new(Semaphore::new(max_concurrent));
+    self.concurrent.set_max_concurrent(max_concurrent);
     self
   }
 
@@ -288,7 +301,7 @@ impl IntradayPriceLoader {
 
   /// Get cached CSV response if available and not expired
   async fn get_cached_csv(&self, cache_key: &str) -> Option<String> {
-    if !self.config.enable_cache || self.config.force_refresh {
+    if !self.config.should_check_cache() {
       return None;
     }
 
@@ -325,7 +338,7 @@ impl IntradayPriceLoader {
 
   /// Cache the CSV response
   async fn cache_csv_response(&self, cache_key: &str, csv_data: &str, symbol: &str) {
-    if !self.config.enable_cache {
+    if !self.config.should_write_cache() {
       return;
     }
 
@@ -455,11 +468,7 @@ impl IntradayPriceLoader {
     }
 
     // Acquire permit for rate limiting
-    let _permit = self
-      .semaphore
-      .acquire()
-      .await
-      .map_err(|e| LoaderError::ApiError(format!("Failed to acquire permit: {}", e)))?;
+    let _permit = self.concurrent.acquire().await?;
 
     // Add delay for rate limiting
     if self.config.api_delay_ms > 0 {
@@ -555,13 +564,12 @@ impl DataLoader for IntradayPriceLoader {
       }
     }
 
-    // Set up progress bar
-    let progress = ProgressBar::new(input.symbols.len() as u64);
-    progress.set_style(
-      ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-        .unwrap()
-        .progress_chars("#>-"),
+    // Set up progress bar using ProgressManager
+    let progress = ProgressManager::new_optional(
+      input.symbols.len() as u64,
+      context.config.show_progress,
+      LoaderProgressStyle::Standard,
+      Some("Loading intraday prices"),
     );
 
     let mut all_prices = Vec::new();
@@ -583,7 +591,7 @@ impl DataLoader for IntradayPriceLoader {
         let progress = progress.clone();
 
         async move {
-          progress.set_message(format!("Loading {}", symbol));
+          ProgressManager::set_message(&progress, &format!("Loading {}", symbol));
 
           match loader
             .fetch_intraday_csv(context, &symbol, &interval_str, month.as_deref(), sid)
@@ -591,12 +599,12 @@ impl DataLoader for IntradayPriceLoader {
           {
             Ok(prices) => {
               let count = prices.len();
-              progress.inc(1);
+              ProgressManager::increment(&progress);
               Ok((symbol, prices, count))
             }
             Err(e) => {
               error!("Failed to fetch data for {}: {}", symbol, e);
-              progress.inc(1);
+              ProgressManager::increment(&progress);
               Err((symbol, e))
             }
           }
@@ -619,7 +627,7 @@ impl DataLoader for IntradayPriceLoader {
       }
     }
 
-    progress.finish_with_message("Intraday loading complete");
+    ProgressManager::finish(&progress, "Intraday loading complete");
 
     // Update process tracking
     if context.config.track_process {

@@ -41,6 +41,7 @@ use av_database_postgres::{
 use av_models::fundamentals::{StockMover, TopGainersLosers};
 use diesel::PgConnection;
 
+use crate::base::CacheableConfig;
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 
@@ -82,6 +83,20 @@ impl Default for TopMoversConfig {
 }
 
 impl CacheConfigProvider for TopMoversConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
+  }
+}
+
+impl CacheableConfig for TopMoversConfig {
   fn cache_enabled(&self) -> bool {
     self.enable_cache
   }
@@ -210,7 +225,7 @@ impl TopMoversLoader {
     context: &LoaderContext,
     cache_key: &str,
   ) -> Result<Option<TopGainersLosers>, LoaderError> {
-    if !self.config.enable_cache || self.config.force_refresh {
+    if !self.config.should_check_cache() {
       return Ok(None);
     }
 
@@ -245,7 +260,7 @@ impl TopMoversLoader {
     cache_key: &str,
     data: &TopGainersLosers,
   ) -> Result<(), LoaderError> {
-    if !self.config.enable_cache {
+    if !self.config.should_write_cache() {
       return Ok(());
     }
 

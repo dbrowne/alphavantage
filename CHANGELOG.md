@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `LoaderStatistics` for thread-safe statistics tracking (cache hits, API calls, errors)
   - `ProgressManager` and `LoaderProgressStyle` for consistent progress bar creation
 
+### Refactored
+- **av-loaders**: Migrated all loaders to use new base abstractions
+  - `OverviewLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `LoaderStatistics`, `ProgressManager`
+  - `SecurityLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `LoaderStatistics`, `ProgressManager`
+  - `TopMoversLoader`: Implements `CacheableConfig` for consistent cache behavior
+  - `SummaryPriceLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `ProgressManager`
+  - `IntradayPriceLoader`: Uses `ConcurrentLoader`, `CacheableConfig`, `ProgressManager`
+  - `NewsLoader`: Implements `CacheableConfig` for consistent cache behavior
+
 
 
 ## [0.1.0] - 2025-01-15
