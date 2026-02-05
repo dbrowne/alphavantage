@@ -179,17 +179,20 @@ async fn get_latest_timestamps(
 
       let mut conn = establish_connection(&database_url)?;
 
-      // Get the maximum timestamp for each sid
       let mut timestamp_map = HashMap::new();
 
-      for sid in sids {
-        let latest: Option<DateTime<Utc>> = intradayprices::table
-          .select(diesel::dsl::max(intradayprices::tstamp))
-          .filter(intradayprices::sid.eq(sid))
-          .first(&mut conn)?;
+      // Process in batches to avoid shared memory issues with large IN clauses
+      for chunk in sids.chunks(500) {
+        let results: Vec<(i64, Option<DateTime<Utc>>)> = intradayprices::table
+          .filter(intradayprices::sid.eq_any(chunk))
+          .group_by(intradayprices::sid)
+          .select((intradayprices::sid, diesel::dsl::max(intradayprices::tstamp)))
+          .load(&mut conn)?;
 
-        if let Some(ts) = latest {
-          timestamp_map.insert(sid, ts);
+        for (sid, ts) in results {
+          if let Some(t) = ts {
+            timestamp_map.insert(sid, t);
+          }
         }
       }
 

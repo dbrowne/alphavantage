@@ -30,11 +30,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
-use indicatif::ProgressBar;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
+use crate::base::{CacheableConfig, ConcurrentLoader, LoaderStatistics, ProgressManager, LoaderProgressStyle};
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderResult, process_tracker::ProcessState};
 use av_database_postgres::repository::CacheRepositoryExt;
@@ -75,16 +74,30 @@ impl CacheConfigProvider for OverviewLoaderConfig {
   }
 }
 
+impl CacheableConfig for OverviewLoaderConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
+  }
+}
+
 /// Loader for company overview fundamental data
 pub struct OverviewLoader {
-  semaphore: Arc<Semaphore>,
+  concurrent: ConcurrentLoader,
   config: OverviewLoaderConfig,
 }
 
 impl OverviewLoader {
   pub fn new(max_concurrent: usize) -> Self {
     Self {
-      semaphore: Arc::new(Semaphore::new(max_concurrent)),
+      concurrent: ConcurrentLoader::new(max_concurrent),
       config: OverviewLoaderConfig::default(),
     }
   }
@@ -106,7 +119,7 @@ impl OverviewLoader {
     cache_key: &str,
     cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
   ) -> Option<CompanyOverview> {
-    if !self.config.enable_cache || self.config.force_refresh {
+    if !self.config.should_check_cache() {
       return None;
     }
 
@@ -135,7 +148,7 @@ impl OverviewLoader {
     symbol: &str,
     cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
   ) {
-    if !self.config.enable_cache {
+    if !self.config.should_write_cache() {
       return;
     }
 
@@ -225,7 +238,7 @@ impl OverviewLoader {
 // Implement Clone for use in async closures
 impl Clone for OverviewLoader {
   fn clone(&self) -> Self {
-    Self { semaphore: Arc::clone(&self.semaphore), config: self.config.clone() }
+    Self { concurrent: self.concurrent.clone(), config: self.config.clone() }
   }
 }
 
@@ -242,12 +255,13 @@ impl DataLoader for OverviewLoader {
       tracker.start("overview_loader").await?;
     }
 
-    // Use Arc for progress bar to share it across async tasks
-    let progress = if context.config.show_progress {
-      Some(Arc::new(ProgressBar::new(input.symbols.len() as u64)))
-    } else {
-      None
-    };
+    // Create progress bar using ProgressManager
+    let progress = ProgressManager::new_optional(
+      input.symbols.len() as u64,
+      context.config.show_progress,
+      LoaderProgressStyle::Standard,
+      Some("Loading overviews"),
+    );
 
     let progress_for_finish = progress.clone();
     let client_ref = context.client.clone();
@@ -261,7 +275,7 @@ impl DataLoader for OverviewLoader {
     let results = stream::iter(input.symbols.into_iter())
       .map(move |symbol_info| {
         let client = client_ref.clone();
-        let semaphore = self.semaphore.clone();
+        let semaphore = self.concurrent.semaphore();
         let progress = progress.clone();
         let cache_repo_opt = cache_repo_opt.clone();
         let loader = self.clone();
@@ -270,16 +284,12 @@ impl DataLoader for OverviewLoader {
           let _permit =
             semaphore.acquire().await.expect("Semaphore should not be closed during operation");
 
-          if let Some(pb) = &progress {
-            pb.set_message(format!("Processing {}", symbol_info.symbol));
-          }
+          ProgressManager::set_message(&progress, &format!("Processing {}", symbol_info.symbol));
 
           // Generate cache key
           let cache_key = loader.generate_cache_key(&symbol_info.symbol);
 
-          if let Some(pb) = &progress {
-            pb.inc(1);
-          }
+          ProgressManager::increment(&progress);
 
           // Check cache first (if cache repository is available)
           let (overview_result, from_cache) = if let Some(cache_repo) = &cache_repo_opt {
@@ -343,41 +353,37 @@ impl DataLoader for OverviewLoader {
       .collect::<Vec<_>>()
       .await;
 
-    if let Some(pb) = progress_for_finish {
-      pb.finish_with_message("Overview loading complete");
-    }
+    ProgressManager::finish(&progress_for_finish, "Overview loading complete");
 
-    // Process results and track cache statistics
+    // Process results and track cache statistics using LoaderStatistics
     let mut loaded = Vec::new();
-    let mut errors = 0;
     let mut no_data = 0;
-    let mut cache_hits = 0usize;
-    let mut api_calls = 0usize;
+    let stats = LoaderStatistics::new();
 
     for result in results {
       match result {
         Ok((Some(data), from_cache)) => {
           if from_cache {
-            cache_hits += 1;
+            stats.record_cache_hit();
           } else {
-            api_calls += 1;
+            stats.record_api_call();
           }
           loaded.push(data);
         }
         Ok((None, from_cache)) => {
           if from_cache {
-            cache_hits += 1;
+            stats.record_cache_hit();
           } else {
-            api_calls += 1;
+            stats.record_api_call();
           }
           no_data += 1;
         }
         Err((e, from_cache)) => {
           if !from_cache {
-            api_calls += 1;
+            stats.record_api_call();
           }
           error!("Failed to load overview: {}", e);
-          errors += 1;
+          stats.record_error();
         }
       }
     }
@@ -385,7 +391,7 @@ impl DataLoader for OverviewLoader {
     // Complete process tracking
     if let Some(tracker) = &context.process_tracker {
       tracker
-        .complete(if errors > 0 {
+        .complete(if stats.errors() > 0 {
           ProcessState::CompletedWithErrors
         } else {
           ProcessState::Success
@@ -397,18 +403,18 @@ impl DataLoader for OverviewLoader {
       "Overview loading complete: {} loaded, {} no data, {} errors, {} cache hits, {} API calls",
       loaded.len(),
       no_data,
-      errors,
-      cache_hits,
-      api_calls
+      stats.errors(),
+      stats.cache_hits(),
+      stats.api_calls()
     );
 
     Ok(OverviewLoaderOutput {
-      total_symbols: loaded.len() + no_data + errors,
+      total_symbols: loaded.len() + no_data + stats.errors(),
       loaded_count: loaded.len(),
       no_data_count: no_data,
-      errors,
-      cache_hits,
-      api_calls,
+      errors: stats.errors(),
+      cache_hits: stats.cache_hits(),
+      api_calls: stats.api_calls(),
       data: loaded,
     })
   }

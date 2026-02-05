@@ -36,11 +36,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
-use indicatif::ProgressBar;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
+use crate::base::{CacheableConfig, ConcurrentLoader, LoaderStatistics, ProgressManager, LoaderProgressStyle};
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::error::LoaderError;
 use crate::{
@@ -98,12 +97,26 @@ impl CacheConfigProvider for SecurityLoaderConfig {
   }
 }
 
+impl CacheableConfig for SecurityLoaderConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
+  }
+}
+
 /// Security loader - fetches symbol data from AlphaVantage API
 ///
 /// This loader is now database-agnostic. It uses the CacheRepository
 /// trait for caching instead of direct database access.
 pub struct SecurityLoader {
-  semaphore: Arc<Semaphore>,
+  concurrent: ConcurrentLoader,
   match_mode: SymbolMatchMode,
   config: SecurityLoaderConfig,
 }
@@ -111,7 +124,7 @@ pub struct SecurityLoader {
 impl SecurityLoader {
   pub fn new(max_concurrent: usize) -> Self {
     Self {
-      semaphore: Arc::new(Semaphore::new(max_concurrent)),
+      concurrent: ConcurrentLoader::new(max_concurrent),
       match_mode: SymbolMatchMode::default(),
       config: SecurityLoaderConfig::default(),
     }
@@ -142,7 +155,7 @@ impl SecurityLoader {
     cache_key: &str,
     cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
   ) -> Option<SymbolSearch> {
-    if !self.config.enable_cache || self.config.force_refresh {
+    if !self.config.should_check_cache() {
       return None;
     }
 
@@ -172,7 +185,7 @@ impl SecurityLoader {
     symbol: &str,
     cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
   ) {
-    if !self.config.enable_cache {
+    if !self.config.should_write_cache() {
       return;
     }
 
@@ -254,12 +267,13 @@ impl DataLoader for SecurityLoader {
       tracker.start("security_loader").await?;
     }
 
-    // Use Arc for progress bar to share it across async tasks
-    let progress = if context.config.show_progress {
-      Some(Arc::new(ProgressBar::new(symbols.len() as u64)))
-    } else {
-      None
-    };
+    // Create progress bar using ProgressManager
+    let progress = ProgressManager::new_optional(
+      symbols.len() as u64,
+      context.config.show_progress,
+      LoaderProgressStyle::Standard,
+      Some("Loading securities"),
+    );
 
     // Clone for use after the stream processing
     let progress_for_finish = progress.clone();
@@ -273,15 +287,11 @@ impl DataLoader for SecurityLoader {
     // Get cache repository if available
     let cache_repo_opt = context.cache_repository.clone();
 
-    // Counters for output
-    let mut cache_hits = 0usize;
-    let mut api_calls = 0usize;
-
     // Query AlphaVantage API for each symbol
     let results = stream::iter(symbols.into_iter())
       .map(move |symbol| {
         let client = client_ref.clone();
-        let semaphore = self.semaphore.clone();
+        let semaphore = self.concurrent.semaphore();
         let progress = progress.clone();
         let exchange = exchange.clone();
         let original_symbol = symbol.clone();
@@ -309,9 +319,7 @@ impl DataLoader for SecurityLoader {
                 Ok(results) => results,
                 Err(e) => {
                   warn!("Symbol search failed for {}: {}", symbol, e);
-                  if let Some(pb) = &progress {
-                    pb.inc(1);
-                  }
+                  ProgressManager::increment(&progress);
                   tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
                   return Err((e, false));
                 }
@@ -329,9 +337,7 @@ impl DataLoader for SecurityLoader {
               Ok(results) => results,
               Err(e) => {
                 warn!("Symbol search failed for {}: {}", symbol, e);
-                if let Some(pb) = &progress {
-                  pb.inc(1);
-                }
+                ProgressManager::increment(&progress);
                 tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
                 return Err((e, false));
               }
@@ -344,9 +350,7 @@ impl DataLoader for SecurityLoader {
 
           if matches.is_empty() {
             warn!("No matches found for symbol {}", symbol);
-            if let Some(pb) = &progress {
-              pb.inc(1);
-            }
+            ProgressManager::increment(&progress);
             tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
             return Ok((vec![], from_cache));
           }
@@ -396,9 +400,7 @@ impl DataLoader for SecurityLoader {
             });
           }
 
-          if let Some(pb) = &progress {
-            pb.inc(1);
-          }
+          ProgressManager::increment(&progress);
 
           // Add delay to respect rate limits (only if not from cache)
           if !from_cache {
@@ -412,22 +414,20 @@ impl DataLoader for SecurityLoader {
       .collect::<Vec<_>>()
       .await;
 
-    if let Some(pb) = progress_for_finish {
-      pb.finish_with_message("Security loading complete");
-    }
+    ProgressManager::finish(&progress_for_finish, "Security loading complete");
 
-    // Process results - flatten nested vectors and count cache hits
+    // Process results - flatten nested vectors and track statistics
     let mut loaded = Vec::new();
-    let mut errors = 0;
     let mut skipped = 0;
+    let stats = LoaderStatistics::new();
 
     for result in results {
       match result {
         Ok((data_vec, from_cache)) => {
           if from_cache {
-            cache_hits += 1;
+            stats.record_cache_hit();
           } else {
-            api_calls += 1;
+            stats.record_api_call();
           }
 
           if data_vec.is_empty() {
@@ -440,10 +440,10 @@ impl DataLoader for SecurityLoader {
         }
         Err((e, from_cache)) => {
           if !from_cache {
-            api_calls += 1;
+            stats.record_api_call();
           }
           warn!("Error in security loading: {}", e);
-          errors += 1;
+          stats.record_error();
         }
       }
     }
@@ -451,7 +451,7 @@ impl DataLoader for SecurityLoader {
     // Complete process tracking
     if let Some(tracker) = &context.process_tracker {
       tracker
-        .complete(if errors > 0 {
+        .complete(if stats.errors() > 0 {
           ProcessState::CompletedWithErrors
         } else {
           ProcessState::Success
@@ -459,25 +459,25 @@ impl DataLoader for SecurityLoader {
         .await?;
     }
 
-    let total_symbols = loaded.len() + errors + skipped;
+    let total_symbols = loaded.len() + stats.errors() + skipped;
 
     info!(
       "Security loading complete: {} loaded, {} errors, {} skipped, {} cache hits, {} API calls",
       loaded.len(),
-      errors,
+      stats.errors(),
       skipped,
-      cache_hits,
-      api_calls
+      stats.cache_hits(),
+      stats.api_calls()
     );
 
     Ok(SecurityLoaderOutput {
       total_symbols,
       loaded_count: loaded.len(),
-      errors,
+      errors: stats.errors(),
       skipped_count: skipped,
       duplicates_prevented: 0, // TODO: Implement duplicate tracking
-      cache_hits,
-      api_calls,
+      cache_hits: stats.cache_hits(),
+      api_calls: stats.api_calls(),
       data: loaded,
     })
   }
@@ -491,7 +491,7 @@ impl DataLoader for SecurityLoader {
 impl Clone for SecurityLoader {
   fn clone(&self) -> Self {
     Self {
-      semaphore: Arc::clone(&self.semaphore),
+      concurrent: self.concurrent.clone(),
       match_mode: self.match_mode.clone(),
       config: self.config.clone(),
     }

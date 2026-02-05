@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+use crate::base::CacheableConfig;
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::{
   error::{LoaderError, LoaderResult},
@@ -66,6 +67,20 @@ impl Default for NewsLoaderConfig {
 }
 
 impl CacheConfigProvider for NewsLoaderConfig {
+  fn cache_enabled(&self) -> bool {
+    self.enable_cache
+  }
+
+  fn cache_ttl_hours(&self) -> i64 {
+    self.cache_ttl_hours
+  }
+
+  fn force_refresh(&self) -> bool {
+    self.force_refresh
+  }
+}
+
+impl CacheableConfig for NewsLoaderConfig {
   fn cache_enabled(&self) -> bool {
     self.enable_cache
   }
@@ -163,7 +178,7 @@ impl NewsLoader {
     cache_key: &str,
     cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
   ) -> Option<NewsSentiment> {
-    if !self.config.enable_cache || self.config.force_refresh {
+    if !self.config.should_check_cache() {
       return None;
     }
 
@@ -192,7 +207,7 @@ impl NewsLoader {
     endpoint_url: &str,
     cache_repo: &Arc<dyn av_database_postgres::repository::CacheRepository>,
   ) {
-    if !self.config.enable_cache {
+    if !self.config.should_write_cache() {
       return;
     }
 

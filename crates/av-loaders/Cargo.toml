@@ -18,6 +18,7 @@ av-client = { path = "../av-client", version = "0.1.1" }
 av-models = { path = "../av-models", version = "0.1.1" }
 av-database-postgres = { path = "../av-database/postgres", version = "0.1.0"}
 crypto-loaders = { path = "../crypto-loaders", version = "0.1.1" }
+loader-base = { workspace = true }
 # External dependencies
 tokio = { workspace = true}
 futures = { workspace = true}
