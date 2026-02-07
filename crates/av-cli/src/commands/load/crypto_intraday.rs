@@ -558,6 +558,8 @@ pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   println!("║ Symbols Loaded:     {:<24} ║", output.symbols_loaded);
   println!("║ Symbols Failed:     {:<24} ║", output.symbols_failed);
   println!("║ Symbols Skipped:    {:<24} ║", output.symbols_skipped);
+  println!("║ Cache Hits:         {:<24} ║", output.cache_hits);
+  println!("║ API Calls:          {:<24} ║", output.api_calls);
   println!("║ Total Records:      {:<24} ║", output.data.len());
   println!("╚════════════════════════════════════════════╝");
 

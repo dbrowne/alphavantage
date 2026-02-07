@@ -33,14 +33,13 @@ use clap::Args;
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types;
-use indicatif::{ProgressBar, ProgressStyle};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::config::Config;
 use av_database_postgres::models::{CryptoApiMap, SymbolMapping};
@@ -158,6 +157,7 @@ fn generate_cache_key(sid: i64, symbol: &str) -> String {
 }
 
 /// Get cached price if available and not expired
+#[instrument(skip(cache_config), fields(cache_key = %cache_key))]
 async fn get_cached_price(cache_config: &CacheConfig, cache_key: &str) -> Option<CryptoPriceData> {
   if !cache_config.enable_cache || cache_config.force_refresh {
     return None;
@@ -191,7 +191,7 @@ async fn get_cached_price(cache_config: &CacheConfig, cache_key: &str) -> Option
     };
 
     if let Some(cache_result) = cached_entry {
-      info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
+      info!("Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
 
       match serde_json::from_value::<CryptoPriceData>(cache_result.response_data) {
         Ok(price) => return Some(price),
@@ -210,6 +210,7 @@ async fn get_cached_price(cache_config: &CacheConfig, cache_key: &str) -> Option
 }
 
 /// Store price data in cache
+#[instrument(skip(cache_config, price), fields(cache_key = %cache_key))]
 async fn store_cached_price(
   cache_config: &CacheConfig,
   cache_key: &str,
@@ -251,10 +252,7 @@ async fn store_cached_price(
     .execute(&mut conn)
     .map_err(|e| anyhow!("Failed to store cache: {}", e))?;
 
-    info!(
-      "💾 Cached price for {} (TTL: {}m, expires: {})",
-      cache_key, cache_ttl_minutes, expires_at
-    );
+    info!("Cached price for {} (TTL: {}m, expires: {})", cache_key, cache_ttl_minutes, expires_at);
 
     Ok(())
   })
@@ -263,6 +261,7 @@ async fn store_cached_price(
 }
 
 /// Fetch price data from CoinGecko
+#[instrument(skip(client, api_key), fields(source = "coingecko", symbol = %symbol, sid = sid))]
 async fn fetch_from_coingecko(
   client: &reqwest::Client,
   sid: i64,
@@ -349,6 +348,7 @@ async fn fetch_from_coingecko(
 }
 
 /// Fetch price data from CoinMarketCap
+#[instrument(skip(client, api_key), fields(source = "coinmarketcap", symbol = %symbol, sid = sid))]
 async fn fetch_from_coinmarketcap(
   client: &reqwest::Client,
   sid: i64,
@@ -448,6 +448,7 @@ async fn fetch_from_coinmarketcap(
 }
 
 /// Fetch price data from AlphaVantage
+#[instrument(skip(client, api_key), fields(source = "alphavantage", symbol = %from_symbol, sid = sid))]
 async fn fetch_from_alphavantage(
   client: &reqwest::Client,
   sid: i64,
@@ -526,6 +527,10 @@ async fn fetch_from_alphavantage(
 
 /// Fetch price from multiple sources with optional parallel execution
 /// Tries sources in priority order, using mappings when available
+#[instrument(
+  skip(client, coingecko_api_key, coinmarketcap_api_key, alphavantage_api_key, database_url),
+  fields(symbol = %symbol_with_mappings.symbol, sid = symbol_with_mappings.sid)
+)]
 async fn fetch_price_parallel(
   client: &reqwest::Client,
   symbol_with_mappings: &SymbolWithMappings,
@@ -592,7 +597,7 @@ async fn fetch_price_parallel(
 
     match result {
       Ok(price) => {
-        info!("✓ Successfully fetched {} from {} using '{}'", symbol, source, identifier);
+        info!("Fetched {} from {} using '{}'", symbol, source, identifier);
 
         // Auto-discover mapping if this was successful and we didn't have a mapping
         if !mapping_map.contains_key(&source_lower) {
@@ -650,7 +655,7 @@ async fn auto_discover_mapping(
       ))
       .execute(&mut conn)?;
 
-    info!("✓ Auto-discovered mapping: sid={} → {}:{}", sid, source_name, source_identifier);
+    info!("Auto-discovered mapping: sid={} -> {}:{}", sid, source_name, source_identifier);
 
     Ok(())
   })
@@ -724,6 +729,7 @@ fn save_price_to_db(
 }
 
 /// Main execute function
+#[instrument(name = "CryptoPriceLoader", skip(args, config), fields(loader = "CryptoPriceLoader"))]
 pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
   // Determine source priority
   let source_list = if let Some(ref single_source) = args.source {
@@ -912,28 +918,19 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
 
   // Load prices
   let mut all_prices = Vec::new();
-  let progress = ProgressBar::new(symbols_with_mappings.len() as u64);
-  progress.set_style(
-    ProgressStyle::default_bar()
-      .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-      .expect("Invalid progress bar template")
-      .progress_chars("##-"),
-  );
-
   let mut cache_hits = 0;
   let mut api_calls = 0;
   let mut errors = 0;
+  let total_symbols = symbols_with_mappings.len();
 
-  for symbol_with_mappings in symbols_with_mappings {
+  for (idx, symbol_with_mappings) in symbols_with_mappings.into_iter().enumerate() {
     let sid = symbol_with_mappings.sid;
     let symbol = &symbol_with_mappings.symbol;
-    progress.set_message(format!("Loading {}", symbol));
 
     // Skip symbols with invalid characters (CoinMarketCap only accepts alphanumeric + hyphen/underscore)
     if !symbol.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
       debug!("Skipping symbol with invalid characters: {}", symbol);
       errors += 1;
-      progress.inc(1);
       continue;
     }
 
@@ -941,6 +938,7 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
     let cache_key = generate_cache_key(sid, symbol);
     let price = if let Some(cached) = get_cached_price(&cache_config, &cache_key).await {
       cache_hits += 1;
+      info!("Cache hit for {} (sid={})", symbol, sid);
       Some(cached)
     } else {
       // Fetch from API using multi-source coordinator
@@ -977,7 +975,7 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
           }
 
           info!(
-            "Successfully fetched {} price: ${:.6} (24h change: {:.2}%)",
+            "Fetched {} price: ${:.6} (24h change: {:.2}%)",
             symbol, price.price_usd, price.percent_change_24h
           );
 
@@ -988,7 +986,6 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
           errors += 1;
 
           if !args.continue_on_error {
-            progress.finish_with_message("Stopped due to error");
             return Err(e);
           }
 
@@ -1001,21 +998,43 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
       all_prices.push(price);
     }
 
-    progress.inc(1);
+    // Periodic progress summary (every 500 symbols)
+    if (idx + 1) % 500 == 0 {
+      info!(
+        "Progress: {}/{} processed ({} cache hits, {} API calls, {} errors)",
+        idx + 1,
+        total_symbols,
+        cache_hits,
+        api_calls,
+        errors
+      );
+    }
   }
 
-  progress.finish_with_message("Loading complete");
+  // Display summary box
+  let cache_hit_rate = if (cache_hits + api_calls) > 0 {
+    (cache_hits as f64 / (cache_hits + api_calls) as f64) * 100.0
+  } else {
+    0.0
+  };
+
+  println!("\n╔════════════════════════════════════════════╗");
+  println!("║       CRYPTO PRICE LOADING SUMMARY          ║");
+  println!("╠════════════════════════════════════════════╣");
+  println!("║ Total Symbols:      {:<24} ║", total_symbols);
+  println!("║ Prices Loaded:      {:<24} ║", all_prices.len());
+  println!("║ Cache Hits:         {:<24} ║", cache_hits);
+  println!("║ API Calls:          {:<24} ║", api_calls);
+  println!("║ Errors:             {:<24} ║", errors);
+  println!("║ Cache Hit Rate:     {:<23.1}% ║", cache_hit_rate);
+  println!("╚════════════════════════════════════════════╝");
 
   info!(
-    "📊 Load statistics: {} cache hits, {} API calls, {} errors ({:.1}% cache hit rate)",
-    cache_hits,
-    api_calls,
-    errors,
-    if (cache_hits + api_calls) > 0 {
-      (cache_hits as f64 / (cache_hits + api_calls) as f64) * 100.0
-    } else {
-      0.0
-    }
+    loaded = all_prices.len(),
+    cache_hits = cache_hits,
+    api_calls = api_calls,
+    errors = errors,
+    "Loading complete"
   );
 
   if !all_prices.is_empty() {
@@ -1039,7 +1058,7 @@ pub async fn execute(args: CryptoPricesArgs, config: Config) -> Result<()> {
     })
     .await??;
 
-    info!("Successfully saved {} cryptocurrency prices to database", saved_count);
+    info!(saved = saved_count, "Database save complete");
   } else {
     warn!("No prices to save");
   }

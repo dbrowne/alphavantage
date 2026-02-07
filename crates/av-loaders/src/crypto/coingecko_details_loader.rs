@@ -12,6 +12,7 @@
 use async_trait::async_trait;
 use av_database_postgres::repository::CacheRepository;
 use std::sync::Arc;
+use tracing::instrument;
 
 use super::sources::CacheRepositoryAdapter;
 use crate::{DataLoader, LoaderContext, LoaderResult, ProcessState};
@@ -54,6 +55,12 @@ impl DataLoader for CoinGeckoDetailsLoader {
   type Input = CoinGeckoDetailsInput;
   type Output = CoinGeckoDetailsOutput;
 
+  #[instrument(
+    name = "CoinGeckoDetailsLoader",
+    skip(self, context, input),
+    fields(loader = "CoinGeckoDetailsLoader", coin_count = input.coins.len()),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
     // Track process if enabled
     if let Some(tracker) = &context.process_tracker {

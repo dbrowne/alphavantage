@@ -1,6 +1,6 @@
 [package]
 name = "av-cli"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Dwight Browne <dwught@dwightjbrowne.com>"]
 description = "Command-line interface for AlphaVantage data loading"
@@ -17,11 +17,11 @@ name = "av"
 path = "src/main.rs"
 
 [dependencies]
-av-core = { path = "../av-core", version = "0.1.1" }
-av-client = { path = "../av-client", version = "0.1.1" }
-av-models = { path = "../av-models", version = "0.1.1" }
-av-database-postgres = { path = "../av-database/postgres", version = "0.1.1" }
-av-loaders = { path = "../av-loaders", version = "0.1.1" }
+av-core = { path = "../av-core", version = "0.1.2" }
+av-client = { path = "../av-client", version = "0.1.2" }
+av-models = { path = "../av-models", version = "0.1.2" }
+av-database-postgres = { path = "../av-database/postgres", version = "0.1.2" }
+av-loaders = { path = "../av-loaders", version = "0.1.2" }
 diesel = {workspace = true}
 dotenvy = {workspace = true}
 bigdecimal = {workspace=true}

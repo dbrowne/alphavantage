@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2]
 
 ### Added
 - **av-cli**: New `coins-market` loader for CoinGecko `/coins/markets` endpoint
@@ -26,6 +26,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `crypto_overview_metrics`: `high_24h`, `low_24h`, `market_cap_change_24h`, `market_cap_change_pct_24h`
 
 ### Changed
+- **av-cli**: Added structured tracing with `#[instrument]` to `crypto_prices` loader
+  - Added `#[instrument]` spans to `execute`, `fetch_price_parallel`, `fetch_from_coingecko`, `fetch_from_coinmarketcap`, `fetch_from_alphavantage`, `get_cached_price`, `store_cached_price`
+  - Per-symbol API calls now show `close time.busy=... time.idle=...` timing from `FmtSpan::CLOSE`
+  - Removed `ProgressBar` in favor of per-symbol tracing output (consistent with NewsLoader style)
+  - Added summary display box after loading completes (cache hits, API calls, errors, cache hit rate)
+  - Added periodic progress `info!` every 500 symbols
+
+- **av-cli**: Fixed tracing `EnvFilter` not matching binary crate module paths
+  - Added `av={level}` to the default filter (binary name is `av`, not `av_cli`)
+  - All `info!`/`debug!`/`warn!`/`error!` messages from CLI commands now visible
+
+- **av-cli**: Added cache hit and API call stats to `crypto-intraday` summary display
+
+- **av-loaders**: Added `cache_hits` and `api_calls` tracking to `CryptoIntradayLoader`
+  - `CryptoIntradayLoaderOutput` now includes `cache_hits` and `api_calls` fields
+  - `fetch_crypto_intraday_csv` returns source info (`from_cache` flag)
+  - Structured completion `info!` includes `cache_hits` and `api_calls` fields
+  - Upgraded DB connection failures from `debug!` to `warn!` in cache methods
+  - Added `warn!` on cached CSV parse errors for better visibility
+
 - **av-cli**: Refactored `coins_market.rs` to use typed `LoaderError` instead of `anyhow`
   - All database operations use explicit `map_err` with contextual messages
   - API errors include provider name and status codes
