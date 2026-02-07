@@ -224,6 +224,8 @@ diesel::table! {
         last_updated -> Nullable<Timestamptz>,
         c_time -> Timestamptz,
         m_time -> Timestamptz,
+        image_url -> Nullable<Text>,
+        market_cap_rank_rehyp -> Nullable<Int4>,
     }
 }
 
@@ -252,6 +254,10 @@ diesel::table! {
         roi_percentage -> Nullable<Numeric>,
         c_time -> Timestamptz,
         m_time -> Timestamptz,
+        high_24h -> Nullable<Numeric>,
+        low_24h -> Nullable<Numeric>,
+        market_cap_change_24h -> Nullable<Numeric>,
+        market_cap_change_pct_24h -> Nullable<Numeric>,
     }
 }
 

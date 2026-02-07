@@ -27,9 +27,7 @@ impl ProgressStyle {
   /// Get the indicatif template string for this style
   pub fn template(&self) -> &'static str {
     match self {
-      ProgressStyle::Standard => {
-        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}"
-      }
+      ProgressStyle::Standard => "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
       ProgressStyle::Compact => "{bar:20.green/white} {pos}/{len} {msg}",
       ProgressStyle::Detailed => {
         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}"

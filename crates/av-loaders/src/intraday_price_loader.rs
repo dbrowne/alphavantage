@@ -29,7 +29,7 @@
 
 //! Intraday price loader for TIME_SERIES_INTRADAY data using CSV format
 
-use crate::base::{CacheableConfig, ConcurrentLoader, ProgressManager, LoaderProgressStyle};
+use crate::base::{CacheableConfig, ConcurrentLoader, LoaderProgressStyle, ProgressManager};
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 use async_trait::async_trait;

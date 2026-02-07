@@ -270,12 +270,7 @@ pub struct CoinGeckoDetailsLoader {
 
 impl CoinGeckoDetailsLoader {
   pub fn new(api_key: String, config: DetailsLoaderConfig) -> Self {
-    Self {
-      api_key,
-      concurrent: ConcurrentLoader::new(config.max_concurrent),
-      cache: None,
-      config,
-    }
+    Self { api_key, concurrent: ConcurrentLoader::new(config.max_concurrent), cache: None, config }
   }
 
   pub fn with_cache(mut self, cache: Arc<dyn CryptoCache>) -> Self {

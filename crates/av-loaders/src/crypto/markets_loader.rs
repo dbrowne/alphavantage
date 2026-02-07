@@ -679,7 +679,7 @@ impl CryptoMarketsLoader {
     // FIXED: Use the proper struct instead of tuple
     let cached_entry: Option<CacheQueryResult> = diesel::sql_query(
       "SELECT response_data, expires_at FROM api_response_cache
-             WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'coingecko'",
+             WHERE cache_key = $1 AND expires_at > NOW() AND api_source = 'CoinGecko'",
     )
     .bind::<diesel::sql_types::Text, _>(cache_key)
     .get_result(&mut conn)
@@ -739,7 +739,7 @@ impl CryptoMarketsLoader {
     let result = diesel::sql_query(
       "INSERT INTO api_response_cache
              (cache_key, api_source, endpoint_url, response_data, status_code, expires_at)
-             VALUES ($1, 'coingecko', $2, $3, $4, $5)
+             VALUES ($1, 'CoinGecko', $2, $3, $4, $5)
              ON CONFLICT (cache_key) DO UPDATE SET
                 response_data = EXCLUDED.response_data,
                 status_code = EXCLUDED.status_code,

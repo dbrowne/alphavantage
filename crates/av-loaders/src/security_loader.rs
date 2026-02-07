@@ -39,7 +39,9 @@ use futures::stream::{self, StreamExt};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-use crate::base::{CacheableConfig, ConcurrentLoader, LoaderStatistics, ProgressManager, LoaderProgressStyle};
+use crate::base::{
+  CacheableConfig, ConcurrentLoader, LoaderProgressStyle, LoaderStatistics, ProgressManager,
+};
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::error::LoaderError;
 use crate::{

@@ -33,7 +33,9 @@ use futures::stream::{self, StreamExt};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-use crate::base::{CacheableConfig, ConcurrentLoader, LoaderStatistics, ProgressManager, LoaderProgressStyle};
+use crate::base::{
+  CacheableConfig, ConcurrentLoader, LoaderProgressStyle, LoaderStatistics, ProgressManager,
+};
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderResult, process_tracker::ProcessState};
 use av_database_postgres::repository::CacheRepositoryExt;
