@@ -106,6 +106,18 @@ impl From<loader_base::LoaderBaseError> for LoaderError {
   }
 }
 
+impl From<reqwest::Error> for LoaderError {
+  fn from(err: reqwest::Error) -> Self {
+    if err.is_timeout() {
+      LoaderError::ApiError(format!("Request timeout: {}", err))
+    } else if err.is_connect() {
+      LoaderError::ApiError(format!("Connection failed: {}", err))
+    } else {
+      LoaderError::ApiError(err.to_string())
+    }
+  }
+}
+
 pub type LoaderResult<T> = Result<T, LoaderError>;
 
 #[cfg(test)]

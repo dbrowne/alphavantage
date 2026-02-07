@@ -56,6 +56,8 @@ pub struct CryptoOverviewBasic {
   pub last_updated: Option<DateTime<Utc>>,
   pub c_time: DateTime<Utc>,
   pub m_time: DateTime<Utc>,
+  pub image_url: Option<String>,
+  pub market_cap_rank_rehyp: Option<i32>,
 }
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +84,10 @@ pub struct CryptoOverviewMetrics {
   pub roi_percentage: Option<BigDecimal>,
   pub c_time: DateTime<Utc>,
   pub m_time: DateTime<Utc>,
+  pub high_24h: Option<BigDecimal>,
+  pub low_24h: Option<BigDecimal>,
+  pub market_cap_change_24h: Option<BigDecimal>,
+  pub market_cap_change_pct_24h: Option<BigDecimal>,
 }
 
 // Combined view for convenience
@@ -110,6 +116,8 @@ pub struct NewCryptoOverviewBasic<'a> {
   pub total_supply: Option<&'a BigDecimal>,
   pub max_supply: Option<&'a BigDecimal>,
   pub last_updated: Option<&'a DateTime<Utc>>,
+  pub image_url: Option<&'a str>,
+  pub market_cap_rank_rehyp: Option<&'a i32>,
 }
 
 #[derive(Insertable, Debug)]
@@ -133,6 +141,10 @@ pub struct NewCryptoOverviewMetrics<'a> {
   pub roi_times: Option<&'a BigDecimal>,
   pub roi_currency: Option<&'a str>,
   pub roi_percentage: Option<&'a BigDecimal>,
+  pub high_24h: Option<&'a BigDecimal>,
+  pub low_24h: Option<&'a BigDecimal>,
+  pub market_cap_change_24h: Option<&'a BigDecimal>,
+  pub market_cap_change_pct_24h: Option<&'a BigDecimal>,
 }
 
 // ===== CryptoTechnical =====

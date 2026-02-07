@@ -7,11 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **av-cli**: New `coins-market` loader for CoinGecko `/coins/markets` endpoint
+  - Creates new cryptocurrency symbols with proper SID generation
+  - Links existing symbols by matching (symbol, name) to avoid duplicates
+  - Updates `crypto_api_map` with CoinGecko ID mappings
+  - Populates `crypto_overview_basic` and `crypto_overview_metrics` tables
+  - Supports response caching with configurable TTL
+  - CLI options: `--pages`, `--per-page`, `--start-page`, `--update-only`, `--force-refresh`, `--dry-run`
+
+- **av-database-postgres**: Migration to expand NUMERIC precision for crypto tables
+  - Changed from `NUMERIC(20,8)` to `NUMERIC(38,8)` to prevent overflow with large values
+  - Affected tables: `crypto_overview_basic`, `crypto_overview_metrics`
+  - Recreated dependent views: `crypto_overviews`, `crypto_full_view`
+
+- **av-database-postgres**: Migration to add missing CoinGecko market fields
+  - `crypto_overview_basic`: `image_url`, `market_cap_rank_rehyp`
+  - `crypto_overview_metrics`: `high_24h`, `low_24h`, `market_cap_change_24h`, `market_cap_change_pct_24h`
+
+### Changed
+- **av-cli**: Refactored `coins_market.rs` to use typed `LoaderError` instead of `anyhow`
+  - All database operations use explicit `map_err` with contextual messages
+  - API errors include provider name and status codes
+  - Failed coins are logged and skipped instead of aborting the entire batch
+
+- **av-loaders**: Standardized `api_source` to 'CoinGecko' (mixed case) across codebase
+  - Updated `markets_loader.rs` SQL queries
+  - Updated `cache.rs` default api_source
+
 ### Fixed
 - **av-cli**: Fixed N+1 query performance issue in intraday price loader
   - `get_latest_timestamps` now uses batched `GROUP BY` queries instead of per-symbol queries
   - Reduced ~5400 sequential queries to ~11 batched queries (500 SIDs per batch)
   - Timestamp retrieval time reduced from ~55 seconds to ~4 seconds
+
+- **av-cli**: Fixed `crypto_api_map` update bug in `coins_market` loader
+  - `update_market_data` now filters by `api_id` in addition to `sid`
+  - Previously could update wrong entry when multiple api_ids existed for same SID
+  - Prevents rank from being incorrectly assigned to wrong CoinGecko ID
+
+- **av-cli**: Fixed duplicate symbol creation in `coins_market` loader
+  - Now checks existing symbols by (symbol, name) before creating new ones
+  - Links to existing symbol instead of creating duplicate
+  - Adds `crypto_api_map` entry for the CoinGecko ID
 
 ## [0.1.1] - 2025-02-03
 

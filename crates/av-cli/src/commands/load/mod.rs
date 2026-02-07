@@ -32,6 +32,7 @@ use anyhow::Result;
 
 use clap::{Args, Subcommand};
 
+pub mod coins_market;
 pub mod crypto;
 pub mod crypto_details;
 pub mod crypto_intraday;
@@ -75,6 +76,10 @@ enum LoadSubcommands {
 
   CryptoMarkets(crypto_markets::CryptoMarketsArgs),
 
+  /// Load market data from CoinGecko /coins/markets endpoint
+  #[clap(name = "coins-market")]
+  CoinsMarket(coins_market::CoinsMarketArgs),
+
   CryptoMapping(crypto_mapping::MappingArgs),
 
   CryptoMetadata(crypto_metadata::CryptoMetadataArgs),
@@ -101,6 +106,7 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::Crypto(args) => crypto::execute(args, config).await,
     LoadSubcommands::CryptoOverview(args) => crypto_overview::execute(args, config).await,
     LoadSubcommands::CryptoMarkets(args) => crypto_markets::execute(args, &config).await,
+    LoadSubcommands::CoinsMarket(args) => coins_market::execute(args, config).await,
     LoadSubcommands::CryptoMapping(args) => crypto_mapping::execute(args, &config).await,
     LoadSubcommands::CryptoMetadata(args) => crypto_metadata::execute(args, &config).await,
     LoadSubcommands::CryptoNews(args) => crypto_news::execute(args, config).await,

@@ -99,7 +99,7 @@ impl CacheConfig {
 
   /// Create config for CoinGecko data
   pub fn coingecko(ttl_hours: i64) -> Self {
-    Self { cache_ttl_hours: ttl_hours, api_source: "coingecko".to_string(), ..Default::default() }
+    Self { cache_ttl_hours: ttl_hours, api_source: "CoinGecko".to_string(), ..Default::default() }
   }
 
   /// Builder: set enable_cache

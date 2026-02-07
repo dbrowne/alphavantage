@@ -4,6 +4,8 @@
 
 A high-performance, async Rust client library and comprehensive data pipeline for financial market data. Built with a modular workspace architecture, it provides robust integration with AlphaVantage API, CoinGecko, CoinMarketCap, CoinPaprika, CoinCap, SosoValue, and other data sources, featuring advanced caching, TimescaleDB support, and comprehensive cryptocurrency coverage.
 
+This is  complete re write of my  Rust [Alphavantage API](https://github.com/dbrowne/AlphaVantage_Rust)   client with PostgreSQL/TimescaleDB support for financial market data storage and analysis.
+
 ## Table of Contents
 
 - [Features](#features)

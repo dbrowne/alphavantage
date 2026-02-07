@@ -1536,6 +1536,8 @@ fn save_crypto_overviews_with_github_to_db(
         total_supply: total_supply_bd.as_ref(),
         max_supply: max_supply_bd.as_ref(),
         last_updated: Some(&now),
+        image_url: None,
+        market_cap_rank_rehyp: None,
       };
 
       // Insert basic overview
@@ -1572,6 +1574,10 @@ fn save_crypto_overviews_with_github_to_db(
         roi_times: None,
         roi_currency: None,
         roi_percentage: None,
+        high_24h: None,
+        low_24h: None,
+        market_cap_change_24h: None,
+        market_cap_change_pct_24h: None,
       };
 
       diesel::insert_into(crypto_overview_metrics::table)

@@ -42,7 +42,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
-use crate::base::{CacheableConfig, ConcurrentLoader, ProgressManager, LoaderProgressStyle};
+use crate::base::{CacheableConfig, ConcurrentLoader, LoaderProgressStyle, ProgressManager};
 use crate::cache::{CacheConfigProvider, ttl};
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, process_tracker::ProcessState};
 
