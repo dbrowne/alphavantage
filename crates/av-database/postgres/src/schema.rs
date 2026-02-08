@@ -339,6 +339,28 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
 
+    crypto_top_movers (tstamp, sid, api_source, event_type) {
+        tstamp -> Timestamptz,
+        sid -> Int8,
+        #[max_length = 50]
+        api_source -> Varchar,
+        #[max_length = 20]
+        event_type -> Varchar,
+        price_usd -> Nullable<Numeric>,
+        volume_24h -> Nullable<Numeric>,
+        change_pct_1h -> Nullable<Float8>,
+        change_pct_24h -> Nullable<Float8>,
+        change_pct_7d -> Nullable<Float8>,
+        change_pct_14d -> Nullable<Float8>,
+        change_pct_30d -> Nullable<Float8>,
+        change_pct_200d -> Nullable<Float8>,
+        change_pct_1y -> Nullable<Float8>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+
     equity_details (sid) {
         sid -> Int8,
         #[max_length = 20]
@@ -671,6 +693,7 @@ diesel::joinable!(crypto_overview_basic -> symbols (sid));
 diesel::joinable!(crypto_overview_metrics -> symbols (sid));
 diesel::joinable!(crypto_social -> symbols (sid));
 diesel::joinable!(crypto_technical -> symbols (sid));
+diesel::joinable!(crypto_top_movers -> symbols (sid));
 diesel::joinable!(equity_details -> symbols (sid));
 diesel::joinable!(feeds -> symbols (sid));
 diesel::joinable!(intradayprices -> price_sources (price_source_id));
@@ -707,6 +730,7 @@ diesel::allow_tables_to_appear_in_same_query!(
   crypto_overview_metrics,
   crypto_social,
   crypto_technical,
+  crypto_top_movers,
   equity_details,
   feeds,
   intradayprices,

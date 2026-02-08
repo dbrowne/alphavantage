@@ -29,6 +29,7 @@
 
 use crate::schema::{
   crypto_api_map, crypto_overview_basic, crypto_overview_metrics, crypto_social, crypto_technical,
+  crypto_top_movers,
 };
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -279,6 +280,25 @@ pub struct NewCryptoSocial {
   pub sentiment_votes_down_pct: Option<BigDecimal>,
   pub c_time: DateTime<Utc>,
   pub m_time: DateTime<Utc>,
+}
+
+// ===== CryptoTopMovers =====
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = crypto_top_movers)]
+pub struct NewCryptoTopMover {
+  pub tstamp: DateTime<Utc>,
+  pub sid: i64,
+  pub api_source: String,
+  pub event_type: String,
+  pub price_usd: Option<BigDecimal>,
+  pub volume_24h: Option<BigDecimal>,
+  pub change_pct_1h: Option<f64>,
+  pub change_pct_24h: Option<f64>,
+  pub change_pct_7d: Option<f64>,
+  pub change_pct_14d: Option<f64>,
+  pub change_pct_30d: Option<f64>,
+  pub change_pct_200d: Option<f64>,
+  pub change_pct_1y: Option<f64>,
 }
 
 // ===== CryptoApiMap =====

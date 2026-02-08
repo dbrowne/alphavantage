@@ -68,7 +68,8 @@ pub use error::{CryptoLoaderError, CryptoLoaderResult};
 pub use loaders::{
   CoinGeckoDetailedCoin, CoinGeckoDetailsLoader, CoinGeckoDetailsOutput, CoinInfo,
   CryptoDetailedData, CryptoSocialData, CryptoSymbolLoader, CryptoTechnicalData,
-  DetailsLoaderConfig, LoadAllSymbolsResult,
+  DetailsLoaderConfig, LoadAllSymbolsResult, TopMoverCoin, TopMoversConfig, TopMoversLoader,
+  TopMoversOutput,
 };
 pub use traits::{CryptoCache, CryptoDataProvider};
 pub use types::{

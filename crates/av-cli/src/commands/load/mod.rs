@@ -42,6 +42,7 @@ pub mod crypto_metadata;
 pub mod crypto_news;
 pub mod crypto_overview;
 pub mod crypto_prices;
+pub mod crypto_top_movers;
 pub mod daily;
 pub mod intraday;
 pub mod missing_symbol_logger;
@@ -93,6 +94,11 @@ enum LoadSubcommands {
   News(news::NewsArgs),
 
   TopMovers(top_movers::TopMoversArgs),
+
+  /// Load top gainers/losers from CoinGecko
+  #[clap(name = "crypto-top-movers")]
+  CryptoTopMovers(crypto_top_movers::CryptoTopMoversArgs),
+
   Daily(daily::DailyArgs),
   #[clap(name = "intraday")]
   Intraday(intraday::IntradayArgs),
@@ -122,5 +128,6 @@ pub async fn execute(cmd: LoadCommand, config: Config) -> Result<()> {
     LoadSubcommands::Daily(args) => daily::execute(args, config).await,
     LoadSubcommands::News(args) => news::execute(args, config).await,
     LoadSubcommands::TopMovers(args) => top_movers::execute(args, config).await,
+    LoadSubcommands::CryptoTopMovers(args) => crypto_top_movers::execute(args, config).await,
   }
 }
