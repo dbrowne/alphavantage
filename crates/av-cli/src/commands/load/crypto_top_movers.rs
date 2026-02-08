@@ -16,6 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, instrument};
 
+use super::missing_symbol_logger;
 use crate::config::Config;
 use crypto_loaders::{TopMoverCoin, TopMoversConfig, TopMoversLoader};
 
@@ -119,6 +120,8 @@ pub async fn execute(args: CryptoTopMoversArgs, config: Config) -> Result<()> {
       for (coin, event_type) in &all_coins {
         let Some(&sid) = id_to_sid.get(&coin.id) else {
           debug!(id = %coin.id, symbol = %coin.symbol, "No SID mapping found — skipping");
+          missing_symbol_logger::log_missing_symbol(&mut conn, &coin.symbol, "crypto_top_movers")
+            .ok();
           unknown += 1;
           continue;
         };
