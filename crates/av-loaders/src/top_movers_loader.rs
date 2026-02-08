@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 use av_database_postgres::{
   establish_connection,
@@ -239,7 +239,7 @@ impl TopMoversLoader {
 
     match cache_repo.get::<TopGainersLosers>(cache_key, API_SOURCE).await {
       Ok(Some(data)) => {
-        info!("Cache hit for key: {}", cache_key);
+        debug!("Cache hit for key: {}", cache_key);
         Ok(Some(data))
       }
       Ok(None) => {
@@ -306,9 +306,13 @@ impl DataLoader for TopMoversLoader {
   type Input = TopMoversLoaderInput;
   type Output = TopMoversLoaderOutput;
 
+  #[instrument(
+    name = "TopMoversLoader",
+    skip(self, context, input),
+    fields(loader = "TopMoversLoader", date = ?input.date),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
-    info!("Loading top gainers and losers");
-
     // Start process tracking if available
     if let Some(tracker) = &context.process_tracker {
       tracker.start("top_movers_loader").await?;
@@ -321,11 +325,11 @@ impl DataLoader for TopMoversLoader {
     // Try to get from cache first
     let (api_data, from_cache) =
       if let Some(cached_data) = self.get_cached_response(context, &cache_key).await? {
-        info!("Using cached top movers data");
+        debug!("Using cached top movers data");
         (cached_data, true)
       } else {
         // Fetch data from API
-        info!("Fetching fresh top movers data from API");
+        debug!("Fetching fresh top movers data from API");
         let data = context
           .client
           .fundamentals()

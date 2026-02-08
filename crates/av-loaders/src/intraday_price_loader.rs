@@ -43,7 +43,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Supported intervals for intraday data
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -315,7 +315,7 @@ impl IntradayPriceLoader {
 
     match cache_repo.get_json(cache_key, "alphavantage").await {
       Ok(Some(json_value)) => {
-        info!("📦 Cache hit for {}", cache_key);
+        debug!("Cache hit for {}", cache_key);
         // Extract CSV data from JSON wrapper
         if let Some(csv_data) = json_value.get("csv_data") {
           if let Some(csv_str) = csv_data.as_str() {
@@ -330,7 +330,7 @@ impl IntradayPriceLoader {
         None
       }
       Err(e) => {
-        debug!("Cache lookup error for {}: {}", cache_key, e);
+        warn!("Cache lookup error for {}: {}", cache_key, e);
         None
       }
     }
@@ -476,8 +476,8 @@ impl IntradayPriceLoader {
     }
 
     // Build request URL with CSV format
-    info!(
-      "📡 Fetching equity intraday CSV data for {} (interval: {}, month: {:?})",
+    debug!(
+      "Fetching equity intraday CSV data for {} (interval: {}, month: {:?})",
       symbol, interval, month
     );
 
@@ -546,13 +546,13 @@ impl DataLoader for IntradayPriceLoader {
     "IntradayPriceLoader"
   }
 
+  #[instrument(
+    name = "IntradayPriceLoader",
+    skip(self, context, input),
+    fields(loader = "IntradayPriceLoader", symbol_count = input.symbols.len(), interval = %input.interval, month = ?input.month),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
-    info!("Starting intraday price loader for {} symbols (CSV format)", input.symbols.len());
-    info!(
-      "Configuration: interval={}, extended_hours={}, adjusted={}, month={:?}",
-      input.interval, input.extended_hours, input.adjusted, input.month
-    );
-
     // Validate interval
     let interval = IntradayInterval::from_str(&input.interval)
       .ok_or_else(|| LoaderError::InvalidData(format!("Invalid interval: {}", input.interval)))?;
@@ -616,7 +616,7 @@ impl DataLoader for IntradayPriceLoader {
     while let Some(result) = tasks.next().await {
       match result {
         Ok((symbol, prices, count)) => {
-          info!("✅ Loaded {} price points for {}", count, symbol);
+          debug!("Loaded {} price points for {}", count, symbol);
           all_prices.extend(prices);
           symbols_loaded += 1;
         }
@@ -642,8 +642,10 @@ impl DataLoader for IntradayPriceLoader {
     }
 
     info!(
-      "Intraday loading complete: {} symbols loaded, {} failed, {} skipped",
-      symbols_loaded, symbols_failed, symbols_skipped
+      loaded = symbols_loaded,
+      failed = symbols_failed,
+      skipped = symbols_skipped,
+      "Loading complete"
     );
 
     Ok(IntradayPriceLoaderOutput {

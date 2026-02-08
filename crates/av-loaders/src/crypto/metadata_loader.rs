@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{Duration, sleep};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState};
 use av_database_postgres::repository::CacheRepository;
@@ -183,12 +183,14 @@ impl DataLoader for CryptoMetadataLoader {
   type Input = CryptoMetadataInput;
   type Output = CryptoMetadataOutput;
 
+  #[instrument(
+    name = "CryptoMetadataLoader",
+    skip(self, context, input),
+    fields(loader = "CryptoMetadataLoader", source_count = input.sources.len(), cache_enabled = self.config.enable_response_cache),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
     let start_time = std::time::Instant::now();
-    info!(
-      "Starting crypto metadata loader with caching enabled: {}",
-      self.config.enable_response_cache
-    );
 
     if let Some(tracker) = &context.process_tracker {
       tracker
@@ -275,11 +277,10 @@ impl DataLoader for CryptoMetadataLoader {
     }
 
     info!(
-      "Crypto metadata loader completed in {}ms: {} processed, {} failed, caching: {}",
-      processing_time,
-      all_metadata.len(),
-      total_failed,
-      if self.config.enable_response_cache { "enabled" } else { "disabled" }
+      processed = all_metadata.len(),
+      failed = total_failed,
+      elapsed_ms = processing_time,
+      "Loading complete"
     );
 
     Ok(CryptoMetadataOutput {

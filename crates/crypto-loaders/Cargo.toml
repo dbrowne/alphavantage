@@ -1,6 +1,6 @@
 [package]
 name = "crypto-loaders"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Dwight J. Browne <dwight@dwightjbrowne.com>"]
 license = "MIT"

@@ -37,9 +37,15 @@ use crate::{
   NewsLoaderOutput, news_loader::SymbolInfo,
 };
 use chrono::{DateTime, Utc};
-use tracing::info;
+use tracing::instrument;
 
 /// Load crypto news by converting symbols to CRYPTO:XXX format
+#[instrument(
+  name = "CryptoNewsLoader",
+  skip(context, symbols, config, time_from, time_to),
+  fields(loader = "CryptoNewsLoader", symbol_count = symbols.len()),
+  level = "info"
+)]
 pub async fn load_crypto_news(
   context: &LoaderContext,
   symbols: Vec<SymbolInfo>,
@@ -52,8 +58,6 @@ pub async fn load_crypto_news(
     .into_iter()
     .map(|s| SymbolInfo { sid: s.sid, symbol: format!("CRYPTO:{}", s.symbol) })
     .collect();
-
-  info!("Loading news for {} crypto symbols", crypto_symbols.len());
 
   // Use the existing NewsLoader with crypto-formatted symbols
   let loader = NewsLoader::new(5).with_config(config);

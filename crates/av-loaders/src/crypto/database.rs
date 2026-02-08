@@ -30,7 +30,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
   DataLoader, LoaderContext, LoaderError, LoaderResult, ProcessState,
@@ -276,7 +276,7 @@ impl CryptoDbLoader {
     // Convert to database format
     let db_token = CryptoSymbolForDb::from(token.clone());
 
-    info!(
+    debug!(
       "Processed token: {} '{}' from {} (source_id: {})",
       db_token.symbol, db_token.name, db_token.source, db_token.source_id
     );
@@ -356,9 +356,14 @@ impl DataLoader for CryptoDbLoader {
   type Input = CryptoDbInput;
   type Output = CryptoDbOutput;
 
+  #[instrument(
+    name = "CryptoDbLoader",
+    skip(self, context, input),
+    fields(loader = "CryptoDbLoader", update_existing = input.update_existing),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
     let start_time = std::time::Instant::now();
-    info!("Starting crypto database loader");
 
     if let Some(tracker) = &context.process_tracker {
       tracker
@@ -466,10 +471,10 @@ impl DataLoader for CryptoDbLoader {
     }
 
     info!(
-      "Crypto database loader completed in {}ms: {} processed, {} errors",
-      processing_time,
-      processed_symbols.len(),
-      total_errors
+      processed = processed_symbols.len(),
+      errors = total_errors,
+      elapsed_ms = processing_time,
+      "Loading complete"
     );
 
     Ok(CryptoDbOutput {

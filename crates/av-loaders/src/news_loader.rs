@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::base::CacheableConfig;
 use crate::cache::{CacheConfigProvider, ttl};
@@ -184,8 +184,7 @@ impl NewsLoader {
 
     match cache_repo.get::<NewsSentiment>(cache_key, "alphavantage").await {
       Ok(Some(news)) => {
-        info!("📦 Cache hit for news: {}", cache_key);
-        debug!("Successfully retrieved cached news sentiment");
+        debug!("Cache hit for news: {}", cache_key);
         Some(news)
       }
       Ok(None) => {
@@ -193,7 +192,7 @@ impl NewsLoader {
         None
       }
       Err(e) => {
-        debug!("Cache read error for key {}: {}", cache_key, e);
+        warn!("Cache read error for key {}: {}", cache_key, e);
         None
       }
     }
@@ -422,6 +421,12 @@ impl DataLoader for NewsLoader {
   type Input = NewsLoaderInput;
   type Output = NewsLoaderOutput;
 
+  #[instrument(
+    name = "NewsLoader",
+    skip(self, context, input),
+    fields(loader = "NewsLoader", symbol_count = input.symbols.len()),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
     let mut output = NewsLoaderOutput::default();
 
@@ -456,7 +461,7 @@ impl DataLoader for NewsLoader {
     let total_symbols = input.symbols.len();
 
     for (idx, symbol_info) in input.symbols.iter().enumerate() {
-      info!("📡 Fetching news for symbol {}/{}: {}", idx + 1, total_symbols, symbol_info.symbol);
+      debug!("Fetching news for symbol {}/{}: {}", idx + 1, total_symbols, symbol_info.symbol);
 
       // Build topic string if provided
       let topics_str = self.config.topics.as_ref().map(|t| t.join(","));
@@ -475,7 +480,7 @@ impl DataLoader for NewsLoader {
 
       // Check cache first
       if let Some(cached_news) = self.get_cached_response(&cache_key, cache_repo).await {
-        info!("  Using cached data for {} (no API call needed)", symbol_info.symbol);
+        debug!("Using cached data for {}", symbol_info.symbol);
         output.cache_hits += 1;
 
         // Process cached data
@@ -483,7 +488,7 @@ impl DataLoader for NewsLoader {
           debug!("  No news in cache for {}", symbol_info.symbol);
           output.no_data_count += 1;
         } else {
-          info!("  Found {} cached articles for {}", cached_news.feed.len(), symbol_info.symbol);
+          debug!("Found {} cached articles for {}", cached_news.feed.len(), symbol_info.symbol);
           let batch_data = self
             .convert_news_to_data(&cached_news, &[symbol_info.clone()], &symbol_to_sid, news_repo)
             .await;
@@ -493,7 +498,7 @@ impl DataLoader for NewsLoader {
         }
       } else {
         // Cache miss - need to call API
-        info!("  Cache miss - calling API for {}", symbol_info.symbol);
+        debug!("Cache miss - calling API for {}", symbol_info.symbol);
         output.api_calls += 1;
 
         // Fetch from API for this single symbol
@@ -522,7 +527,7 @@ impl DataLoader for NewsLoader {
               debug!("  No news found for {}", symbol_info.symbol);
               output.no_data_count += 1;
             } else {
-              info!("  Found {} articles for {}", news.feed.len(), symbol_info.symbol);
+              debug!("Found {} articles for {}", news.feed.len(), symbol_info.symbol);
 
               // Convert to internal format - pass as single-element slice
               let batch_data = self
@@ -583,15 +588,15 @@ impl DataLoader for NewsLoader {
 
     output.data = all_news_data;
 
-    info!("✅ News loading complete:");
-    info!("  - {} symbols processed", total_symbols);
-    info!("  - {} total articles fetched", output.articles_processed);
-    info!("  - {} symbols with no news or not in API", output.no_data_count);
-    info!("  - {} API calls made", output.api_calls);
-    info!("  - {} cache hits", output.cache_hits);
-    if !output.errors.is_empty() {
-      info!("  - {} actual errors encountered", output.errors.len());
-    }
+    info!(
+      symbols_processed = total_symbols,
+      articles = output.articles_processed,
+      no_data = output.no_data_count,
+      api_calls = output.api_calls,
+      cache_hits = output.cache_hits,
+      errors = output.errors.len(),
+      "Loading complete"
+    );
 
     Ok(output)
   }

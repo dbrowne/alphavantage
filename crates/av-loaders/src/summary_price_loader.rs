@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::base::{CacheableConfig, ConcurrentLoader, LoaderProgressStyle, ProgressManager};
 use crate::cache::{CacheConfigProvider, ttl};
@@ -178,7 +178,7 @@ impl SummaryPriceLoader {
 
     match cache_repo.get_json(cache_key, "alphavantage").await {
       Ok(Some(json_value)) => {
-        info!("📦 Cache hit for {}", cache_key);
+        debug!("Cache hit for {}", cache_key);
         // Return the JSON as a string for parsing
         Some(json_value.to_string())
       }
@@ -187,7 +187,7 @@ impl SummaryPriceLoader {
         None
       }
       Err(e) => {
-        debug!("Cache lookup error for {}: {}", cache_key, e);
+        warn!("Cache lookup error for {}: {}", cache_key, e);
         None
       }
     }
@@ -355,7 +355,7 @@ impl SummaryPriceLoader {
     }
 
     // Build request URL with CSV format
-    info!("📡 Fetching daily CSV data for {} (outputsize: {})", symbol, outputsize);
+    debug!("Fetching daily CSV data for {} (outputsize: {})", symbol, outputsize);
 
     // Get the API key from environment
     let api_key = std::env::var("ALPHA_VANTAGE_API_KEY")
@@ -418,10 +418,13 @@ impl DataLoader for SummaryPriceLoader {
   type Input = SummaryPriceLoaderInput;
   type Output = SummaryPriceLoaderOutput;
 
+  #[instrument(
+    name = "SummaryPriceLoader",
+    skip(self, context, input),
+    fields(loader = "SummaryPriceLoader", symbol_count = input.symbols.len(), outputsize = %input.outputsize),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
-    info!("Starting summary price loader for {} symbols (CSV format)", input.symbols.len());
-    info!("Configuration: outputsize={}", input.outputsize);
-
     // Start process tracking if enabled
     if context.config.track_process {
       if let Some(tracker) = &context.process_tracker {
@@ -448,7 +451,7 @@ impl DataLoader for SummaryPriceLoader {
 
       match self.fetch_daily_csv(context, symbol, &input.outputsize, *sid).await {
         Ok(prices) => {
-          info!("✅ Loaded {} price records for {}", prices.len(), symbol);
+          debug!("Loaded {} price records for {}", prices.len(), symbol);
           loaded_count += 1;
           all_prices.extend(prices);
         }
@@ -482,11 +485,11 @@ impl DataLoader for SummaryPriceLoader {
     }
 
     info!(
-      "Summary price loading complete: {} symbols loaded, {} errors, {} skipped, {} total records",
-      loaded_count,
-      error_count,
-      skipped_count,
-      all_prices.len()
+      loaded = loaded_count,
+      errors = error_count,
+      skipped = skipped_count,
+      total_records = all_prices.len(),
+      "Loading complete"
     );
 
     Ok(SummaryPriceLoaderOutput {

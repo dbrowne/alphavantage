@@ -90,8 +90,21 @@ async fn main() -> Result<()> {
   let cli = Cli::parse();
 
   // Initialize logging
-  let log_level = if cli.verbose { "debug" } else { "info" };
-  tracing_subscriber::fmt().with_env_filter(log_level).init();
+  // RUST_LOG env var takes priority; otherwise use --verbose flag
+  let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+    let level = if cli.verbose { "debug" } else { "info" };
+    tracing_subscriber::EnvFilter::new(format!(
+      "av={level},av_cli={level},av_loaders={level},av_core={level},av_client={level},\
+       av_database_postgres={level},crypto_loaders={level},\
+       hyper=warn,reqwest=warn,diesel=warn,h2=warn,rustls=warn"
+    ))
+  });
+
+  tracing_subscriber::fmt()
+    .with_env_filter(filter)
+    .with_target(true)
+    .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+    .init();
 
   // Load configuration
   let config = config::Config::from_env()?;

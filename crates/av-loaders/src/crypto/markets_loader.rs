@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 #[allow(dead_code)]
 const MAX_TTL: u32 = 6; //todo:: Refactor
@@ -225,6 +225,12 @@ impl CryptoMarketsLoader {
   }
 
   /// Main load method that orchestrates the entire process
+  #[instrument(
+    name = "CryptoMarketsLoader",
+    skip(self, _context, input),
+    fields(loader = "CryptoMarketsLoader"),
+    level = "info"
+  )]
   pub async fn load(
     &self,
     _context: &crate::LoaderContext,
@@ -235,8 +241,6 @@ impl CryptoMarketsLoader {
     if symbols.is_empty() {
       return Ok(Vec::new());
     }
-
-    info!("Starting market data fetch for {} symbols", symbols.len());
 
     let mut all_market_data = Vec::new();
 
@@ -315,6 +319,12 @@ impl CryptoMarketsLoader {
     Ok(all_market_data)
   }
 
+  #[instrument(
+    name = "CryptoMarketsLoader::load_with_cache",
+    skip(self, _context, input, database_url),
+    fields(loader = "CryptoMarketsLoader"),
+    level = "info"
+  )]
   pub async fn load_with_cache(
     &self,
     _context: &crate::LoaderContext,
@@ -326,8 +336,6 @@ impl CryptoMarketsLoader {
     if symbols.is_empty() {
       return Ok(Vec::new());
     }
-
-    info!("Starting market data fetch for {} symbols", symbols.len());
 
     let mut all_market_data = Vec::new();
 
@@ -687,7 +695,7 @@ impl CryptoMarketsLoader {
     .unwrap_or(None);
 
     if let Some(cache_result) = cached_entry {
-      info!("📦 Using cached response for {} (expires: {})", cache_key, cache_result.expires_at);
+      debug!("Using cached response for {} (expires: {})", cache_key, cache_result.expires_at);
 
       // Parse cached JSON response
       if let Ok(cached_response) =
@@ -771,7 +779,7 @@ impl CryptoMarketsLoader {
     // Try cache first (unless force refresh is enabled)
     if !self.config.force_refresh {
       if let Some(cached_response) = self.get_cached_response(database_url, &cache_key).await {
-        info!("📦 Using cached market data for {}", symbol.symbol);
+        debug!("Using cached market data for {}", symbol.symbol);
         return self.parse_coingecko_markets(cached_response, symbol);
       }
     }

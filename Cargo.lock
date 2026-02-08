@@ -188,7 +188,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "av-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "av-client",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "av-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "atty",
  "av-core",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "av-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "dotenvy",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "av-database-postgres"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "bb8",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "av-loaders"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "av-client",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "av-models"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "av-core",
  "chrono",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "crypto-loaders"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "chrono",

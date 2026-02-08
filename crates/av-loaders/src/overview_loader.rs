@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::base::{
   CacheableConfig, ConcurrentLoader, LoaderProgressStyle, LoaderStatistics, ProgressManager,
@@ -127,8 +127,7 @@ impl OverviewLoader {
 
     match cache_repo.get::<CompanyOverview>(cache_key, "alphavantage").await {
       Ok(Some(overview)) => {
-        info!("📦 Cache hit for overview: {}", cache_key);
-        debug!("Successfully retrieved cached overview");
+        debug!("Cache hit for overview: {}", cache_key);
         Some(overview)
       }
       Ok(None) => {
@@ -136,7 +135,7 @@ impl OverviewLoader {
         None
       }
       Err(e) => {
-        debug!("Cache read error for overview {}: {}", cache_key, e);
+        warn!("Cache read error for overview {}: {}", cache_key, e);
         None
       }
     }
@@ -249,9 +248,13 @@ impl DataLoader for OverviewLoader {
   type Input = OverviewLoaderInput;
   type Output = OverviewLoaderOutput;
 
+  #[instrument(
+    name = "OverviewLoader",
+    skip(self, context, input),
+    fields(loader = "OverviewLoader", symbol_count = input.symbols.len()),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
-    info!("Loading overviews for {} symbols", input.symbols.len());
-
     // Track process if enabled
     if let Some(tracker) = &context.process_tracker {
       tracker.start("overview_loader").await?;
@@ -297,11 +300,11 @@ impl DataLoader for OverviewLoader {
           let (overview_result, from_cache) = if let Some(cache_repo) = &cache_repo_opt {
             if let Some(cached_overview) = loader.get_cached_response(&cache_key, cache_repo).await
             {
-              info!("📦 Using cached overview for {} (no API call needed)", symbol_info.symbol);
+              debug!("Using cached overview for {}", symbol_info.symbol);
               (Ok(cached_overview), true)
             } else {
               // Cache miss - call API
-              info!("🌐 Cache miss - calling API for overview {}", symbol_info.symbol);
+              debug!("Cache miss - calling API for overview {}", symbol_info.symbol);
               match loader.fetch_overview_from_api(&client, &symbol_info.symbol, retry_delay).await
               {
                 Ok(Some(overview)) => {
@@ -402,12 +405,12 @@ impl DataLoader for OverviewLoader {
     }
 
     info!(
-      "Overview loading complete: {} loaded, {} no data, {} errors, {} cache hits, {} API calls",
-      loaded.len(),
-      no_data,
-      stats.errors(),
-      stats.cache_hits(),
-      stats.api_calls()
+      loaded = loaded.len(),
+      no_data = no_data,
+      errors = stats.errors(),
+      cache_hits = stats.cache_hits(),
+      api_calls = stats.api_calls(),
+      "Loading complete"
     );
 
     Ok(OverviewLoaderOutput {

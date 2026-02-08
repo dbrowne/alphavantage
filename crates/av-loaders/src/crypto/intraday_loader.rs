@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Configuration for crypto intraday price loading
 #[derive(Debug, Clone)]
@@ -145,6 +145,10 @@ pub struct CryptoIntradayLoaderOutput {
   pub symbols_skipped: usize,
   /// List of failed symbols
   pub failed_symbols: Vec<String>,
+  /// Number of symbols served from cache
+  pub cache_hits: usize,
+  /// Number of symbols fetched from API
+  pub api_calls: usize,
 }
 
 /// Crypto intraday price loader implementation
@@ -208,7 +212,7 @@ impl CryptoIntradayLoader {
     let mut conn = match diesel::PgConnection::establish(&self.config.database_url) {
       Ok(conn) => conn,
       Err(e) => {
-        debug!("Failed to connect for cache check: {}", e);
+        warn!("Failed to connect for cache check: {}", e);
         return None;
       }
     };
@@ -223,7 +227,7 @@ impl CryptoIntradayLoader {
     .unwrap_or(None);
 
     if let Some(cache_result) = cached_entry {
-      info!("📦 Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
+      debug!("Cache hit for {} (expires: {})", cache_key, cache_result.expires_at);
 
       // Extract CSV data from JSON wrapper
       if let Some(csv_data) = cache_result.response_data.get("csv_data") {
@@ -246,7 +250,7 @@ impl CryptoIntradayLoader {
     let mut conn = match diesel::PgConnection::establish(&self.config.database_url) {
       Ok(conn) => conn,
       Err(e) => {
-        debug!("Failed to connect for caching: {}", e);
+        warn!("Failed to connect for caching: {}", e);
         return;
       }
     };
@@ -378,6 +382,8 @@ impl CryptoIntradayLoader {
   }
 
   /// Fetch crypto intraday data in CSV format from API or cache
+  ///
+  /// Returns `(prices, from_cache)` where `from_cache` is true if data came from cache.
   async fn fetch_crypto_intraday_csv(
     &self,
     _context: &LoaderContext,
@@ -385,14 +391,19 @@ impl CryptoIntradayLoader {
     market: &str,
     interval: &str,
     sid: i64,
-  ) -> Result<Vec<CryptoIntradayPriceData>, LoaderError> {
+  ) -> Result<(Vec<CryptoIntradayPriceData>, bool), LoaderError> {
     // Generate cache key
     let cache_key = self.generate_cache_key(symbol, market, interval);
 
     // Check cache first
     if let Some(cached_csv) = self.get_cached_csv(&cache_key).await {
       debug!("Using cached CSV data for {} in {}", symbol, market);
-      return self.parse_csv_data(&cached_csv, sid, symbol, 1);
+      return self.parse_csv_data(&cached_csv, sid, symbol, 1).map(|data| (data, true)).map_err(
+        |e| {
+          warn!("Failed to parse cached CSV for {}: {}", symbol, e);
+          e
+        },
+      );
     }
 
     // Acquire permit for rate limiting
@@ -408,8 +419,8 @@ impl CryptoIntradayLoader {
     }
 
     // Build request URL with CSV format
-    info!(
-      "📡 Fetching crypto intraday CSV data for {} (market: {}, interval: {})",
+    debug!(
+      "Fetching crypto intraday CSV data for {} (market: {}, interval: {})",
       symbol, market, interval
     );
 
@@ -449,7 +460,7 @@ impl CryptoIntradayLoader {
     self.cache_csv_response(&cache_key, &csv_data, symbol).await;
 
     // Parse and return the data
-    self.parse_csv_data(&csv_data, sid, symbol, 1) //Alpha vantage is source 1
+    self.parse_csv_data(&csv_data, sid, symbol, 1).map(|data| (data, false)) //Alpha vantage is source 1
   }
 }
 
@@ -462,13 +473,13 @@ impl DataLoader for CryptoIntradayLoader {
     "CryptoIntradayPriceLoader"
   }
 
+  #[instrument(
+    name = "CryptoIntradayLoader",
+    skip(self, context, input),
+    fields(loader = "CryptoIntradayLoader", symbol_count = input.symbols.len(), market = %input.market, interval = %input.interval),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
-    info!("Starting crypto intraday price loader for {} symbols", input.symbols.len());
-    info!(
-      "Configuration: market={}, interval={}, outputsize={}, format=CSV",
-      input.market, input.interval, input.outputsize
-    );
-
     // Validate interval
     let interval = IntradayInterval::from_str(&input.interval)
       .ok_or_else(|| LoaderError::InvalidData(format!("Invalid interval: {}", input.interval)))?;
@@ -494,6 +505,8 @@ impl DataLoader for CryptoIntradayLoader {
     let mut symbols_failed = 0;
     let symbols_skipped = 0;
     let mut failed_symbols = Vec::new();
+    let mut cache_hits = 0;
+    let mut api_calls = 0;
 
     // Filter symbols if primary_only is set
     let symbols_to_process: Vec<_> = if self.config.primary_only {
@@ -526,10 +539,10 @@ impl DataLoader for CryptoIntradayLoader {
             .fetch_crypto_intraday_csv(context, &symbol, &market, &interval_str, sid)
             .await
           {
-            Ok(prices) => {
+            Ok((prices, from_cache)) => {
               let count = prices.len();
               progress.inc(1);
-              Ok((symbol, prices, count))
+              Ok((symbol, prices, count, from_cache))
             }
             Err(e) => {
               error!("Failed to fetch data for {}: {}", symbol, e);
@@ -544,10 +557,15 @@ impl DataLoader for CryptoIntradayLoader {
     // Collect results
     while let Some(result) = tasks.next().await {
       match result {
-        Ok((symbol, prices, count)) => {
-          info!("✅ Loaded {} price points for {}", count, symbol);
+        Ok((symbol, prices, count, from_cache)) => {
+          debug!("Loaded {} price points for {}", count, symbol);
           all_prices.extend(prices);
           symbols_loaded += 1;
+          if from_cache {
+            cache_hits += 1;
+          } else {
+            api_calls += 1;
+          }
         }
         Err((symbol, _e)) => {
           failed_symbols.push(symbol);
@@ -571,8 +589,12 @@ impl DataLoader for CryptoIntradayLoader {
     }
 
     info!(
-      "Crypto intraday loading complete: {} symbols loaded, {} failed, {} skipped",
-      symbols_loaded, symbols_failed, symbols_skipped
+      loaded = symbols_loaded,
+      failed = symbols_failed,
+      skipped = symbols_skipped,
+      cache_hits = cache_hits,
+      api_calls = api_calls,
+      "Loading complete"
     );
 
     Ok(CryptoIntradayLoaderOutput {
@@ -581,6 +603,8 @@ impl DataLoader for CryptoIntradayLoader {
       symbols_failed,
       symbols_skipped,
       failed_symbols,
+      cache_hits,
+      api_calls,
     })
   }
 }

@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::base::{
   CacheableConfig, ConcurrentLoader, LoaderProgressStyle, LoaderStatistics, ProgressManager,
@@ -163,8 +163,7 @@ impl SecurityLoader {
 
     match cache_repo.get::<SymbolSearch>(cache_key, "alphavantage").await {
       Ok(Some(search)) => {
-        info!("📦 Cache hit for key: {}", cache_key);
-        debug!("Successfully retrieved cached symbol search");
+        debug!("Cache hit for key: {}", cache_key);
         Some(search)
       }
       Ok(None) => {
@@ -172,7 +171,7 @@ impl SecurityLoader {
         None
       }
       Err(e) => {
-        debug!("Cache read error for key {}: {}", cache_key, e);
+        warn!("Cache read error for key {}: {}", cache_key, e);
         None
       }
     }
@@ -255,9 +254,13 @@ impl DataLoader for SecurityLoader {
   type Input = SecurityLoaderInput;
   type Output = SecurityLoaderOutput;
 
+  #[instrument(
+    name = "SecurityLoader",
+    skip(self, context, input),
+    fields(loader = "SecurityLoader", file_path = %input.file_path, exchange = %input.exchange),
+    level = "info"
+  )]
   async fn load(&self, context: &LoaderContext, input: Self::Input) -> LoaderResult<Self::Output> {
-    info!("Loading securities from {:?} with match mode {:?}", input.file_path, self.match_mode);
-
     // Parse CSV file to get symbols
     let processor = CsvProcessor::new();
     let symbols = processor.parse_symbol_list(&input.file_path)?;
@@ -310,11 +313,11 @@ impl DataLoader for SecurityLoader {
           // Check cache first (if cache repository is available)
           let (search_results, from_cache) = if let Some(cache_repo) = &cache_repo_opt {
             if let Some(cached_search) = loader.get_cached_response(&cache_key, cache_repo).await {
-              info!("📦 Using cached data for {} (no API call needed)", symbol);
+              debug!("Using cached data for {}", symbol);
               (cached_search, true)
             } else {
               // Cache miss - need to call API
-              info!("🌐 Cache miss - calling API for {}", symbol);
+              debug!("Cache miss - calling API for {}", symbol);
 
               // Search for the symbol
               let search_res = match client.time_series().symbol_search(&symbol).await {
@@ -464,12 +467,12 @@ impl DataLoader for SecurityLoader {
     let total_symbols = loaded.len() + stats.errors() + skipped;
 
     info!(
-      "Security loading complete: {} loaded, {} errors, {} skipped, {} cache hits, {} API calls",
-      loaded.len(),
-      stats.errors(),
-      skipped,
-      stats.cache_hits(),
-      stats.api_calls()
+      loaded = loaded.len(),
+      errors = stats.errors(),
+      skipped = skipped,
+      cache_hits = stats.cache_hits(),
+      api_calls = stats.api_calls(),
+      "Loading complete"
     );
 
     Ok(SecurityLoaderOutput {
