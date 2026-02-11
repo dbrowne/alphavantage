@@ -22,6 +22,7 @@ av-client = { path = "../av-client", version = "0.1.2" }
 av-models = { path = "../av-models", version = "0.1.2" }
 av-database-postgres = { path = "../av-database/postgres", version = "0.1.2" }
 av-loaders = { path = "../av-loaders", version = "0.1.2" }
+crypto-loaders = { path = "../crypto-loaders", version = "0.1.2" }
 diesel = {workspace = true}
 dotenvy = {workspace = true}
 bigdecimal = {workspace=true}

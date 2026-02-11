@@ -31,9 +31,11 @@
 
 pub mod details_loader;
 pub mod symbol_loader;
+pub mod top_movers_loader;
 
 pub use details_loader::{
   CoinGeckoDetailedCoin, CoinGeckoDetailsLoader, CoinGeckoDetailsOutput, CoinInfo,
   CryptoDetailedData, CryptoSocialData, CryptoTechnicalData, DetailsLoaderConfig,
 };
 pub use symbol_loader::{CryptoSymbolLoader, LoadAllSymbolsResult};
+pub use top_movers_loader::{TopMoverCoin, TopMoversConfig, TopMoversLoader, TopMoversOutput};

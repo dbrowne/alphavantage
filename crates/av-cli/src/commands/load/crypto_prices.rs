@@ -528,7 +528,7 @@ async fn fetch_from_alphavantage(
 /// Fetch price from multiple sources with optional parallel execution
 /// Tries sources in priority order, using mappings when available
 #[instrument(
-  skip(client, coingecko_api_key, coinmarketcap_api_key, alphavantage_api_key, database_url),
+  skip(client, symbol_with_mappings, coingecko_api_key, coinmarketcap_api_key, alphavantage_api_key, database_url),
   fields(symbol = %symbol_with_mappings.symbol, sid = symbol_with_mappings.sid)
 )]
 async fn fetch_price_parallel(
