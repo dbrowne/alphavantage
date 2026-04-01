@@ -511,8 +511,10 @@ pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   // IMPORTANT: primary_only is always false here because filtering
   // already happened at the CLI level when getting symbols to load
   let loader_cfg = CryptoIntradayConfig {
-    interval: IntradayInterval::from_str(&args.interval)
-      .ok_or_else(|| anyhow::anyhow!("Invalid interval"))?,
+    interval: args
+      .interval
+      .parse::<IntradayInterval>()
+      .map_err(|_| anyhow::anyhow!("Invalid interval"))?,
     market: args.market.clone(),
     outputsize: args.outputsize.clone(),
     max_concurrent: args.concurrent,

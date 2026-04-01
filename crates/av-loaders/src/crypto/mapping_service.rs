@@ -17,8 +17,8 @@ use tracing::info;
 
 // Re-export types from crypto-loaders for backward compatibility
 pub use crypto_loaders::{
-  discover_coingecko_id, discover_coinpaprika_id, CryptoMappingService as BaseCryptoMappingService,
-  MappingConfig, MappingRepository,
+  CryptoMappingService as BaseCryptoMappingService, MappingConfig, MappingRepository,
+  discover_coingecko_id, discover_coinpaprika_id,
 };
 
 use crypto_loaders::CryptoLoaderError;
@@ -92,7 +92,7 @@ impl CryptoMappingService {
     symbol: &str,
   ) -> Result<(Option<String>, bool), super::CryptoLoaderError> {
     let mapping_repo = CryptoRepositoryMappingAdapter::as_arc(crypto_repo.clone());
-    self.inner.get_coingecko_id(&mapping_repo, sid, symbol).await.map_err(Into::into)
+    self.inner.get_coingecko_id(&mapping_repo, sid, symbol).await
   }
 
   /// Bulk discovery for missing mappings.
@@ -102,7 +102,7 @@ impl CryptoMappingService {
     source: &str,
   ) -> Result<usize, super::CryptoLoaderError> {
     let mapping_repo = CryptoRepositoryMappingAdapter::as_arc(crypto_repo.clone());
-    self.inner.discover_missing_mappings(&mapping_repo, source).await.map_err(Into::into)
+    self.inner.discover_missing_mappings(&mapping_repo, source).await
   }
 
   /// Initialize mappings for a specific set of symbols (discovery-based).

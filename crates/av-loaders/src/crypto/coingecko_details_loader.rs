@@ -13,14 +13,14 @@ use async_trait::async_trait;
 use av_database_postgres::repository::CacheRepository;
 use std::sync::Arc;
 
-use crate::{DataLoader, LoaderContext, LoaderResult, ProcessState};
 use super::sources::CacheRepositoryAdapter;
+use crate::{DataLoader, LoaderContext, LoaderResult, ProcessState};
 
 // Re-export types from crypto-loaders for backward compatibility
 pub use crypto_loaders::{
-  CoinGeckoDetailsLoader as BaseCoinGeckoDetailsLoader,
-  CoinGeckoDetailsOutput, CoinGeckoDetailedCoin, CoinInfo,
-  CryptoDetailedData, CryptoSocialData, CryptoTechnicalData, DetailsLoaderConfig,
+  CoinGeckoDetailedCoin, CoinGeckoDetailsLoader as BaseCoinGeckoDetailsLoader,
+  CoinGeckoDetailsOutput, CoinInfo, CryptoDetailedData, CryptoSocialData, CryptoTechnicalData,
+  DetailsLoaderConfig,
 };
 
 /// Input for the loader
@@ -37,15 +37,8 @@ pub struct CoinGeckoDetailsLoader {
 
 impl CoinGeckoDetailsLoader {
   pub fn new(api_key: String, max_concurrent: usize) -> Self {
-    let config = DetailsLoaderConfig {
-      max_concurrent,
-      retry_delay_ms: 200,
-      show_progress: true,
-    };
-    Self {
-      inner: BaseCoinGeckoDetailsLoader::new(api_key, config),
-      cache_repository: None,
-    }
+    let config = DetailsLoaderConfig { max_concurrent, retry_delay_ms: 200, show_progress: true };
+    Self { inner: BaseCoinGeckoDetailsLoader::new(api_key, config), cache_repository: None }
   }
 
   pub fn with_cache_repository(mut self, cache_repo: Arc<dyn CacheRepository>) -> Self {
@@ -68,9 +61,11 @@ impl DataLoader for CoinGeckoDetailsLoader {
     }
 
     // Use the inner loader
-    let result = self.inner.load(input.coins).await.map_err(|e| {
-      crate::LoaderError::ApiError(e.to_string())
-    })?;
+    let result = self
+      .inner
+      .load(input.coins)
+      .await
+      .map_err(|e| crate::LoaderError::ApiError(e.to_string()))?;
 
     // Complete process tracking
     if let Some(tracker) = &context.process_tracker {
@@ -93,9 +88,6 @@ impl DataLoader for CoinGeckoDetailsLoader {
 
 impl Clone for CoinGeckoDetailsLoader {
   fn clone(&self) -> Self {
-    Self {
-      inner: self.inner.clone(),
-      cache_repository: self.cache_repository.clone(),
-    }
+    Self { inner: self.inner.clone(), cache_repository: self.cache_repository.clone() }
   }
 }

@@ -152,6 +152,7 @@ pub trait CacheRepository: Send + Sync {
 
 /// Extension trait for type-safe cache operations
 /// This provides the generic interface using the object-safe trait
+#[allow(async_fn_in_trait)] // Generic methods are not object-safe, so Send bound is irrelevant
 pub trait CacheRepositoryExt: CacheRepository {
   /// Get a cached response with automatic deserialization
   async fn get<T>(&self, cache_key: &str, api_source: &str) -> RepositoryResult<Option<T>>
@@ -236,9 +237,8 @@ impl DatabaseContext {
   /// This prevents the r2d2 pool from spawning background threads that retry forever.
   pub fn new(database_url: &str) -> RepositoryResult<Self> {
     // Test connection BEFORE creating the pool to fail fast without background retry noise
-    PgConnection::establish(database_url).map_err(|e| {
-      RepositoryError::PoolError(format!("Failed to connect to database: {}", e))
-    })?;
+    PgConnection::establish(database_url)
+      .map_err(|e| RepositoryError::PoolError(format!("Failed to connect to database: {}", e)))?;
 
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = Pool::builder()
@@ -273,9 +273,8 @@ impl DatabaseContext {
     timeout_secs: u64,
   ) -> RepositoryResult<Self> {
     // Test connection BEFORE creating the pool to fail fast without background retry noise
-    PgConnection::establish(database_url).map_err(|e| {
-      RepositoryError::PoolError(format!("Failed to connect to database: {}", e))
-    })?;
+    PgConnection::establish(database_url)
+      .map_err(|e| RepositoryError::PoolError(format!("Failed to connect to database: {}", e)))?;
 
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = Pool::builder()

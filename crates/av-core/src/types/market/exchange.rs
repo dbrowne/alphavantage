@@ -30,6 +30,7 @@
 //! Stock exchange identifiers and related metadata.
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// Stock exchange identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -112,38 +113,41 @@ impl std::fmt::Display for Exchange {
   }
 }
 
-impl Exchange {
-  /// Parse exchange from string
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for Exchange {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s.to_uppercase().as_str() {
-      "NYSE" | "NEW YORK STOCK EXCHANGE" => Some(Exchange::NYSE),
-      "NASDAQ" => Some(Exchange::NASDAQ),
-      "AMEX" | "AMERICAN STOCK EXCHANGE" => Some(Exchange::AMEX),
-      "CBOT" => Some(Exchange::CBOT),
-      "CME" => Some(Exchange::CME),
-      "LSE" | "LONDON STOCK EXCHANGE" => Some(Exchange::LSE),
-      "TSX" | "TORONTO STOCK EXCHANGE" => Some(Exchange::TSX),
-      "TSE" | "TOKYO STOCK EXCHANGE" => Some(Exchange::TSE),
-      "HKSE" | "HONG KONG STOCK EXCHANGE" => Some(Exchange::HKSE),
-      "SSE" | "SHANGHAI STOCK EXCHANGE" => Some(Exchange::SSE),
-      "SZSE" | "SHENZHEN STOCK EXCHANGE" => Some(Exchange::SZSE),
-      "EURONEXT" => Some(Exchange::EURONEXT),
-      "FRA" | "FRANKFURT STOCK EXCHANGE" => Some(Exchange::FRA),
-      "SIX" | "SWISS EXCHANGE" => Some(Exchange::SIX),
-      "ASX" | "AUSTRALIAN SECURITIES EXCHANGE" => Some(Exchange::ASX),
-      "BSE" | "BOMBAY STOCK EXCHANGE" => Some(Exchange::BSE),
-      "NSE" | "NATIONAL STOCK EXCHANGE OF INDIA" => Some(Exchange::NSE),
-      "BOVESPA" => Some(Exchange::BOVESPA),
-      "MOEX" | "MOSCOW EXCHANGE" => Some(Exchange::MOEX),
-      "KRX" | "KOREA EXCHANGE" => Some(Exchange::KRX),
-      "TWSE" | "TAIWAN STOCK EXCHANGE" => Some(Exchange::TWSE),
-      "SGX" | "SINGAPORE EXCHANGE" => Some(Exchange::SGX),
-      "JSE" | "JOHANNESBURG STOCK EXCHANGE" => Some(Exchange::JSE),
-      "TASE" | "TEL AVIV STOCK EXCHANGE" => Some(Exchange::TASE),
-      _ => Some(Exchange::OTHER),
+      "NYSE" | "NEW YORK STOCK EXCHANGE" => Ok(Exchange::NYSE),
+      "NASDAQ" => Ok(Exchange::NASDAQ),
+      "AMEX" | "AMERICAN STOCK EXCHANGE" => Ok(Exchange::AMEX),
+      "CBOT" => Ok(Exchange::CBOT),
+      "CME" => Ok(Exchange::CME),
+      "LSE" | "LONDON STOCK EXCHANGE" => Ok(Exchange::LSE),
+      "TSX" | "TORONTO STOCK EXCHANGE" => Ok(Exchange::TSX),
+      "TSE" | "TOKYO STOCK EXCHANGE" => Ok(Exchange::TSE),
+      "HKSE" | "HONG KONG STOCK EXCHANGE" => Ok(Exchange::HKSE),
+      "SSE" | "SHANGHAI STOCK EXCHANGE" => Ok(Exchange::SSE),
+      "SZSE" | "SHENZHEN STOCK EXCHANGE" => Ok(Exchange::SZSE),
+      "EURONEXT" => Ok(Exchange::EURONEXT),
+      "FRA" | "FRANKFURT STOCK EXCHANGE" => Ok(Exchange::FRA),
+      "SIX" | "SWISS EXCHANGE" => Ok(Exchange::SIX),
+      "ASX" | "AUSTRALIAN SECURITIES EXCHANGE" => Ok(Exchange::ASX),
+      "BSE" | "BOMBAY STOCK EXCHANGE" => Ok(Exchange::BSE),
+      "NSE" | "NATIONAL STOCK EXCHANGE OF INDIA" => Ok(Exchange::NSE),
+      "BOVESPA" => Ok(Exchange::BOVESPA),
+      "MOEX" | "MOSCOW EXCHANGE" => Ok(Exchange::MOEX),
+      "KRX" | "KOREA EXCHANGE" => Ok(Exchange::KRX),
+      "TWSE" | "TAIWAN STOCK EXCHANGE" => Ok(Exchange::TWSE),
+      "SGX" | "SINGAPORE EXCHANGE" => Ok(Exchange::SGX),
+      "JSE" | "JOHANNESBURG STOCK EXCHANGE" => Ok(Exchange::JSE),
+      "TASE" | "TEL AVIV STOCK EXCHANGE" => Ok(Exchange::TASE),
+      _ => Ok(Exchange::OTHER),
     }
   }
+}
 
+impl Exchange {
   /// Get the full name of the exchange
   pub fn full_name(&self) -> &'static str {
     match self {
@@ -248,10 +252,10 @@ mod tests {
 
   #[test]
   fn test_exchange_parsing() {
-    assert_eq!(Exchange::from_str("NYSE"), Some(Exchange::NYSE));
-    assert_eq!(Exchange::from_str("nasdaq"), Some(Exchange::NASDAQ));
-    assert_eq!(Exchange::from_str("new york stock exchange"), Some(Exchange::NYSE));
-    assert_eq!(Exchange::from_str("UNKNOWN_EXCHANGE"), Some(Exchange::OTHER));
+    assert_eq!("NYSE".parse::<Exchange>(), Ok(Exchange::NYSE));
+    assert_eq!("nasdaq".parse::<Exchange>(), Ok(Exchange::NASDAQ));
+    assert_eq!("new york stock exchange".parse::<Exchange>(), Ok(Exchange::NYSE));
+    assert_eq!("UNKNOWN_EXCHANGE".parse::<Exchange>(), Ok(Exchange::OTHER));
 
     assert_eq!(Exchange::NYSE.full_name(), "New York Stock Exchange");
     assert_eq!(Exchange::NYSE.timezone(), "America/New_York");

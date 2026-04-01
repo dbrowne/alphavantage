@@ -30,6 +30,7 @@
 //! Security type definitions and bitmap encoding for security identifiers.
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 // Bit allocation based on typical universe sizes
 // Total: 64 bits (1 bit sign, 63 bits usable)
@@ -133,6 +134,35 @@ impl std::fmt::Display for SecurityType {
       SecurityType::Commodity => write!(f, "Commodity"),
       SecurityType::Cryptocurrency => write!(f, "Cryptocurrency"),
       SecurityType::Other => write!(f, "Other"),
+    }
+  }
+}
+
+impl FromStr for SecurityType {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s.to_uppercase().replace([' ', '-', '_'], "").as_str() {
+      "COMMONSTOCK" | "EQUITY" | "STOCK" => Ok(SecurityType::Equity),
+      "PREFERREDSTOCK" | "PREFERRED" => Ok(SecurityType::PreferredStock),
+      "ETF" | "EXCHANGETRADEDFUND" => Ok(SecurityType::ETF),
+      "MUTUALFUND" | "FUND" => Ok(SecurityType::MutualFund),
+      "REIT" | "REALESTATEINVESTMENTTRUST" => Ok(SecurityType::REIT),
+      "ADR" | "AMERICANDEPOSITARYRECEIPT" => Ok(SecurityType::ADR),
+      "CD" | "CERTIFICATEOFDEPOSIT" => Ok(SecurityType::CD),
+      "BOND" => Ok(SecurityType::Bond),
+      "GOVERNMENTBOND" | "GOVBOND" => Ok(SecurityType::GovernmentBond),
+      "CORPORATEBOND" | "CORPBOND" => Ok(SecurityType::CorporateBond),
+      "MUNICIPALBOND" | "MUNIBOND" => Ok(SecurityType::MunicipalBond),
+      "TREASURYBILL" | "TBILL" => Ok(SecurityType::TreasuryBill),
+      "OPTION" => Ok(SecurityType::Option),
+      "FUTURE" | "FUTURES" => Ok(SecurityType::Future),
+      "WARRANT" => Ok(SecurityType::Warrant),
+      "INDEX" => Ok(SecurityType::Index),
+      "CURRENCY" | "FX" | "FOREX" => Ok(SecurityType::Currency),
+      "COMMODITY" => Ok(SecurityType::Commodity),
+      "CRYPTOCURRENCY" | "CRYPTO" => Ok(SecurityType::Cryptocurrency),
+      _ => Ok(SecurityType::Other),
     }
   }
 }
@@ -286,31 +316,6 @@ impl SecurityType {
     }
   }
 
-  pub fn from_str(s: &str) -> Option<Self> {
-    match s.to_uppercase().replace([' ', '-', '_'], "").as_str() {
-      "COMMONSTOCK" | "EQUITY" | "STOCK" => Some(SecurityType::Equity),
-      "PREFERREDSTOCK" | "PREFERRED" => Some(SecurityType::PreferredStock),
-      "ETF" | "EXCHANGETRADEDFUND" => Some(SecurityType::ETF),
-      "MUTUALFUND" | "FUND" => Some(SecurityType::MutualFund),
-      "REIT" | "REALESTATEINVESTMENTTRUST" => Some(SecurityType::REIT),
-      "ADR" | "AMERICANDEPOSITARYRECEIPT" => Some(SecurityType::ADR),
-      "CD" | "CERTIFICATEOFDEPOSIT" => Some(SecurityType::CD),
-      "BOND" => Some(SecurityType::Bond),
-      "GOVERNMENTBOND" | "GOVBOND" => Some(SecurityType::GovernmentBond),
-      "CORPORATEBOND" | "CORPBOND" => Some(SecurityType::CorporateBond),
-      "MUNICIPALBOND" | "MUNIBOND" => Some(SecurityType::MunicipalBond),
-      "TREASURYBILL" | "TBILL" => Some(SecurityType::TreasuryBill),
-      "OPTION" => Some(SecurityType::Option),
-      "FUTURE" | "FUTURES" => Some(SecurityType::Future),
-      "WARRANT" => Some(SecurityType::Warrant),
-      "INDEX" => Some(SecurityType::Index),
-      "CURRENCY" | "FX" | "FOREX" => Some(SecurityType::Currency),
-      "COMMODITY" => Some(SecurityType::Commodity),
-      "CRYPTOCURRENCY" | "CRYPTO" => Some(SecurityType::Cryptocurrency),
-      _ => Some(SecurityType::Other),
-    }
-  }
-
   /// Check if this security type represents equity
   pub fn is_equity(&self) -> bool {
     matches!(
@@ -371,8 +376,8 @@ mod tests {
 
   #[test]
   fn test_security_type_parsing() {
-    assert_eq!(SecurityType::from_str("Common Stock"), Some(SecurityType::Equity));
-    assert_eq!(SecurityType::from_str("ETF"), Some(SecurityType::ETF));
+    assert_eq!("Common Stock".parse::<SecurityType>(), Ok(SecurityType::Equity));
+    assert_eq!("ETF".parse::<SecurityType>(), Ok(SecurityType::ETF));
     assert!(SecurityType::Equity.is_equity());
     assert!(SecurityType::Bond.is_fixed_income());
     assert!(SecurityType::Option.is_derivative());
@@ -502,14 +507,14 @@ mod tests {
 
   #[test]
   fn test_security_type_from_str() {
-    assert_eq!(SecurityType::from_str("Common Stock"), Some(SecurityType::Equity));
-    assert_eq!(SecurityType::from_str("EQUITY"), Some(SecurityType::Equity));
-    assert_eq!(SecurityType::from_str("stock"), Some(SecurityType::Equity));
-    assert_eq!(SecurityType::from_str("ETF"), Some(SecurityType::ETF));
-    assert_eq!(SecurityType::from_str("Exchange Traded Fund"), Some(SecurityType::ETF));
-    assert_eq!(SecurityType::from_str("CRYPTO"), Some(SecurityType::Cryptocurrency));
-    assert_eq!(SecurityType::from_str("fx"), Some(SecurityType::Currency));
-    assert_eq!(SecurityType::from_str("UNKNOWN"), Some(SecurityType::Other));
+    assert_eq!("Common Stock".parse::<SecurityType>(), Ok(SecurityType::Equity));
+    assert_eq!("EQUITY".parse::<SecurityType>(), Ok(SecurityType::Equity));
+    assert_eq!("stock".parse::<SecurityType>(), Ok(SecurityType::Equity));
+    assert_eq!("ETF".parse::<SecurityType>(), Ok(SecurityType::ETF));
+    assert_eq!("Exchange Traded Fund".parse::<SecurityType>(), Ok(SecurityType::ETF));
+    assert_eq!("CRYPTO".parse::<SecurityType>(), Ok(SecurityType::Cryptocurrency));
+    assert_eq!("fx".parse::<SecurityType>(), Ok(SecurityType::Currency));
+    assert_eq!("UNKNOWN".parse::<SecurityType>(), Ok(SecurityType::Other));
   }
 
   #[test]

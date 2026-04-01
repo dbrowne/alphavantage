@@ -39,6 +39,7 @@ use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -57,19 +58,22 @@ pub enum IntradayInterval {
   Min60,
 }
 
-impl IntradayInterval {
-  /// Parse from string
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for IntradayInterval {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s {
-      "1min" => Some(IntradayInterval::Min1),
-      "5min" => Some(IntradayInterval::Min5),
-      "15min" => Some(IntradayInterval::Min15),
-      "30min" => Some(IntradayInterval::Min30),
-      "60min" => Some(IntradayInterval::Min60),
-      _ => None,
+      "1min" => Ok(IntradayInterval::Min1),
+      "5min" => Ok(IntradayInterval::Min5),
+      "15min" => Ok(IntradayInterval::Min15),
+      "30min" => Ok(IntradayInterval::Min30),
+      "60min" => Ok(IntradayInterval::Min60),
+      _ => Err(format!("Invalid interval: {}", s)),
     }
   }
+}
 
+impl IntradayInterval {
   /// Convert to string
   pub fn as_str(&self) -> &str {
     match self {
@@ -229,7 +233,6 @@ pub struct IntradayPriceLoader {
   config: IntradayPriceConfig,
   next_eventid: Arc<AtomicI64>,
 }
-
 
 impl IntradayPriceLoader {
   /// Create a new intraday price loader
@@ -546,8 +549,10 @@ impl DataLoader for IntradayPriceLoader {
     );
 
     // Validate interval
-    let interval = IntradayInterval::from_str(&input.interval)
-      .ok_or_else(|| LoaderError::InvalidData(format!("Invalid interval: {}", input.interval)))?;
+    let interval: IntradayInterval = input
+      .interval
+      .parse()
+      .map_err(|_| LoaderError::InvalidData(format!("Invalid interval: {}", input.interval)))?;
 
     // Start process tracking if enabled
     if context.config.track_process {

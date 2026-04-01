@@ -121,6 +121,7 @@ pub struct CryptoSocialInput {
 #[derive(Clone)]
 pub struct SocialLoader {
   config: CryptoSocialConfig,
+  #[allow(dead_code)]
   client: reqwest::Client,
 }
 

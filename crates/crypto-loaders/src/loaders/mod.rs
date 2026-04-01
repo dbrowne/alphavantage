@@ -33,7 +33,7 @@ pub mod details_loader;
 pub mod symbol_loader;
 
 pub use details_loader::{
-  CoinGeckoDetailsLoader, CoinGeckoDetailsOutput, CoinGeckoDetailedCoin, CoinInfo,
+  CoinGeckoDetailedCoin, CoinGeckoDetailsLoader, CoinGeckoDetailsOutput, CoinInfo,
   CryptoDetailedData, CryptoSocialData, CryptoTechnicalData, DetailsLoaderConfig,
 };
 pub use symbol_loader::{CryptoSymbolLoader, LoadAllSymbolsResult};

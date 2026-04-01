@@ -52,9 +52,9 @@ log = "0.4.28"
 chrono = { version = "0.4.41", features = ["serde"] }
 
 # Database
-diesel = { version = "2.2.11", features = ["postgres", "chrono", "uuid", "numeric", "r2d2", "serde_json", "postgres_backend"] }
-diesel-async = { version = "0.6.1", features = ["postgres", "bb8"] }
-diesel_migrations = "2.2.0"
+diesel = { version = "2.3", features = ["postgres", "chrono", "uuid", "numeric", "r2d2", "serde_json", "postgres_backend"] }
+diesel-async = { version = "0.8", features = ["postgres", "bb8"] }
+diesel_migrations = "2.3"
 bb8 = "0.9.0"
 
 # HTTP client

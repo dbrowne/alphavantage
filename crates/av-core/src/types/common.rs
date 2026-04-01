@@ -30,6 +30,7 @@
 //! Common types used across the API
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// Data output format for API requests
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -69,19 +70,22 @@ impl std::fmt::Display for Interval {
   }
 }
 
-impl Interval {
-  /// Parse interval from string
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for Interval {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s {
-      "1min" => Some(Interval::Min1),
-      "5min" => Some(Interval::Min5),
-      "15min" => Some(Interval::Min15),
-      "30min" => Some(Interval::Min30),
-      "60min" => Some(Interval::Min60),
-      _ => None,
+      "1min" => Ok(Interval::Min1),
+      "5min" => Ok(Interval::Min5),
+      "15min" => Ok(Interval::Min15),
+      "30min" => Ok(Interval::Min30),
+      "60min" => Ok(Interval::Min60),
+      _ => Err(format!("Invalid interval: {}", s)),
     }
   }
+}
 
+impl Interval {
   /// Get interval duration in minutes
   pub fn minutes(&self) -> u32 {
     match self {
@@ -182,17 +186,20 @@ impl std::fmt::Display for SentimentLabel {
   }
 }
 
-impl SentimentLabel {
-  /// Parse from string
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for SentimentLabel {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s.to_lowercase().as_str() {
-      "bullish" => Some(SentimentLabel::Bullish),
-      "neutral" => Some(SentimentLabel::Neutral),
-      "bearish" => Some(SentimentLabel::Bearish),
-      _ => None,
+      "bullish" => Ok(SentimentLabel::Bullish),
+      "neutral" => Ok(SentimentLabel::Neutral),
+      "bearish" => Ok(SentimentLabel::Bearish),
+      _ => Err(format!("Invalid sentiment label: {}", s)),
     }
   }
+}
 
+impl SentimentLabel {
   /// Get sentiment score range
   pub fn score_range(&self) -> (f64, f64) {
     match self {
@@ -243,43 +250,46 @@ impl std::fmt::Display for CurrencyCode {
   }
 }
 
-impl CurrencyCode {
-  /// Parse from string
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for CurrencyCode {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s.to_uppercase().as_str() {
-      "USD" => Some(CurrencyCode::USD),
-      "EUR" => Some(CurrencyCode::EUR),
-      "GBP" => Some(CurrencyCode::GBP),
-      "JPY" => Some(CurrencyCode::JPY),
-      "CHF" => Some(CurrencyCode::CHF),
-      "CAD" => Some(CurrencyCode::CAD),
-      "AUD" => Some(CurrencyCode::AUD),
-      "NZD" => Some(CurrencyCode::NZD),
-      "CNY" => Some(CurrencyCode::CNY),
-      "HKD" => Some(CurrencyCode::HKD),
-      "SGD" => Some(CurrencyCode::SGD),
-      "SEK" => Some(CurrencyCode::SEK),
-      "NOK" => Some(CurrencyCode::NOK),
-      "DKK" => Some(CurrencyCode::DKK),
-      "PLN" => Some(CurrencyCode::PLN),
-      "CZK" => Some(CurrencyCode::CZK),
-      "HUF" => Some(CurrencyCode::HUF),
-      "RUB" => Some(CurrencyCode::RUB),
-      "ZAR" => Some(CurrencyCode::ZAR),
-      "BRL" => Some(CurrencyCode::BRL),
-      "MXN" => Some(CurrencyCode::MXN),
-      "INR" => Some(CurrencyCode::INR),
-      "KRW" => Some(CurrencyCode::KRW),
-      "TRY" => Some(CurrencyCode::TRY),
-      "ILS" => Some(CurrencyCode::ILS),
-      "THB" => Some(CurrencyCode::THB),
-      "MYR" => Some(CurrencyCode::MYR),
-      "PHP" => Some(CurrencyCode::PHP),
-      "IDR" => Some(CurrencyCode::IDR),
-      _ => None,
+      "USD" => Ok(CurrencyCode::USD),
+      "EUR" => Ok(CurrencyCode::EUR),
+      "GBP" => Ok(CurrencyCode::GBP),
+      "JPY" => Ok(CurrencyCode::JPY),
+      "CHF" => Ok(CurrencyCode::CHF),
+      "CAD" => Ok(CurrencyCode::CAD),
+      "AUD" => Ok(CurrencyCode::AUD),
+      "NZD" => Ok(CurrencyCode::NZD),
+      "CNY" => Ok(CurrencyCode::CNY),
+      "HKD" => Ok(CurrencyCode::HKD),
+      "SGD" => Ok(CurrencyCode::SGD),
+      "SEK" => Ok(CurrencyCode::SEK),
+      "NOK" => Ok(CurrencyCode::NOK),
+      "DKK" => Ok(CurrencyCode::DKK),
+      "PLN" => Ok(CurrencyCode::PLN),
+      "CZK" => Ok(CurrencyCode::CZK),
+      "HUF" => Ok(CurrencyCode::HUF),
+      "RUB" => Ok(CurrencyCode::RUB),
+      "ZAR" => Ok(CurrencyCode::ZAR),
+      "BRL" => Ok(CurrencyCode::BRL),
+      "MXN" => Ok(CurrencyCode::MXN),
+      "INR" => Ok(CurrencyCode::INR),
+      "KRW" => Ok(CurrencyCode::KRW),
+      "TRY" => Ok(CurrencyCode::TRY),
+      "ILS" => Ok(CurrencyCode::ILS),
+      "THB" => Ok(CurrencyCode::THB),
+      "MYR" => Ok(CurrencyCode::MYR),
+      "PHP" => Ok(CurrencyCode::PHP),
+      "IDR" => Ok(CurrencyCode::IDR),
+      _ => Err(format!("Invalid currency code: {}", s)),
     }
   }
+}
 
+impl CurrencyCode {
   /// Check if this is a major currency
   pub fn is_major(&self) -> bool {
     matches!(
@@ -335,34 +345,37 @@ impl std::fmt::Display for CryptoSymbol {
   }
 }
 
-impl CryptoSymbol {
-  /// Parse from string
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for CryptoSymbol {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s.to_uppercase().as_str() {
-      "BTC" => Some(CryptoSymbol::BTC),
-      "ETH" => Some(CryptoSymbol::ETH),
-      "BNB" => Some(CryptoSymbol::BNB),
-      "ADA" => Some(CryptoSymbol::ADA),
-      "SOL" => Some(CryptoSymbol::SOL),
-      "XRP" => Some(CryptoSymbol::XRP),
-      "DOT" => Some(CryptoSymbol::DOT),
-      "DOGE" => Some(CryptoSymbol::DOGE),
-      "AVAX" => Some(CryptoSymbol::AVAX),
-      "MATIC" => Some(CryptoSymbol::MATIC),
-      "LINK" => Some(CryptoSymbol::LINK),
-      "LTC" => Some(CryptoSymbol::LTC),
-      "BCH" => Some(CryptoSymbol::BCH),
-      "XLM" => Some(CryptoSymbol::XLM),
-      "VET" => Some(CryptoSymbol::VET),
-      "ICP" => Some(CryptoSymbol::ICP),
-      "FIL" => Some(CryptoSymbol::FIL),
-      "TRX" => Some(CryptoSymbol::TRX),
-      "ETC" => Some(CryptoSymbol::ETC),
-      "XMR" => Some(CryptoSymbol::XMR),
-      _ => None,
+      "BTC" => Ok(CryptoSymbol::BTC),
+      "ETH" => Ok(CryptoSymbol::ETH),
+      "BNB" => Ok(CryptoSymbol::BNB),
+      "ADA" => Ok(CryptoSymbol::ADA),
+      "SOL" => Ok(CryptoSymbol::SOL),
+      "XRP" => Ok(CryptoSymbol::XRP),
+      "DOT" => Ok(CryptoSymbol::DOT),
+      "DOGE" => Ok(CryptoSymbol::DOGE),
+      "AVAX" => Ok(CryptoSymbol::AVAX),
+      "MATIC" => Ok(CryptoSymbol::MATIC),
+      "LINK" => Ok(CryptoSymbol::LINK),
+      "LTC" => Ok(CryptoSymbol::LTC),
+      "BCH" => Ok(CryptoSymbol::BCH),
+      "XLM" => Ok(CryptoSymbol::XLM),
+      "VET" => Ok(CryptoSymbol::VET),
+      "ICP" => Ok(CryptoSymbol::ICP),
+      "FIL" => Ok(CryptoSymbol::FIL),
+      "TRX" => Ok(CryptoSymbol::TRX),
+      "ETC" => Ok(CryptoSymbol::ETC),
+      "XMR" => Ok(CryptoSymbol::XMR),
+      _ => Err(format!("Invalid crypto symbol: {}", s)),
     }
   }
+}
 
+impl CryptoSymbol {
   /// Check if this is a major cryptocurrency
   pub fn is_major(&self) -> bool {
     matches!(
@@ -411,15 +424,15 @@ mod tests {
 
   #[test]
   fn test_interval_parsing() {
-    assert_eq!(Interval::from_str("5min"), Some(Interval::Min5));
-    assert_eq!(Interval::from_str("invalid"), None);
+    assert_eq!("5min".parse::<Interval>(), Ok(Interval::Min5));
+    assert!("invalid".parse::<Interval>().is_err());
     assert_eq!(Interval::Min15.minutes(), 15);
   }
 
   #[test]
   fn test_currency_code_parsing() {
-    assert_eq!(CurrencyCode::from_str("USD"), Some(CurrencyCode::USD));
-    assert_eq!(CurrencyCode::from_str("usd"), Some(CurrencyCode::USD));
+    assert_eq!("USD".parse::<CurrencyCode>(), Ok(CurrencyCode::USD));
+    assert_eq!("usd".parse::<CurrencyCode>(), Ok(CurrencyCode::USD));
     assert!(CurrencyCode::USD.is_major());
     assert_eq!(CurrencyCode::USD.decimal_places(), 2);
     assert_eq!(CurrencyCode::JPY.decimal_places(), 0);
@@ -427,16 +440,16 @@ mod tests {
 
   #[test]
   fn test_crypto_symbol_parsing() {
-    assert_eq!(CryptoSymbol::from_str("BTC"), Some(CryptoSymbol::BTC));
-    assert_eq!(CryptoSymbol::from_str("btc"), Some(CryptoSymbol::BTC));
+    assert_eq!("BTC".parse::<CryptoSymbol>(), Ok(CryptoSymbol::BTC));
+    assert_eq!("btc".parse::<CryptoSymbol>(), Ok(CryptoSymbol::BTC));
     assert!(CryptoSymbol::BTC.is_major());
     assert_eq!(CryptoSymbol::BTC.full_name(), "Bitcoin");
   }
 
   #[test]
   fn test_sentiment_label() {
-    assert_eq!(SentimentLabel::from_str("Bullish"), Some(SentimentLabel::Bullish));
-    assert_eq!(SentimentLabel::from_str("bullish"), Some(SentimentLabel::Bullish));
+    assert_eq!("Bullish".parse::<SentimentLabel>(), Ok(SentimentLabel::Bullish));
+    assert_eq!("bullish".parse::<SentimentLabel>(), Ok(SentimentLabel::Bullish));
 
     let (min, max) = SentimentLabel::Bullish.score_range();
     assert_eq!(min, 0.35);
