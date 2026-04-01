@@ -12,9 +12,11 @@ use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
-use super::metadata_types::{CryptoMetadataConfig, CryptoSymbolForMetadata, ProcessedCryptoMetadata};
-use super::sources::CacheRepositoryAdapter;
 use super::CryptoLoaderError;
+use super::metadata_types::{
+  CryptoMetadataConfig, CryptoSymbolForMetadata, ProcessedCryptoMetadata,
+};
+use super::sources::CacheRepositoryAdapter;
 use av_database_postgres::repository::CacheRepository;
 use av_models::crypto::CryptoDaily;
 
@@ -38,7 +40,7 @@ impl<'a> CoinGeckoMetadataProvider<'a> {
     cache_repo: &Arc<dyn CacheRepository>,
   ) -> Result<ProcessedCryptoMetadata, CryptoLoaderError> {
     let cache_adapter = CacheRepositoryAdapter::as_arc(cache_repo.clone());
-    self.inner.load_cached(symbol, &cache_adapter).await.map_err(Into::into)
+    self.inner.load_cached(symbol, &cache_adapter).await
   }
 
   /// Load metadata without caching.
@@ -46,7 +48,7 @@ impl<'a> CoinGeckoMetadataProvider<'a> {
     &self,
     symbol: &CryptoSymbolForMetadata,
   ) -> Result<ProcessedCryptoMetadata, CryptoLoaderError> {
-    self.inner.load(symbol).await.map_err(Into::into)
+    self.inner.load(symbol).await
   }
 }
 
@@ -73,13 +75,8 @@ impl<'a> AlphaVantageMetadataProvider<'a> {
 
     // Try cache first (unless force refresh is enabled)
     if !self.config.force_refresh {
-      if let Some(cached_data) = get_cached_response(
-        self.config,
-        cache_repo,
-        &cache_key,
-        "alphavantage",
-      )
-      .await
+      if let Some(cached_data) =
+        get_cached_response(self.config, cache_repo, &cache_key, "alphavantage").await
       {
         debug!("Using cached AlphaVantage metadata for {}", symbol.symbol);
 
@@ -237,10 +234,7 @@ pub async fn cache_response(
   {
     Ok(()) => {
       let expires_at = Utc::now() + chrono::Duration::hours(config.cache_ttl_hours as i64);
-      info!(
-        "Cached {} (TTL: {}h, expires: {})",
-        cache_key, config.cache_ttl_hours, expires_at
-      );
+      info!("Cached {} (TTL: {}h, expires: {})", cache_key, config.cache_ttl_hours, expires_at);
     }
     Err(e) => {
       warn!("Failed to cache {}: {}", cache_key, e);

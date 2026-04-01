@@ -451,9 +451,11 @@ fn save_symbols_to_db(
     let timezone = if !security_data.timezone.is_empty() {
       security_data.timezone.clone()
     } else {
-      Exchange::from_str(&security_data.exchange)
+      security_data
+        .exchange
+        .parse::<Exchange>()
         .map(|ex| ex.timezone().to_string())
-        .unwrap_or_else(|| "US/Eastern".to_string())
+        .unwrap_or_else(|_| "US/Eastern".to_string())
     };
 
     // Normalize the region before saving with enhanced mapping

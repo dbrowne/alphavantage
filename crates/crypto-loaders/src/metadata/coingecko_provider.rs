@@ -14,8 +14,8 @@ use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use super::types::{CryptoMetadataConfig, CryptoSymbolForMetadata, ProcessedCryptoMetadata};
-use crate::traits::CryptoCache;
 use crate::CryptoLoaderError;
+use crate::traits::CryptoCache;
 
 /// CoinGecko metadata provider.
 pub struct CoinGeckoMetadataProvider<'a> {
@@ -61,10 +61,15 @@ impl<'a> CoinGeckoMetadataProvider<'a> {
     // Cache the successful response
     if self.config.enable_response_cache {
       let response_str = serde_json::to_string(&response).unwrap_or_default();
-      if let Err(e) = cache.set("coingecko", &cache_key, &response_str, self.config.cache_ttl_hours).await {
+      if let Err(e) =
+        cache.set("coingecko", &cache_key, &response_str, self.config.cache_ttl_hours).await
+      {
         warn!("Failed to cache CoinGecko response: {}", e);
       } else {
-        info!("Cached CoinGecko metadata for {} (TTL: {}h)", symbol.symbol, self.config.cache_ttl_hours);
+        info!(
+          "Cached CoinGecko metadata for {} (TTL: {}h)",
+          symbol.symbol, self.config.cache_ttl_hours
+        );
       }
     }
 
@@ -93,10 +98,7 @@ impl<'a> CoinGeckoMetadataProvider<'a> {
         symbol.source_id, api_key
       )
     } else {
-      format!(
-        "https://api.coingecko.com/api/v3/coins/{}?localization=false",
-        symbol.source_id
-      )
+      format!("https://api.coingecko.com/api/v3/coins/{}?localization=false", symbol.source_id)
     };
 
     let mut request = self.client.get(&url);
@@ -105,11 +107,12 @@ impl<'a> CoinGeckoMetadataProvider<'a> {
       request = request.header("X-CG-Pro-API-Key", api_key);
     }
 
-    let response = request
-      .timeout(Duration::from_secs(self.config.timeout_seconds))
-      .send()
-      .await
-      .map_err(|e| CryptoLoaderError::ApiError(format!("CoinGecko request failed: {}", e)))?;
+    let response =
+      request
+        .timeout(Duration::from_secs(self.config.timeout_seconds))
+        .send()
+        .await
+        .map_err(|e| CryptoLoaderError::ApiError(format!("CoinGecko request failed: {}", e)))?;
 
     if response.status() == 429 {
       return Err(CryptoLoaderError::RateLimitExceeded("CoinGecko".to_string()));

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Upgraded Diesel from 2.2 to 2.3, diesel-async from 0.6 to 0.8, and diesel_migrations from 2.2 to 2.3 to resolve ambiguous glob import warnings for `max`/`sum`
+- Converted all inherent `from_str` methods to `std::str::FromStr` trait implementations across `av-core`, `av-database-postgres`, and `av-loaders`
+- Removed unnecessary `.map_err(Into::into)` calls in `av-loaders` crypto modules
+
+### Fixed
+- Suppressed `async_fn_in_trait` warning on `CacheRepositoryExt` (generic methods are inherently non-object-safe)
+
 ## [0.1.0] - 2025-01-15
 
 ### Added

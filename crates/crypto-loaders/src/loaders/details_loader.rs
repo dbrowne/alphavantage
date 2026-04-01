@@ -304,7 +304,9 @@ impl CoinGeckoDetailsLoader {
       .timeout(std::time::Duration::from_secs(30))
       .user_agent("CryptoLoaders-Rust/1.0")
       .build()
-      .map_err(|e| CryptoLoaderError::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+      .map_err(|e| {
+        CryptoLoaderError::NetworkError(format!("Failed to create HTTP client: {}", e))
+      })?;
 
     let http_client = Arc::new(http_client);
 
@@ -334,8 +336,10 @@ impl CoinGeckoDetailsLoader {
             Ok(fetch_result) => {
               // Only add delay if data came from API (not from cache)
               if !fetch_result.from_cache {
-                tokio::time::sleep(tokio::time::Duration::from_millis(loader.config.retry_delay_ms))
-                  .await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(
+                  loader.config.retry_delay_ms,
+                ))
+                .await;
               }
 
               let detailed_data = Self::convert_to_crypto_data(

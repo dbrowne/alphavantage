@@ -448,7 +448,7 @@ pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
 
   // Configure the loader
   let loader_cfg = IntradayPriceConfig {
-    interval: IntradayInterval::from_str(args.interval.as_str()).ok_or_else(|| {
+    interval: args.interval.as_str().parse::<IntradayInterval>().map_err(|_| {
       anyhow!("Invalid interval: {}. Must be 1min, 5min, 15min, 30min, or 60min", args.interval)
     })?,
     extended_hours: args.extended_hours,

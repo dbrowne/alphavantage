@@ -66,12 +66,15 @@ pub mod types;
 // Re-export main types for convenience
 pub use error::{CryptoLoaderError, CryptoLoaderResult};
 pub use loaders::{
-  CoinGeckoDetailsLoader, CoinGeckoDetailsOutput, CoinGeckoDetailedCoin, CoinInfo,
+  CoinGeckoDetailedCoin, CoinGeckoDetailsLoader, CoinGeckoDetailsOutput, CoinInfo,
   CryptoDetailedData, CryptoSocialData, CryptoSymbolLoader, CryptoTechnicalData,
   DetailsLoaderConfig, LoadAllSymbolsResult,
 };
 pub use traits::{CryptoCache, CryptoDataProvider};
-pub use types::{CryptoDataSource, CryptoLoaderConfig, CryptoLoaderResult as LoaderResult, CryptoSymbol, SourceResult};
+pub use types::{
+  CryptoDataSource, CryptoLoaderConfig, CryptoLoaderResult as LoaderResult, CryptoSymbol,
+  SourceResult,
+};
 
 // Re-export providers
 pub use providers::{
@@ -86,8 +89,8 @@ pub use social::{
 
 // Re-export mapping types
 pub use mapping::{
-  discover_coingecko_id, discover_coinpaprika_id, CryptoMappingService, MappingConfig,
-  MappingRepository,
+  CryptoMappingService, MappingConfig, MappingRepository, discover_coingecko_id,
+  discover_coinpaprika_id,
 };
 
 // Re-export metadata types
@@ -97,12 +100,12 @@ pub use metadata::{
 };
 
 pub mod prelude {
-  pub use crate::{
-    CryptoCache, CryptoDataProvider, CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError,
-    CryptoLoaderResult, CryptoSymbol, CryptoSymbolLoader, LoadAllSymbolsResult, SourceResult,
-  };
   pub use crate::providers::{
     CoinCapProvider, CoinGeckoProvider, CoinMarketCapProvider, CoinPaprikaProvider,
     SosoValueProvider,
+  };
+  pub use crate::{
+    CryptoCache, CryptoDataProvider, CryptoDataSource, CryptoLoaderConfig, CryptoLoaderError,
+    CryptoLoaderResult, CryptoSymbol, CryptoSymbolLoader, LoadAllSymbolsResult, SourceResult,
   };
 }

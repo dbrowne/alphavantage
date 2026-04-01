@@ -30,6 +30,7 @@
 //! Market classification types: sectors, market cap, and top movers.
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// Top movers type (gainers, losers, most active)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,13 +50,15 @@ impl std::fmt::Display for TopType {
   }
 }
 
-impl TopType {
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for TopType {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s.to_lowercase().replace([' ', '-', '_'], "").as_str() {
-      "gainers" | "topgainers" | "winners" => Some(TopType::Gainers),
-      "losers" | "toplosers" | "decliners" => Some(TopType::Losers),
-      "mostactive" | "active" | "volume" => Some(TopType::MostActive),
-      _ => None,
+      "gainers" | "topgainers" | "winners" => Ok(TopType::Gainers),
+      "losers" | "toplosers" | "decliners" => Ok(TopType::Losers),
+      "mostactive" | "active" | "volume" => Ok(TopType::MostActive),
+      _ => Err(format!("Invalid top type: {}", s)),
     }
   }
 }
@@ -96,31 +99,34 @@ impl std::fmt::Display for Sector {
   }
 }
 
-impl Sector {
-  /// Parse sector from string
-  pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for Sector {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s.to_uppercase().replace([' ', '-', '_'], "").as_str() {
-      "TECHNOLOGY" | "TECH" | "IT" | "INFORMATIONTECHNOLOGY" => Some(Sector::Technology),
-      "HEALTHCARE" | "HEALTH" | "MEDICAL" | "PHARMA" | "PHARMACEUTICAL" => Some(Sector::Healthcare),
+      "TECHNOLOGY" | "TECH" | "IT" | "INFORMATIONTECHNOLOGY" => Ok(Sector::Technology),
+      "HEALTHCARE" | "HEALTH" | "MEDICAL" | "PHARMA" | "PHARMACEUTICAL" => Ok(Sector::Healthcare),
       "FINANCIALSERVICES" | "FINANCIAL" | "FINANCE" | "BANKING" | "FINTECH" => {
-        Some(Sector::FinancialServices)
+        Ok(Sector::FinancialServices)
       }
       "CONSUMERDISCRETIONARY" | "CONSUMER" | "RETAIL" | "DISCRETIONARY" => {
-        Some(Sector::ConsumerDiscretionary)
+        Ok(Sector::ConsumerDiscretionary)
       }
-      "CONSUMERSTAPLES" | "STAPLES" | "DEFENSIVE" => Some(Sector::ConsumerStaples),
-      "INDUSTRIALS" | "INDUSTRIAL" | "MANUFACTURING" => Some(Sector::Industrials),
-      "ENERGY" | "OIL" | "GAS" | "PETROLEUM" => Some(Sector::Energy),
-      "MATERIALS" | "BASIC" | "BASICMATERIALS" | "MINING" => Some(Sector::Materials),
-      "REALESTATE" | "PROPERTY" | "REIT" => Some(Sector::RealEstate),
-      "UTILITIES" | "UTILITY" | "POWER" | "ELECTRIC" => Some(Sector::Utilities),
+      "CONSUMERSTAPLES" | "STAPLES" | "DEFENSIVE" => Ok(Sector::ConsumerStaples),
+      "INDUSTRIALS" | "INDUSTRIAL" | "MANUFACTURING" => Ok(Sector::Industrials),
+      "ENERGY" | "OIL" | "GAS" | "PETROLEUM" => Ok(Sector::Energy),
+      "MATERIALS" | "BASIC" | "BASICMATERIALS" | "MINING" => Ok(Sector::Materials),
+      "REALESTATE" | "PROPERTY" | "REIT" => Ok(Sector::RealEstate),
+      "UTILITIES" | "UTILITY" | "POWER" | "ELECTRIC" => Ok(Sector::Utilities),
       "COMMUNICATIONSERVICES" | "COMMUNICATION" | "TELECOM" | "MEDIA" => {
-        Some(Sector::CommunicationServices)
+        Ok(Sector::CommunicationServices)
       }
-      _ => Some(Sector::Other),
+      _ => Ok(Sector::Other),
     }
   }
+}
 
+impl Sector {
   /// Check if this is a cyclical sector
   pub fn is_cyclical(&self) -> bool {
     matches!(
@@ -236,14 +242,14 @@ mod tests {
   // ===== TopType Tests =====
   #[test]
   fn test_top_type_parsing() {
-    assert_eq!(TopType::from_str("gainers"), Some(TopType::Gainers));
-    assert_eq!(TopType::from_str("TOP_GAINERS"), Some(TopType::Gainers));
-    assert_eq!(TopType::from_str("winners"), Some(TopType::Gainers));
-    assert_eq!(TopType::from_str("losers"), Some(TopType::Losers));
-    assert_eq!(TopType::from_str("decliners"), Some(TopType::Losers));
-    assert_eq!(TopType::from_str("most_active"), Some(TopType::MostActive));
-    assert_eq!(TopType::from_str("volume"), Some(TopType::MostActive));
-    assert_eq!(TopType::from_str("invalid"), None);
+    assert_eq!("gainers".parse::<TopType>(), Ok(TopType::Gainers));
+    assert_eq!("TOP_GAINERS".parse::<TopType>(), Ok(TopType::Gainers));
+    assert_eq!("winners".parse::<TopType>(), Ok(TopType::Gainers));
+    assert_eq!("losers".parse::<TopType>(), Ok(TopType::Losers));
+    assert_eq!("decliners".parse::<TopType>(), Ok(TopType::Losers));
+    assert_eq!("most_active".parse::<TopType>(), Ok(TopType::MostActive));
+    assert_eq!("volume".parse::<TopType>(), Ok(TopType::MostActive));
+    assert!("invalid".parse::<TopType>().is_err());
   }
 
   #[test]
@@ -256,14 +262,14 @@ mod tests {
   // ===== Sector Tests =====
   #[test]
   fn test_sector_parsing() {
-    assert_eq!(Sector::from_str("Technology"), Some(Sector::Technology));
-    assert_eq!(Sector::from_str("TECH"), Some(Sector::Technology));
-    assert_eq!(Sector::from_str("Information Technology"), Some(Sector::Technology));
-    assert_eq!(Sector::from_str("Healthcare"), Some(Sector::Healthcare));
-    assert_eq!(Sector::from_str("PHARMA"), Some(Sector::Healthcare));
-    assert_eq!(Sector::from_str("Financial Services"), Some(Sector::FinancialServices));
-    assert_eq!(Sector::from_str("BANKING"), Some(Sector::FinancialServices));
-    assert_eq!(Sector::from_str("UNKNOWN_SECTOR"), Some(Sector::Other));
+    assert_eq!("Technology".parse::<Sector>(), Ok(Sector::Technology));
+    assert_eq!("TECH".parse::<Sector>(), Ok(Sector::Technology));
+    assert_eq!("Information Technology".parse::<Sector>(), Ok(Sector::Technology));
+    assert_eq!("Healthcare".parse::<Sector>(), Ok(Sector::Healthcare));
+    assert_eq!("PHARMA".parse::<Sector>(), Ok(Sector::Healthcare));
+    assert_eq!("Financial Services".parse::<Sector>(), Ok(Sector::FinancialServices));
+    assert_eq!("BANKING".parse::<Sector>(), Ok(Sector::FinancialServices));
+    assert_eq!("UNKNOWN_SECTOR".parse::<Sector>(), Ok(Sector::Other));
   }
 
   #[test]

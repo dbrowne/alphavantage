@@ -470,8 +470,10 @@ impl DataLoader for CryptoIntradayLoader {
     );
 
     // Validate interval
-    let interval = IntradayInterval::from_str(&input.interval)
-      .ok_or_else(|| LoaderError::InvalidData(format!("Invalid interval: {}", input.interval)))?;
+    let interval: IntradayInterval = input
+      .interval
+      .parse()
+      .map_err(|_| LoaderError::InvalidData(format!("Invalid interval: {}", input.interval)))?;
 
     // Start process tracking if enabled
     if context.config.track_process {
