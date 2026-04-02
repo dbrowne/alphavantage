@@ -1,164 +1,116 @@
-This is a re write of the original AlphaVantage rust api.  Daily updates
-markdown# AlphaVantage Rust Client
-
-A Rust implementation and complete re write of my  Rust [Alphavantage API](https://github.com/dbrowne/AlphaVantage_Rust)   client with PostgreSQL/TimescaleDB support for financial market data storage and analysis.
-
-## ⚠️ Project Status
-
-**This project is currently under active development. RELEASE COMING SOON!!!!**
 # AlphaVantage Rust Client
 
 [![Build Status](https://github.com/dbrowne/alphavantage/actions/workflows/rust.yaml/badge.svg)](https://github.com/dbrowne/alphavantage/actions/workflows/rust.yml)
 
-A high-performance, async Rust client library and comprehensive data pipeline for financial market data. Built with a modular workspace architecture, it provides robust integration with AlphaVantage API, CoinGecko, and other data sources, featuring advanced caching, TimescaleDB support, and comprehensive cryptocurrency coverage.
+A high-performance, async Rust client library and data pipeline for financial market data. Built with a modular workspace architecture, it integrates with AlphaVantage, CoinGecko, CoinMarketCap, and other data sources, featuring TimescaleDB storage, advanced caching, and comprehensive cryptocurrency coverage.
 
-## 🚀 Features
+> **Status**: Under active development.
 
-### Core Capabilities
-- **Multi-Source Data Integration**: AlphaVantage, CoinGecko, GitHub, and more
-- **Async/Await Architecture**: Built on Tokio for maximum concurrency
-- **Advanced Caching System**: Response caching to minimize API calls and costs
-- **TimescaleDB Integration**: Optimized time-series data storage with hypertables
-- **Comprehensive Crypto Support**: Enhanced metadata, social metrics, and market data
-- **Process Tracking**: ETL monitoring with automatic retry mechanisms
-- **Rate Limiting**: Intelligent rate limiting based on API tier
+## Features
+
+- **Multi-source data integration** — AlphaVantage, CoinGecko, CoinMarketCap, CoinPaprika, CoinCap, SosoValue, GitHub
+- **Async architecture** — Built on Tokio with full concurrency support
+- **Response caching** — Minimizes API calls and costs
+- **TimescaleDB** — Optimized time-series storage with hypertables
+- **Comprehensive crypto** — 10,000+ coins with metadata, social metrics, and market data from multiple providers
+- **ETL process tracking** — Monitoring with automatic retry mechanisms
+- **Rate limiting** — Intelligent limiting based on API tier (75/min free, 600/min premium)
 
 ### Data Coverage
-- **Equities**: Stocks, ETFs with company fundamentals
-- **Cryptocurrency**: 10,000+ coins with enhanced metadata from multiple sources
-- **News & Sentiment**: NLP-powered sentiment analysis with topic categorization
-- **Market Analytics**: Top gainers/losers tracking (in development)
 
-### Currently Implemented
-- ✅ Symbol loading and persistence for equities, bonds, and mutual funds
-- ✅ Database schema with TimescaleDB support
-- ✅ AlphaVantage API client endpoints 
-- ✅ Basic project structure and workspace organization
-- ✅ Data loaders for equity price data
-- ✅ Data loaders for fundamentals, news, crypto
-- ✅ Data loaders for price data
-- ✅ CLI commands for data fetching and analysis
-- ✅ AlphaVantage API client endpoints for equity market price data
+| Category | Details |
+|----------|---------|
+| Equities | Stocks, ETFs, mutual funds, bonds with company fundamentals |
+| Cryptocurrency | Metadata, prices (intraday + daily), market pairs, social metrics, news |
+| News & Sentiment | NLP-powered sentiment analysis with topic categorization |
+| Market Analytics | Top gainers/losers tracking |
 
-### In Development
-- 🚧 CoinGecko  and Coinmarketcap API client endpoints
-- 🚧 Full integration between API client and database
-- 🚧 Corporate actions
-
-## Overview
-
-This project aims to provide a complete solution for fetching, storing, and analyzing financial market data from AlphaVantage and Coingecko. Built with Rust's async ecosystem, it will offer high-performance data loading capabilities with proper rate limiting, concurrent processing, and comprehensive error handling.
-
-
-## Security advisories for dependencies as of Nov 23 2025:
-- [RUSTSEC-2025-0047](https://rustsec.org/advisories/RUSTSEC-2025-0047)  slab: Out-of-bounds access in get_disjoint_mut due to incorrect bounds check
-- [RUSTSEC-2024-0375](https://rustsec.org/advisories/RUSTSEC-2024-0375)  atty is **UNMAINTAINED**
-- [RUSTSEC-2021-0141](https://rustsec.org/advisories/RUSTSEC-2021-0141)  dotenv is **UNMAINTAINED**
-- [RUSTSEC-2025-0119](https://rustsec.org/advisories/RUSTSEC-2025-0119)  number_prefix is **UNMAINTAINED**
-## 📦 Project Structure
+## Project Structure
 
 ```
 alphavantage/
 ├── crates/
 │   ├── av-core/              # Core types, traits, and configuration
-│   ├── av-client/            # AlphaVantage API client
+│   ├── av-client/            # AlphaVantage API HTTP client
 │   ├── av-models/            # Data models for API responses
-│   ├── av-database/          # Database integration layer
-│   │   └── postgres/         # PostgreSQL/TimescaleDB implementation
-│   ├── av-loaders/           # Advanced data loading functionality
-│   │   └── crypto/           # Cryptocurrency-specific loaders
-│   └── av-cli/               # Command-line interface
+│   ├── av-database/
+│   │   └── postgres/         # PostgreSQL/TimescaleDB via Diesel ORM
+│   ├── av-loaders/           # ETL data loaders (equities, news, prices)
+│   ├── crypto-loaders/       # Cryptocurrency-specific loaders and providers
+│   └── av-cli/               # Command-line interface (binary: av)
 ├── migrations/               # Database migrations
 ├── timescale_setup/          # TimescaleDB Docker setup
-├── tests/                    # Integration tests
 └── data/                     # CSV data files for symbol imports
 ```
 
-## 🗄️  Database Schema
+## Crates
+
+### av-core
+Core types, traits, error handling, and configuration shared across the workspace. Includes type-safe representations for intervals, exchanges, sectors, security types, currencies, and crypto symbols with `FromStr` implementations.
+
+### av-client
+Pure async HTTP client for AlphaVantage API endpoints — time series, fundamentals, news sentiment, forex, and cryptocurrency. No database dependencies.
+
+### av-models
+Serde-based data models for all API response types.
+
+### av-database-postgres
+PostgreSQL/TimescaleDB integration via Diesel 2.3 ORM with diesel-async and BB8 connection pooling. Provides repository traits for all entity types with a unified cache layer.
+
+### av-loaders
+ETL data loaders for equities, intraday/daily prices, company overviews, news with sentiment analysis, and top market movers. Includes batch processing, CSV import, and process state tracking.
+
+### crypto-loaders
+Cryptocurrency-specific data loaders with multi-provider support:
+- **Providers**: CoinGecko, CoinMarketCap, CoinPaprika, CoinCap, SosoValue
+- **Loaders**: Symbol discovery, metadata, details, social metrics
+- **Mapping**: Cross-provider symbol mapping and discovery service
+
+### av-cli
+Command-line interface (`av` binary) built with Clap. Commands:
+
+```
+av load securities          # Load equity symbols from CSV
+av load overviews           # Load company overview data
+av load intraday            # Load intraday price data
+av load daily               # Load daily price data
+av load news                # Load news with sentiment
+av load top-movers          # Load market movers
+av load crypto              # Load crypto data
+av load crypto-overview     # Load crypto overviews
+av load crypto-markets      # Load exchange/market pair data
+av load crypto-mapping      # Load symbol mappings
+av load crypto-metadata     # Load crypto metadata
+av load crypto-news         # Load crypto news
+av load crypto-intraday     # Load crypto intraday prices
+av load crypto-details      # Load crypto details
+av load crypto-prices       # Load crypto prices
+av sync market              # Sync equity market data
+av sync crypto              # Sync cryptocurrency data
+av query symbol             # Query a specific symbol
+av query list-symbols       # List all symbols
+av update stats             # View database statistics
+```
 
 ## Database Schema
 
-The project includes a comprehensive PostgreSQL schema with TimescaleDB extensions:
+PostgreSQL with TimescaleDB extensions. Key table groups:
 
-### Core Tables
-- **symbols** - Master security data with exchange information (stocks, ETFs, crypto)
-- **overviews** - Company fundamentals and metrics
-- **overviewexts** - Extended company information
-- **equity_details** - Additional equity-specific information
-- **intradayprices** - High-frequency price data (schema defined, not yet populated)
-- **summaryprices** - Daily OHLCV data (schema defined, not yet populated)
-- **topstats** - Market movers tracking (schema defined, not yet populated)
+**Core**: `symbols`, `overviews`, `overviewexts`, `equity_details`, `intradayprices`, `summaryprices`, `topstats`
 
-### Cryptocurrency Tables
-- **crypto_api_map** - Mapping between symbols and external API identifiers
-- **crypto_metadata** - Core cryptocurrency metadata
-- **crypto_overview_basic** - Basic crypto information
-- **crypto_overview_metrics** - Detailed crypto metrics
-- **crypto_technical** - Technical indicators and blockchain metrics
-- **crypto_social** - Social media metrics and community data
-- **crypto_markets** - Exchange and market pair information
+**Cryptocurrency**: `crypto_api_map`, `crypto_metadata`, `crypto_overview_basic`, `crypto_overview_metrics`, `crypto_technical`, `crypto_social`, `crypto_markets`
 
-### News & Sentiment
-- **newsoverviews** - Article metadata with sentiment scores
-- **feeds** - Individual news feeds
-- **articles** - Article content and details
-- **article_media** - Media attachments for articles
-- **article_quotes** - Quoted text from articles
-- **article_symbols** - Symbol mentions in articles
-- **article_tags** - Article categorization tags
-- **article_translations** - Multi-language article support
-- **sources** - News sources
-- **authors** - Article authors
-- **authormaps** - Author-article relationships
-- **tickersentiments** - Ticker-specific sentiment analysis
-- **topicmaps** - Topic-symbol relationships
-- **topicrefs** - Topic reference data
+**News & Sentiment**: `newsoverviews`, `feeds`, `articles`, `article_media`, `article_quotes`, `article_symbols`, `article_tags`, `article_translations`, `sources`, `authors`, `authormaps`, `tickersentiments`, `topicmaps`, `topicrefs`
 
-### System Tables
-- **api_response_cache** - Response caching for API efficiency
-- **procstates** - ETL process state tracking
-- **proctypes** - Process type definitions
-- **states** - Process state definitions
-- **__diesel_schema_migrations** - Database migration tracking
+**System**: `api_response_cache`, `procstates`, `proctypes`, `states`
 
-### Phase 2: Data Loaders
-- Company overview loader ✅
-- Crypto currency symbol loader ✅
-- Crypto Overview loader ✅
-- News loader with sentiment analysis ✅
-- Price data loaders ✅
-- Batch processing with progress tracking 🚧
-
-
- 
-### Phase 3: API Client (In Progress)
-- 🚧 Time series endpoints
-- 🚧 Fundamental data endpoints
-- ✅ News sentiment endpoints
-- 🚧 Rate limiting implementation
-
-
-
-### Phase 4: CLI Enhancement
-- Complete command structure 🚧
-- Query capabilities
-- Analytics commands
-- Process management
-
-
-
-### Phase 5: Production Features
-- Comprehensive error handling
-- Retry logic
-- ✅ Caching layer
-
-
+![Database Schema](db_schema.png)
 
 ## Getting Started
 
 ### Prerequisites
 
-- Rust 1.70+
+- Rust 1.92+ (edition 2021)
 - Docker & Docker Compose
 - PostgreSQL client tools
 - AlphaVantage API key ([get one here](https://www.alphavantage.co/support/#api-key))
@@ -169,81 +121,54 @@ The project includes a comprehensive PostgreSQL schema with TimescaleDB extensio
    ```bash
    git clone https://github.com/dbrowne/alphavantage.git
    cd alphavantage
-   
-2. **setup docker**
-    ```bash
-   cd timescale_setup
-   make up
-   
-3. **setup database**
-      ```bash
-      cd ../crates/av-database/postgres
-      diesel setup
-      diesel migration generate base_tables
-      cp base_migration/* migrations/20*base_tables
-      diesel migration run
-`      PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master
-`      
-4. **check database**
-```
-   psql (16.8 (Ubuntu 16.8-0ubuntu0.24.04.1), server 15.13)
-   Type "help" for help.
-
-sec_master=> \dt
-                   List of relations
- Schema |            Name            | Type  |  Owner
---------+----------------------------+-------+---------
- public | __diesel_schema_migrations | table | ts_user
- public | api_response_cache         | table | ts_user
- public | article_media              | table | ts_user
- public | article_quotes             | table | ts_user
- public | article_symbols            | table | ts_user
- public | article_tags               | table | ts_user
- public | article_translations       | table | ts_user
- public | articles                   | table | ts_user
- public | authormaps                 | table | ts_user
- public | authors                    | table | ts_user
- public | crypto_api_map             | table | ts_user
- public | crypto_markets             | table | ts_user
- public | crypto_metadata            | table | ts_user
- public | crypto_overview_basic      | table | ts_user
- public | crypto_overview_metrics    | table | ts_user
- public | crypto_social              | table | ts_user
- public | crypto_technical           | table | ts_user
- public | equity_details             | table | ts_user
- public | feeds                      | table | ts_user
- public | intradayprices             | table | ts_user
- public | newsoverviews              | table | ts_user
- public | overviewexts               | table | ts_user
- public | overviews                  | table | ts_user
- public | procstates                 | table | ts_user
- public | proctypes                  | table | ts_user
- public | sources                    | table | ts_user
- public | states                     | table | ts_user
- public | summaryprices              | table | ts_user
- public | symbols                    | table | ts_user
- public | tickersentiments           | table | ts_user
- public | topicmaps                  | table | ts_user
- public | topicrefs                  | table | ts_user
- public | topstats                   | table | ts_user
-(33 rows)
-```
-5. **Schemaspy documentation**
-```bash
-   rm -rf db_relations/*;
-   java -jar ~/local/bin/schemaspy-6.2.4.jar \
-    -t pgsql11 \
-    -dp ~/local/bin/postgresql-42.7.7.jar \
-    -db sec_master \
-    -host localhost \
-    -port 6433 \
-    -u ts_user \
-    -p dev_pw \
-    -o db_relations;
    ```
 
+2. **Start TimescaleDB:**
+   ```bash
+   cd timescale_setup
+   make up
+   ```
+
+3. **Set up the database:**
+   ```bash
+   cd crates/av-database/postgres
+   diesel setup
+   diesel migration run
+   ```
+
+4. **Configure environment:**
+   ```bash
+   cp DOT_env_EXAMPLE .env
+   # Edit .env with your API keys and database URL
+   ```
+
+5. **Build and run:**
+   ```bash
+   cargo build --release
+   ./target/release/av --help
+   ```
+
+### Verify database connection
+
 ```bash
-     google-chrome db_relations/index.html 
+PGPASSWORD=dev_pw psql -U ts_user -h localhost -p 6433 -d sec_master -c '\dt'
 ```
- ### DB Schema
-![plot](db_schema.png)
+
+## Key Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| tokio | 1.46 | Async runtime |
+| diesel | 2.3 | ORM (PostgreSQL) |
+| diesel-async | 0.8 | Async Diesel with BB8 pooling |
+| reqwest | 0.12 | HTTP client |
+| clap | 4.4 | CLI framework |
+| serde | 1.0 | Serialization |
+| chrono | 0.4 | Date/time handling |
+| bigdecimal | 0.4 | Financial precision |
+| tracing | 0.1 | Structured logging |
+| thiserror | 2.0 | Error types |
+
+## License
+
+MIT
