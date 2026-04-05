@@ -27,10 +27,12 @@
  * SOFTWARE.
  */
 
-use super::CryptoDataProvider;
-use crate::crypto::{CryptoDataSource, CryptoLoaderError, CryptoSymbol};
+//! CoinMarketCap cryptocurrency data provider.
+
+use crate::error::CryptoLoaderError;
+use crate::traits::{CryptoCache, CryptoDataProvider};
+use crate::types::{CryptoDataSource, CryptoSymbol};
 use async_trait::async_trait;
-use av_database_postgres::repository::CacheRepository;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
 
+/// CoinMarketCap data provider.
 pub struct CoinMarketCapProvider {
   pub api_key: String,
 }
@@ -119,7 +122,7 @@ impl CryptoDataProvider for CoinMarketCapProvider {
   async fn fetch_symbols(
     &self,
     client: &Client,
-    _cache_repo: Option<&Arc<dyn CacheRepository>>,
+    _cache: Option<&Arc<dyn CryptoCache>>,
   ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError> {
     info!("Fetching symbols from CoinMarketCap");
 
@@ -213,7 +216,7 @@ impl CryptoDataProvider for CoinMarketCapProvider {
   }
 
   fn rate_limit_delay(&self) -> u64 {
-    300 // Conservative rate limiting for paid API
+    300
   }
 
   fn requires_api_key(&self) -> bool {

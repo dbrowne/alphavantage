@@ -31,6 +31,8 @@ use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use std::str::FromStr;
+
 use crate::schema::missing_symbols;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +43,19 @@ pub enum ResolutionStatus {
   Skipped,
 }
 
+impl FromStr for ResolutionStatus {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "found" => Ok(ResolutionStatus::Found),
+      "not_found" => Ok(ResolutionStatus::NotFound),
+      "skipped" => Ok(ResolutionStatus::Skipped),
+      _ => Ok(ResolutionStatus::Pending),
+    }
+  }
+}
+
 impl ResolutionStatus {
   pub fn as_str(&self) -> &'static str {
     match self {
@@ -48,15 +63,6 @@ impl ResolutionStatus {
       ResolutionStatus::Found => "found",
       ResolutionStatus::NotFound => "not_found",
       ResolutionStatus::Skipped => "skipped",
-    }
-  }
-
-  pub fn from_str(s: &str) -> Self {
-    match s {
-      "found" => ResolutionStatus::Found,
-      "not_found" => ResolutionStatus::NotFound,
-      "skipped" => ResolutionStatus::Skipped,
-      _ => ResolutionStatus::Pending,
     }
   }
 }
@@ -89,7 +95,7 @@ pub struct MissingSymbol {
 impl MissingSymbol {
   /// Get status as enum
   pub fn status(&self) -> ResolutionStatus {
-    ResolutionStatus::from_str(&self.resolution_status)
+    self.resolution_status.parse().unwrap_or(ResolutionStatus::Pending)
   }
 
   /// Check if symbol is still pending

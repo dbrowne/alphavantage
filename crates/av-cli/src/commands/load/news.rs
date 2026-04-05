@@ -124,7 +124,10 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
   let _continue_on_error = if args.stop_on_error { false } else { args.continue_on_error }; //todo:: fix this
 
   // Create API client
-  let client = Arc::new(AlphaVantageClient::new(config.api_config.clone()));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config.clone())
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create database context and repositories
   let db_context = DatabaseContext::new(&config.database_url)

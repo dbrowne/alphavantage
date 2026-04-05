@@ -27,7 +27,7 @@
  * SOFTWARE.
  */
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bigdecimal::ToPrimitive;
 use clap::Args;
 use std::sync::Arc;
@@ -243,7 +243,10 @@ pub async fn execute(args: CryptoMarketsArgs, config: &Config) -> Result<()> {
     timeout_secs: config.api_config.timeout_secs,
     max_retries: config.api_config.max_retries,
   };
-  let client = Arc::new(AlphaVantageClient::new(av_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(av_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
   let loader_config_for_context = LoaderConfig::default();
   let loader_context = LoaderContext::new(client, loader_config_for_context);
   let markets_loader = CryptoMarketsLoader::new(loader_config);

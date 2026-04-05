@@ -28,7 +28,7 @@
  */
 
 use super::sid_generator::SidGenerator;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
 use av_core::types::market::{Exchange, SecurityType};
 use av_database_postgres::repository::DatabaseContext;
@@ -153,7 +153,10 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
   }
 
   // Create API client
-  let client = Arc::new(AlphaVantageClient::new(config.api_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create loader configuration
   let loader_config = LoaderConfig {
@@ -295,7 +298,10 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
 
 /// Dry run version that doesn't need database
 async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
-  let client = Arc::new(AlphaVantageClient::new(config.api_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   let loader_config = LoaderConfig {
     max_concurrent_requests: args.concurrent,
@@ -445,9 +451,11 @@ fn save_symbols_to_db(
     let timezone = if !security_data.timezone.is_empty() {
       security_data.timezone.clone()
     } else {
-      Exchange::from_str(&security_data.exchange)
+      security_data
+        .exchange
+        .parse::<Exchange>()
         .map(|ex| ex.timezone().to_string())
-        .unwrap_or_else(|| "US/Eastern".to_string())
+        .unwrap_or_else(|_| "US/Eastern".to_string())
     };
 
     // Normalize the region before saving with enhanced mapping

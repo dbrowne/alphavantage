@@ -27,7 +27,7 @@
  * SOFTWARE.
  */
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Args;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -189,7 +189,10 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
     Arc::new(db_context.cache_repository());
 
   // Create API client for HTTP operations
-  let client = Arc::new(AlphaVantageClient::new(config.api_config));
+  let client = Arc::new(
+    AlphaVantageClient::new(config.api_config)
+      .map_err(|e| anyhow!("Failed to create API client: {}", e))?,
+  );
 
   // Create crypto loader configuration with multiple sources
   let crypto_config = CryptoLoaderConfig {

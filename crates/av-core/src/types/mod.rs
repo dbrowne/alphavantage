@@ -31,4 +31,4 @@ pub mod common;
 pub mod market;
 
 pub use common::{DataType, Interval, OutputSize};
-pub use market::{Exchange, SecurityType, TopType};
+pub use market::{Exchange, MarketCap, Sector, SecurityIdentifier, SecurityType, TopType};
