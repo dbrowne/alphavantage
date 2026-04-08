@@ -33,7 +33,7 @@ use diesel::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use av_client::AlphaVantageClient;
 use av_database_postgres::{
@@ -216,75 +216,33 @@ async fn save_summary_prices(
   task::spawn_blocking(move || -> Result<usize> {
     let mut conn = PgConnection::establish(&db_url)?;
 
-    // First, check for existing records to avoid duplicates
-    let mut records_to_insert = Vec::new();
-    let mut records_to_update = Vec::new();
-    let mut skipped_count = 0;
+    // Single query: get the latest date per SID already in the database
+    info!("Fetching latest date per symbol from database");
+    let latest_dates: Vec<(i64, Option<chrono::NaiveDate>)> = summaryprices::table
+      .group_by(summaryprices::sid)
+      .select((summaryprices::sid, diesel::dsl::max(summaryprices::date)))
+      .load(&mut conn)?;
 
-    // Set up progress bar for database retrieval operations
-    let progress = ProgressBar::new(data.len() as u64);
-    progress.set_style(
-      ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-        .unwrap()
-        .progress_chars("##-"),
-    );
-    progress.set_message("Querying database for existing records to avoid duplicates");
+    let latest_by_sid: std::collections::HashMap<i64, chrono::NaiveDate> = latest_dates
+      .into_iter()
+      .filter_map(|(sid, date)| date.map(|d| (sid, d)))
+      .collect();
+
+    info!("Found existing data for {} symbols", latest_by_sid.len());
+
+    // Filter to only records newer than what we already have
+    let mut records_to_insert = Vec::new();
+    let mut skipped_count: usize = 0;
+    let mut unique_sids = std::collections::HashSet::new();
 
     for price_data in data {
-      // Check if record already exists for this (sid, date)
-      // Get the FIRST eventid for this combination (should be unique)
-      let existing: Option<(i64, f32, f32, f32, f32, i64)> = summaryprices::table
-        .filter(summaryprices::sid.eq(price_data.sid))
-        .filter(summaryprices::date.eq(price_data.date))
-        .select((
-          summaryprices::eventid,
-          summaryprices::open,
-          summaryprices::high,
-          summaryprices::low,
-          summaryprices::close,
-          summaryprices::volume,
-        ))
-        .first(&mut conn)
-        .optional()?;
+      let is_new = match latest_by_sid.get(&price_data.sid) {
+        Some(&latest_date) => price_data.date > latest_date,
+        None => true, // No existing data for this SID
+      };
 
-      if let Some((
-        existing_eventid,
-        existing_open,
-        existing_high,
-        existing_low,
-        existing_close,
-        existing_volume,
-      )) = existing
-      {
-        // Check if data actually changed
-        if existing_open != price_data.open
-          || existing_high != price_data.high
-          || existing_low != price_data.low
-          || existing_close != price_data.close
-          || existing_volume != price_data.volume
-        {
-          // Data changed, update the record
-          records_to_update.push(NewSummaryPriceOwned {
-            eventid: existing_eventid, // Use existing eventid
-            tstamp: price_data.tstamp,
-            date: price_data.date,
-            sid: price_data.sid,
-            symbol: price_data.symbol,
-            open: price_data.open,
-            high: price_data.high,
-            low: price_data.low,
-            close: price_data.close,
-            volume: price_data.volume,
-            price_source_id: 1,
-          });
-        } else {
-          // Data unchanged, skip
-          skipped_count += 1;
-          debug!("Skipping unchanged record for {} on {}", price_data.symbol, price_data.date);
-        }
-      } else {
-        // New record - use generated eventid
+      if is_new {
+        unique_sids.insert(price_data.sid);
         records_to_insert.push(NewSummaryPriceOwned {
           eventid: price_data.eventid,
           tstamp: price_data.tstamp,
@@ -298,24 +256,17 @@ async fn save_summary_prices(
           volume: price_data.volume,
           price_source_id: 1,
         });
+      } else {
+        skipped_count += 1;
       }
-      progress.inc(1);
     }
 
-    // Collect unique SIDs for updating symbols table
-    let mut unique_sids = std::collections::HashSet::new();
-    for record in &records_to_insert {
-      unique_sids.insert(record.sid);
-    }
-    for record in &records_to_update {
-      unique_sids.insert(record.sid);
-    }
     let unique_sids: Vec<i64> = unique_sids.into_iter().collect();
 
-    let total_records = records_to_insert.len() + records_to_update.len();
+    info!("Skipped {} existing records, inserting {} new records", skipped_count, records_to_insert.len());
 
-    // Set up progress bar for database insert/update operations
-    let progress = ProgressBar::new(total_records as u64);
+    // Insert new records in batches
+    let progress = ProgressBar::new(records_to_insert.len() as u64);
     progress.set_style(
       ProgressStyle::default_bar()
         .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
@@ -325,55 +276,23 @@ async fn save_summary_prices(
     progress.set_message("Saving to database");
 
     let mut total_inserted = 0;
-    let mut total_updated = 0;
-
-    // Insert new records in batches
     const BATCH_SIZE: usize = 1000;
-    if !records_to_insert.is_empty() {
-      info!("Inserting {} new price records", records_to_insert.len());
-      for chunk in records_to_insert.chunks(BATCH_SIZE) {
-        let inserted =
-          diesel::insert_into(summaryprices::table).values(chunk).execute(&mut conn)?;
 
-        total_inserted += inserted;
-        progress.inc(chunk.len() as u64);
-      }
-    }
-
-    // Update existing records - use the composite primary key for precise updates
-    if !records_to_update.is_empty() {
-      info!("Updating {} existing price records", records_to_update.len());
-      for record in records_to_update {
-        // Use the composite primary key (tstamp, sid, eventid) for precise update
-        let updated = diesel::update(summaryprices::table)
-          .filter(summaryprices::tstamp.eq(record.tstamp))
-          .filter(summaryprices::sid.eq(record.sid))
-          .filter(summaryprices::eventid.eq(record.eventid))
-          .set((
-            summaryprices::open.eq(record.open),
-            summaryprices::high.eq(record.high),
-            summaryprices::low.eq(record.low),
-            summaryprices::close.eq(record.close),
-            summaryprices::volume.eq(record.volume),
-          ))
-          .execute(&mut conn)?;
-
-        if updated > 1 {
-          warn!("Updated {} records for single price point - this shouldn't happen!", updated);
-        }
-        total_updated += updated;
-        progress.inc(1);
-      }
+    for chunk in records_to_insert.chunks(BATCH_SIZE) {
+      let inserted =
+        diesel::insert_into(summaryprices::table).values(chunk).execute(&mut conn)?;
+      total_inserted += inserted;
+      progress.inc(chunk.len() as u64);
     }
 
     progress.finish_with_message(format!(
-      "Saved {} new, updated {} existing, skipped {} unchanged price records",
-      total_inserted, total_updated, skipped_count
+      "Inserted {} new, skipped {} existing price records",
+      total_inserted, skipped_count
     ));
 
     info!(
-      "Database operation complete: {} inserted, {} updated, {} skipped",
-      total_inserted, total_updated, skipped_count
+      "Database operation complete: {} inserted, {} skipped",
+      total_inserted, skipped_count
     );
 
     // Update symbols table to mark summary data as loaded
@@ -386,7 +305,7 @@ async fn save_summary_prices(
         .execute(&mut conn)?;
     }
 
-    Ok(total_inserted + total_updated)
+    Ok(total_inserted)
   })
   .await?
 }
