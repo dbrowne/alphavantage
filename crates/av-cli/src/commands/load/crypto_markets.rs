@@ -27,6 +27,71 @@
  * SOFTWARE.
  */
 
+//! Crypto markets/exchange-pair loader for `av-cli load crypto-markets`.
+//!
+//! Fetches trading market data from CoinGecko (`/coins/{id}/tickers`) for
+//! cryptocurrencies that have CoinGecko mappings, then upserts into the
+//! `crypto_markets` table. Each "market" is a `(exchange, base, target)`
+//! triple representing one trading venue and pair (e.g., `Binance/BTC/USDT`).
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! crypto_api_map (CoinGecko mappings)
+//!   │
+//!   ▼
+//! load_crypto_symbols_from_db()    ── filtered by --symbols / --limit
+//!   │
+//!   ▼
+//! [optional] CryptoMappingService::initialize_mappings_for_symbols()
+//!   │  (--initialize-mappings discovers missing CoinGecko IDs first)
+//!   ▼
+//! CryptoMarketsLoader::load_with_cache()
+//!   │  ── CoinGecko /coins/{id}/tickers + cache ──▶ Vec<CryptoMarketData>
+//!   ▼
+//! save_market_data_to_db()
+//!   ├── convert_to_new_crypto_market()  (validation against schema constraints)
+//!   ├── partition_result()              (split valid/invalid records)
+//!   └── CryptoRepository::upsert_market_data()
+//! ```
+//!
+//! ## Validation
+//!
+//! Records are validated against the `crypto_markets` schema before insertion:
+//!
+//! - **String length** — `exchange` ≤ 250, `base` ≤ 120, `target` ≤ 100,
+//!   `trust_score` and `liquidity_score` ≤ 100 chars
+//! - **SID** — Must be non-zero
+//! - **Bid-ask spread** — Must be non-negative; rejected if > 1000% (data error)
+//! - **Numeric ranges** — `volume_24h` < `1e27` (NUMERIC(30,2) limit),
+//!   `volume_percentage` < `999_999_999` (NUMERIC(11,2) limit)
+//!
+//! Validation failures are logged but the run continues with the valid subset.
+//!
+//! ## Prerequisites
+//!
+//! - Crypto symbols must already be loaded (`av-cli load crypto`).
+//! - Symbols must have CoinGecko mappings in `crypto_api_map`. Use
+//!   `--initialize-mappings` or run `av-cli load crypto-mapping --discover-all`
+//!   first if mappings are missing.
+//! - `COINGECKO_API_KEY` environment variable is recommended for higher rate limits.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load markets for all mapped cryptos
+//! av-cli load crypto-markets
+//!
+//! # Load specific symbols, initializing mappings first
+//! av-cli load crypto-markets --symbols BTC,ETH,SOL --initialize-mappings
+//!
+//! # Limit to top 100 markets per symbol with $10k minimum volume
+//! av-cli load crypto-markets --max-markets-per-symbol 100 --min-volume 10000
+//!
+//! # Dry run with verbose output
+//! av-cli load crypto-markets --dry-run --verbose --limit 10
+//! ```
+
 use anyhow::{Context, Result, anyhow};
 use bigdecimal::ToPrimitive;
 use clap::Args;
@@ -49,77 +114,133 @@ use av_loaders::{
 };
 use std::collections::HashMap;
 
+/// Command-line arguments for `av-cli load crypto-markets`.
+///
+/// Controls symbol selection, API authentication, rate limiting, market
+/// filtering thresholds, caching, and dry-run/update behavior.
 #[derive(Args, Debug)]
 pub struct CryptoMarketsArgs {
-  /// Specific symbols to load (comma-separated). If not provided, loads for all crypto symbols
+  /// Comma-separated list of cryptocurrency symbols to load markets for.
+  ///
+  /// When omitted, loads markets for **all** crypto symbols that have an
+  /// existing CoinGecko mapping in `crypto_api_map`.
   #[arg(long, value_delimiter = ',')]
   pub symbols: Option<Vec<String>>,
 
-  /// Skip database updates (dry run)
+  /// Fetch market data but skip database writes.
   #[arg(short, long)]
   pub dry_run: bool,
 
-  /// Update existing market data entries
+  /// Update existing rows in `crypto_markets`.
+  ///
+  /// Note: persistence uses `UPSERT` regardless of this flag, so this
+  /// effectively only matters for legacy code paths.
   #[arg(long)]
   pub update_existing: bool,
 
-  /// CoinGecko API key for higher rate limits
+  /// CoinGecko API key for higher rate limits (recommended).
+  ///
+  /// Can also be set via the `COINGECKO_API_KEY` environment variable.
   #[arg(long, env = "COINGECKO_API_KEY")]
   pub coingecko_api_key: Option<String>,
 
-  /// AlphaVantage API key
+  /// AlphaVantage API key (used for AlphaVantage market data sources).
+  ///
+  /// Can also be set via the `ALPHA_VANTAGE_API_KEY` environment variable.
   #[arg(long, env = "ALPHA_VANTAGE_API_KEY")]
   pub alphavantage_api_key: Option<String>,
 
-  /// Number of concurrent requests
+  /// Maximum number of concurrent API requests.
   #[arg(long, default_value = "5")]
   pub concurrent: usize,
 
-  /// Fetch data from all available exchanges
+  /// Fetch tickers from all available exchanges (not just top exchanges).
+  ///
+  /// Increases API calls per symbol but provides comprehensive market coverage.
   #[arg(long)]
   pub fetch_all_exchanges: bool,
 
-  /// Minimum volume threshold (USD)
+  /// Minimum 24-hour volume threshold (USD) — markets below this are filtered out.
+  ///
+  /// Defaults to $1,000 to exclude very low-volume markets.
   #[arg(long, default_value = "1000.0")]
   pub min_volume: f64,
 
-  /// Maximum markets per symbol
+  /// Cap the number of markets retained per symbol.
+  ///
+  /// Markets are typically sorted by volume; this prevents a single popular
+  /// coin from contributing thousands of low-volume rows. Defaults to 20.
   #[arg(long, default_value = "20")]
   pub max_markets_per_symbol: usize,
 
-  /// Limit number of symbols to process (for testing)
+  /// Cap the number of symbols to process (useful for testing).
   #[arg(short, long)]
   pub limit: Option<usize>,
 
-  /// Batch size for processing
+  /// Batch size for upsert operations.
   #[arg(long, default_value = "50")]
   pub batch_size: usize,
 
-  /// Show detailed progress information
+  /// Show detailed progress output and enable the loader progress bar.
   #[arg(long)]
   pub verbose: bool,
 
-  /// Enable response caching to reduce API costs
+  /// Enable HTTP response caching to reduce API costs.
   #[arg(long, default_value = "true")]
   pub enable_cache: bool,
 
-  /// Cache TTL in hours
+  /// Cache TTL in hours. Defaults to 6.
   #[arg(long, default_value = "6")]
   pub cache_hours: u32,
 
-  /// Force refresh - ignore cache and fetch fresh data
+  /// Bypass the response cache and fetch fresh data.
   #[arg(long)]
   pub force_refresh: bool,
 
-  /// Clean expired cache entries before running
+  /// Clean expired cache entries before running. Defaults to `false`.
   #[arg(long, default_value = "false")]
   pub cleanup_cache: bool,
 
-  /// Pre-initialize mappings for requested symbols before loading markets
+  /// Pre-initialize CoinGecko mappings for requested symbols before loading markets.
+  ///
+  /// Useful when loading markets for symbols that don't yet have a CoinGecko
+  /// mapping in `crypto_api_map`. Requires `--symbols` and `COINGECKO_API_KEY`.
+  /// Internally calls
+  /// [`CryptoMappingService::initialize_mappings_for_symbols`].
   #[arg(long)]
   pub initialize_mappings: bool,
 }
 
+/// Main entry point for `av-cli load crypto-markets`.
+///
+/// Orchestrates the full markets loading pipeline:
+///
+/// 1. **Environment check** — Logs whether `COINGECKO_API_KEY` and
+///    `ALPHA_VANTAGE_API_KEY` are present (warning, not error, if missing).
+/// 2. **Mapping service setup** — Creates a [`CryptoMappingService`] from
+///    available API keys (only constructed if at least CoinGecko is set).
+/// 3. **Mapping pre-initialization** (`--initialize-mappings`) — When set,
+///    requires both a mapping service and `--symbols`. Calls
+///    [`CryptoMappingService::initialize_mappings_for_symbols`] to discover
+///    CoinGecko IDs for the requested symbols. Returns an error if
+///    `COINGECKO_API_KEY` is missing.
+/// 4. **Symbol query** — [`load_crypto_symbols_from_db`] returns crypto
+///    symbols that have CoinGecko mappings, optionally filtered by `--symbols`
+///    and `--limit`. If no mapped symbols are found and a symbol filter was
+///    provided, returns an error suggesting `--initialize-mappings`.
+/// 5. **Loader configuration** — Builds [`CryptoMarketsConfig`] with rate
+///    limiting (1 s delay, 2 s rate-limit delay), retries (3), timeout (30 s),
+///    cache settings, and volume/exchange filters.
+/// 6. **API loading** — Calls [`CryptoMarketsLoader::load_with_cache`] which
+///    fetches CoinGecko `/coins/{id}/tickers` for each symbol with caching.
+/// 7. **Persistence** — Unless `--dry-run`, calls [`save_market_data_to_db`]
+///    which validates and upserts records.
+///
+/// # Errors
+///
+/// Returns errors from: database context creation, mapping initialization,
+/// missing API keys (when required), API client creation, loader execution,
+/// or database upserts.
 pub async fn execute(args: CryptoMarketsArgs, config: &Config) -> Result<()> {
   info!("Starting crypto markets data loader with dynamic mapping");
 
@@ -280,7 +401,16 @@ pub async fn execute(args: CryptoMarketsArgs, config: &Config) -> Result<()> {
   Ok(())
 }
 
-/// Load symbols that already have CoinGecko mappings (no hardcoded fallbacks)
+/// Loads cryptocurrency symbols that already have CoinGecko mappings.
+///
+/// Queries [`CryptoRepository::get_crypto_symbols_with_mappings`] for the
+/// `"coingecko"` source. Optionally filters the result set by an explicit
+/// symbol list (case-insensitive comparison). Returns
+/// [`CryptoSymbolForMarkets`] structs ready for the loader.
+///
+/// **No hardcoded fallbacks** — if a symbol has no CoinGecko mapping, it is
+/// silently excluded. The caller is expected to use `--initialize-mappings`
+/// or run `crypto-mapping --discover-all` first if mappings are missing.
 async fn load_crypto_symbols_from_db(
   crypto_repo: &Arc<dyn av_database_postgres::repository::CryptoRepository>,
   symbol_filter: &Option<Vec<String>>,
@@ -320,7 +450,22 @@ async fn load_crypto_symbols_from_db(
   Ok(crypto_symbols)
 }
 
-/// Save market data to database using repository
+/// Validates and persists market data via the crypto repository.
+///
+/// Steps:
+///
+/// 1. **Validation** — Maps each [`CryptoMarketData`] through
+///    [`convert_to_new_crypto_market`] and partitions the results into valid
+///    [`NewCryptoMarket`] records and validation error strings.
+/// 2. **Error logging** — Validation errors are logged as warnings (with the
+///    record index) but do not abort the save.
+/// 3. **Upsert** — Calls [`CryptoRepository::upsert_market_data`] with the
+///    valid records. The repository handles `INSERT ... ON CONFLICT ... DO UPDATE`
+///    so the `_update_existing` parameter is unused.
+///
+/// Returns `(inserted_count, updated_count)` from the upsert. Note that the
+/// underlying repository may not differentiate between insert and update for
+/// some operations.
 async fn save_market_data_to_db(
   crypto_repo: &Arc<dyn av_database_postgres::repository::CryptoRepository>,
   market_data: &[CryptoMarketData],
@@ -364,7 +509,29 @@ async fn save_market_data_to_db(
   Ok((inserted, updated))
 }
 
-/// Convert CryptoMarketData to NewCryptoMarket with validation
+/// Converts a [`CryptoMarketData`] into a [`NewCryptoMarket`] with full
+/// schema validation.
+///
+/// ## Validations
+///
+/// - **String lengths** match the Postgres column constraints:
+///   - `exchange` ≤ 250 chars
+///   - `base` ≤ 120 chars
+///   - `target` ≤ 100 chars
+///   - `trust_score` ≤ 100 chars
+///   - `liquidity_score` ≤ 100 chars
+/// - **SID** must be non-zero
+/// - **Bid-ask spread** must be ≥ 0 (negatives indicate bad data) and ≤ 1000%
+///   (above this is treated as a data error). Wide spreads in the 100–1000%
+///   range are accepted as valid for illiquid markets.
+/// - **Numeric ranges**:
+///   - `volume_24h` ≤ `1e27` (NUMERIC(30,2) limit)
+///   - `volume_percentage` ≤ `999_999_999` (NUMERIC(11,2) limit)
+/// - **Datetime parsing** — `last_traded_at` and `last_fetch_at` are parsed
+///   from RFC 3339 strings; `last_fetch_at` defaults to `Utc::now()` if
+///   unparseable or absent.
+///
+/// Returns the validated [`NewCryptoMarket`] or a descriptive error string.
 fn convert_to_new_crypto_market(market: &CryptoMarketData) -> Result<NewCryptoMarket, String> {
   // Validate field lengths against database schema
   if market.exchange.len() > 250 {
@@ -472,8 +639,14 @@ fn convert_to_new_crypto_market(market: &CryptoMarketData) -> Result<NewCryptoMa
   })
 }
 
-/// Helper trait for partitioning results
+/// Helper trait that partitions an iterator of [`Result<T, E>`] into two
+/// vectors: successes and errors.
+///
+/// Equivalent to the unstable `Iterator::partition_map` pattern. Used by
+/// [`save_market_data_to_db`] to separate validated records from validation
+/// errors in a single pass.
 trait PartitionResult<T, E> {
+  /// Consumes the iterator and returns `(successes, errors)`.
   fn partition_result(self) -> (Vec<T>, Vec<E>);
 }
 

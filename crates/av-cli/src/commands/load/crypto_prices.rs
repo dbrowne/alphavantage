@@ -27,6 +27,86 @@
  * SOFTWARE.
  */
 
+//! Current crypto price loader for `av-cli load crypto-prices`.
+//!
+//! Fetches **current spot prices** for cryptocurrencies from one or more
+//! external APIs (CoinGecko, CoinMarketCap, AlphaVantage) and persists each
+//! price as a single intraday data point in the `intradayprices` table.
+//!
+//! Unlike [`crypto_intraday`](super::crypto_intraday) (which fetches historical
+//! 1-min/5-min/etc. bars), this command captures a snapshot of the current
+//! market state — useful for periodic price updates without the cost of full
+//! intraday history.
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! symbols (sec_type = "Cryptocurrency", priority < NO_PRIORITY)
+//!   │  joined with crypto_api_map + symbol_mappings (for source identifiers)
+//!   ▼
+//! Vec<SymbolWithMappings>  (sid, symbol, list of source mappings)
+//!   │
+//!   ▼  for each symbol:
+//! get_cached_price()  ── api_response_cache lookup (5-minute TTL by default)
+//!   │  miss
+//!   ▼
+//! fetch_price_parallel()  ── tries sources in priority order
+//!   ├── fetch_from_coingecko()       (free or pro tier)
+//!   ├── fetch_from_coinmarketcap()   (requires API key)
+//!   └── fetch_from_alphavantage()    (requires API key)
+//!   │
+//!   ▼
+//! store_cached_price()  ── write to api_response_cache
+//!   │
+//!   ▼
+//! save_price_to_db()
+//!   └── INSERT INTO intradayprices (open=high=low=close=price)
+//!       ON CONFLICT DO NOTHING
+//! ```
+//!
+//! ## Source Identifier Resolution
+//!
+//! Each source uses a different identifier scheme (CoinGecko uses slugs like
+//! `bitcoin`, AlphaVantage uses ticker symbols like `BTC`). The loader builds
+//! a `HashMap<source_lowercased, identifier>` from `crypto_api_map` and
+//! `symbol_mappings` rows for each symbol, falling back to the normalized
+//! trading symbol when no mapping exists. After a successful fetch with no
+//! prior mapping, [`auto_discover_mapping`] writes a verified entry to
+//! `symbol_mappings` so future runs can use it directly.
+//!
+//! ## OHLC Simplification
+//!
+//! Because this command fetches a single price snapshot (not OHLCV bars),
+//! the saved row has `open = high = low = close = price_usd`. The `volume`
+//! field is set from the source's reported 24h volume. This is a known
+//! simplification — for true OHLC data, use [`crypto_intraday`](super::crypto_intraday).
+//!
+//! ## Caching
+//!
+//! Prices are cached in the `api_response_cache` table with a default TTL of
+//! **5 minutes** (much shorter than the 24h overview cache because prices
+//! change continuously). Cache writes use raw SQL via Diesel for direct
+//! `INSERT ... ON CONFLICT (cache_key) DO UPDATE` semantics.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load current prices for top primary cryptos using CoinGecko (default)
+//! av-cli load crypto-prices --limit 100
+//!
+//! # Multi-source priority list
+//! av-cli load crypto-prices --sources coingecko,coinmarketcap,alphavantage
+//!
+//! # Force a single source (legacy compatibility)
+//! av-cli load crypto-prices --source coingecko --symbols BTC,ETH,SOL
+//!
+//! # Force refresh, bypassing cache
+//! av-cli load crypto-prices --force-refresh --limit 50
+//!
+//! # Dry run with verbose mapping info
+//! av-cli load crypto-prices --dry-run
+//! ```
+
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Args;
@@ -44,7 +124,15 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use av_database_postgres::models::{CryptoApiMap, SymbolMapping};
+
+/// Sentinel value for non-primary tokens. Symbols with this priority are
+/// excluded from price loading by default (override with `--no-priority-filter`).
 const NO_PRIORITY: i32 = 9_999_999;
+
+/// Command-line arguments for `av-cli load crypto-prices`.
+///
+/// Controls symbol selection, multi-source ordering, API authentication,
+/// caching, rate limiting, and dry-run/priority-filter behavior.
 #[derive(Args, Debug)]
 pub struct CryptoPricesArgs {
   /// Specific symbols to load (comma-separated)

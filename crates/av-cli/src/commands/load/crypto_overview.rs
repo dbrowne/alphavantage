@@ -27,6 +27,89 @@
  * SOFTWARE.
  */
 
+//! Cryptocurrency overview loader for `av-cli load crypto-overview` and
+//! `av-cli load update-github`.
+//!
+//! This module provides two distinct CLI commands that share helper functions:
+//!
+//! - **`crypto-overview`** ([`execute`]) — Fetches comprehensive cryptocurrency
+//!   data (price, market cap, supply, ATH/ATL, descriptions, websites,
+//!   GitHub URLs) from multiple data sources and persists it across four
+//!   database tables: `crypto_overview_basic`, `crypto_overview_metrics`,
+//!   `crypto_social`, and (optionally) `crypto_technical`.
+//!
+//! - **`update-github`** ([`update_github_data`]) — Refreshes GitHub repository
+//!   statistics (forks, stars, contributors, commits, issues, PRs) for crypto
+//!   symbols that already have GitHub URLs in `crypto_social`. Writes only to
+//!   `crypto_technical`.
+//!
+//! ## Data Source Fallback Chain
+//!
+//! [`fetch_crypto_overview`] tries multiple sources in order, returning on the
+//! first success:
+//!
+//! 1. **CoinMarketCap** (if `CMC_API_KEY` is provided) — Highest data quality.
+//! 2. **CoinGecko** (free tier) — Good coverage, ATH/ATL, GitHub URLs.
+//!    *(Marked TODO for removal in source.)*
+//! 3. **CoinPaprika** — No API key required, similar coverage to CoinGecko but
+//!    no ATL data. *(Marked TODO for removal in source.)*
+//! 4. **CoinCap** — Minimal data, used as last resort. *(Marked TODO for removal.)*
+//!
+//! The TODO markers indicate that the long-term plan is to consolidate on
+//! CoinMarketCap and the dedicated `crypto_details` loader (which uses CoinGecko's
+//! detailed `/coins/{id}` endpoint).
+//!
+//! ## Caching
+//!
+//! Two cache namespaces are used via [`CacheRepository`]:
+//!
+//! - **`crypto_overview`** — Caches [`CryptoOverviewData`] keyed by
+//!   `crypto_overview_{sid}_{symbol}`. Default TTL: 24 hours.
+//! - **`github_data`** — Caches [`GitHubData`] keyed by `github_data_{sid}_{url}`
+//!   (with `/` replaced by `_`). Same TTL as overview.
+//!
+//! Cache misses trigger an API call; cache failures (read or write) are logged
+//! as warnings and never abort the run.
+//!
+//! ## Concurrency and Rate Limiting
+//!
+//! - Symbols are processed in parallel via `futures::stream::buffer_unordered`
+//!   with concurrency controlled by `--concurrency` (default: 1, conservative
+//!   to avoid burst rate-limit errors).
+//! - A [`Semaphore`] enforces the concurrency limit at the request level.
+//! - The `--delay-ms` value is automatically increased to satisfy
+//!   `--requests-per-minute` if the configured delay would exceed the limit.
+//! - GitHub requests use a separate delay: 500 ms (with token) or 3000 ms
+//!   (anonymous, 60/hour limit).
+//!
+//! ## Database Tables Written (overview command)
+//!
+//! | Table                    | Always written? | Contents                          |
+//! |--------------------------|-----------------|-----------------------------------|
+//! | `crypto_overview_basic`  | yes             | Symbol, name, market cap, supply  |
+//! | `crypto_overview_metrics`| yes             | Price changes, ATH/ATL data       |
+//! | `crypto_social`          | yes             | Website, whitepaper, GitHub URLs  |
+//! | `crypto_technical`       | only if GitHub  | GitHub repo statistics            |
+//! | `symbols`                | yes (UPDATE)    | Sets `overview = true`            |
+//!
+//! All inserts use `ON CONFLICT (sid) DO NOTHING` and run in a single transaction.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load overview for top 100 primary cryptos using CoinMarketCap
+//! av-cli load crypto-overview --limit 100
+//!
+//! # Specific symbols with GitHub data
+//! av-cli load crypto-overview --symbols BTC,ETH,SOL --include-github
+//!
+//! # Force refresh (bypass cache)
+//! av-cli load crypto-overview --force-refresh --limit 50
+//!
+//! # Refresh GitHub stats for existing symbols only
+//! av-cli load update-github --check-rate-limit
+//! ```
+
 use anyhow::{Result, anyhow};
 use av_database_postgres::models::crypto::{
   NewCryptoOverviewBasic, NewCryptoOverviewMetrics, NewCryptoSocial, NewCryptoTechnical,
@@ -51,96 +134,151 @@ use tracing::{debug, error, info, warn};
 
 use crate::commands::load::numeric_helpers::{f64_to_price_bigdecimal, f64_to_supply_bigdecimal};
 use crate::config::Config;
+
+/// Sentinel value for non-primary tokens (wrapped/bridged variants).
+/// Symbols with this priority are excluded from overview loading by default
+/// (override with `--no-priority-filter`).
 const NO_PRIORITY: i32 = 9_999_999;
 
+/// Command-line arguments for `av-cli load crypto-overview`.
+///
+/// Controls symbol selection, source authentication, rate limiting, GitHub
+/// integration, caching, and dry-run/priority filtering behavior.
 #[derive(Args, Debug)]
 pub struct CryptoOverviewArgs {
-  /// Specific symbols to load (comma-separated)
+  /// Comma-separated list of cryptocurrency symbols to load.
+  ///
+  /// When omitted, loads all crypto symbols where `symbols.overview = false`.
   #[arg(short, long, value_delimiter = ',')]
   symbols: Option<Vec<String>>,
 
-  /// Limit number of symbols to load
+  /// Cap the number of symbols to process.
   #[arg(short, long)]
   limit: Option<usize>,
 
-  /// Skip database updates (dry run)
+  /// Fetch data from APIs but skip database writes.
+  ///
+  /// In this mode, the symbol list is logged and the function returns early
+  /// before any HTTP requests are made.
   #[arg(short, long)]
   dry_run: bool,
 
-  /// Continue on errors
+  /// Continue processing remaining symbols when one fails.
   #[arg(short = 'k', long)]
   continue_on_error: bool,
 
-  /// Delay between requests in milliseconds
+  /// Base delay between API requests in milliseconds.
+  ///
+  /// Defaults to 800 ms; can be overridden via `CRYPTO_API_DELAY_MS`. The
+  /// effective delay is automatically increased to satisfy the
+  /// `--requests-per-minute` limit if needed.
   #[arg(long, default_value = "800", env = "CRYPTO_API_DELAY_MS")]
   delay_ms: u64,
 
-  /// Maximum requests per minute (for API rate limiting)
+  /// Hard cap on requests per minute. Defaults to 30.
+  ///
+  /// Used to compute a minimum effective delay (`60_000 / requests_per_minute`).
   #[arg(long, default_value = "30")]
   requests_per_minute: u64,
 
-  /// Maximum concurrent requests (parallel processing)
-  /// WARNING: Setting this > 1 may cause rate limit errors with burst requests
+  /// Maximum number of concurrent API requests.
+  ///
+  /// Defaults to 1 to avoid rate-limit errors from burst requests.
+  /// **WARNING**: Setting this > 1 may cause rate limit errors with burst
+  /// requests against CoinMarketCap and similar APIs.
   #[arg(long, default_value = "1")]
   concurrency: usize,
 
-  /// GitHub personal access token (optional, increases rate limit)
+  /// GitHub personal access token (optional but recommended).
+  ///
+  /// Without a token, GitHub API is limited to 60 requests/hour. With a token,
+  /// the limit increases to 5000 requests/hour. Can also be set via the
+  /// `GITHUB_TOKEN` environment variable.
   #[arg(long, env = "GITHUB_TOKEN")]
   github_token: Option<String>,
 
-  /// Check rate limit status before starting
+  /// Query GitHub `/rate_limit` before starting (only when `--include-github`).
   #[arg(long)]
   check_rate_limit: bool,
 
-  /// Include GitHub data scraping (use coingecko_details loader instead for better GitHub data)
+  /// Scrape GitHub repository data for symbols that have a GitHub URL.
+  ///
+  /// Disabled by default. The `crypto-details` loader provides better GitHub
+  /// data via CoinGecko's developer endpoints; this flag is retained for cases
+  /// where you need to scrape GitHub directly.
   #[arg(long, default_value = "false")]
   include_github: bool,
 
-  /// CoinMarketCap API key (overrides environment variable)
+  /// CoinMarketCap API key (overrides the `CMC_API_KEY` environment variable).
+  ///
+  /// When provided, CoinMarketCap is tried first in the source fallback chain.
   #[arg(long, env = "CMC_API_KEY")]
   pub cmc_api_key: Option<String>,
 
-  /// Enable response caching to reduce API costs
+  /// Enable response caching to reduce API costs. Defaults to `true`.
   #[arg(long, default_value = "true")]
   enable_cache: bool,
 
-  /// Cache TTL in hours (default: 24 hours for overview data)
+  /// Cache TTL in hours. Defaults to 24.
   #[arg(long, default_value = "24")]
   cache_ttl_hours: u32,
 
-  /// Force refresh - ignore cache and fetch fresh data
+  /// Bypass the cache and fetch fresh data.
   #[arg(long)]
   force_refresh: bool,
 
-  /// Include all symbols (including those with priority >= 9999999)
+  /// Include all symbols, including non-primary tokens with `priority >= NO_PRIORITY`.
+  ///
+  /// By default, only primary tokens are loaded to avoid loading wrapped/bridged
+  /// variants.
   #[arg(long)]
   no_priority_filter: bool,
 }
 
+/// Command-line arguments for `av-cli load update-github`.
+///
+/// Refreshes GitHub repository statistics for crypto symbols that already
+/// have GitHub URLs in `crypto_social`. Writes only to `crypto_technical`.
 #[derive(Args, Debug)]
 pub struct UpdateGitHubArgs {
-  /// Specific symbols to update
+  /// Comma-separated list of symbols to refresh.
+  ///
+  /// When omitted, refreshes all crypto symbols that have a GitHub URL.
   #[arg(short, long, value_delimiter = ',')]
   symbols: Option<Vec<String>>,
 
-  /// Limit number of symbols to update
+  /// Cap the number of symbols to process.
   #[arg(short, long)]
   limit: Option<usize>,
 
-  /// Delay between requests (GitHub rate limit)
+  /// Delay between GitHub API requests in milliseconds. Defaults to 3000 ms
+  /// (suitable for the 60-req/hour anonymous limit).
+  ///
+  /// Can also be set via `GITHUB_API_DELAY_MS`.
   #[arg(long, default_value = "3000", env = "GITHUB_API_DELAY_MS")]
   delay_ms: u64,
 
-  /// GitHub personal access token
+  /// GitHub personal access token (recommended — increases rate limit
+  /// from 60/hour to 5000/hour).
   #[arg(long, env = "GITHUB_TOKEN")]
   github_token: Option<String>,
 
-  /// Check rate limit status before starting
+  /// Query GitHub `/rate_limit` before starting.
   #[arg(long)]
   check_rate_limit: bool,
 }
 
-/// Cryptocurrency overview data
+/// In-memory representation of fetched cryptocurrency overview data.
+///
+/// Populated by one of the source-specific fetchers ([`fetch_from_coinmarketcap`],
+/// [`fetch_from_coingecko_free`], [`fetch_from_coinpaprika`],
+/// [`fetch_from_coincap`]) and consumed by
+/// [`save_crypto_overviews_with_github_to_db`]. Also serializable for caching
+/// in the `crypto_overview` namespace.
+///
+/// Some fields may be `0` or `None` depending on which source filled the
+/// struct — for example, CoinPaprika does not provide ATL data, and CoinCap
+/// does not provide ATH/ATL or descriptions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoOverviewData {
   pub sid: i64,
@@ -164,7 +302,13 @@ pub struct CryptoOverviewData {
   pub github: Option<String>,
 }
 
-/// GitHub repository data
+/// In-memory representation of fetched GitHub repository statistics.
+///
+/// All fields are optional because the GitHub API may not return data for
+/// every metric (e.g., contributors require pagination header parsing which
+/// can fail). Populated by [`fetch_github_data`] and consumed by both
+/// [`save_crypto_overviews_with_github_to_db`] and [`update_github_data`].
+/// Serializable for caching in the `github_data` namespace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubData {
   pub forks: Option<i32>,
@@ -178,17 +322,27 @@ pub struct GitHubData {
   pub last_commit_date: Option<NaiveDate>,
 }
 
-/// Generate cache key for overview requests
+/// Builds a cache key for cryptocurrency overview data.
+///
+/// Format: `crypto_overview_{sid}_{symbol}`. The SID is included so that
+/// different tokens sharing the same trading symbol get distinct cache entries.
 fn generate_cache_key(sid: i64, symbol: &str) -> String {
   format!("crypto_overview_{}_{}", sid, symbol)
 }
 
-/// Generate cache key for GitHub data
+/// Builds a cache key for GitHub repository data.
+///
+/// Format: `github_data_{sid}_{url-with-slashes-replaced}`. URL slashes are
+/// replaced with underscores so the key remains a single path segment.
 fn generate_github_cache_key(sid: i64, github_url: &str) -> String {
   format!("github_data_{}_{}", sid, github_url.replace("/", "_"))
 }
 
-/// Get cached response if available and not expired
+/// Looks up cached overview data, returning `None` on cache miss or error.
+///
+/// Returns `None` immediately when caching is disabled or `force_refresh` is
+/// set. Cache read errors are logged as warnings but treated as misses so the
+/// caller can fall through to a fresh API fetch.
 async fn get_cached_overview(
   cache_repo: &Arc<dyn CacheRepository>,
   cache_key: &str,
@@ -215,7 +369,10 @@ async fn get_cached_overview(
   }
 }
 
-/// Store overview data in cache
+/// Stores overview data in the `crypto_overview` cache namespace.
+///
+/// No-op when caching is disabled. Cache write errors are logged as warnings
+/// but never propagate — caching failures should never fail the operation.
 async fn store_cached_overview(
   cache_repo: &Arc<dyn CacheRepository>,
   cache_key: &str,
@@ -246,7 +403,10 @@ async fn store_cached_overview(
   }
 }
 
-/// Get cached GitHub data if available
+/// Looks up cached GitHub data, returning `None` on cache miss or error.
+///
+/// Same semantics as [`get_cached_overview`] but uses the `github_data`
+/// cache namespace.
 async fn get_cached_github_data(
   cache_repo: &Arc<dyn CacheRepository>,
   cache_key: &str,
@@ -273,7 +433,10 @@ async fn get_cached_github_data(
   }
 }
 
-/// Store GitHub data in cache
+/// Stores GitHub data in the `github_data` cache namespace.
+///
+/// Same semantics as [`store_cached_overview`] — write failures are logged
+/// but never propagate.
 async fn store_cached_github_data(
   cache_repo: &Arc<dyn CacheRepository>,
   cache_key: &str,
@@ -299,7 +462,22 @@ async fn store_cached_github_data(
   }
 }
 
-/// Fetch a single cryptocurrency overview with caching (both overview and GitHub data)
+/// Fetches overview and (optionally) GitHub data for a single cryptocurrency.
+///
+/// This is the per-symbol orchestration function spawned by [`execute`] for
+/// each crypto in the work queue. It coordinates:
+///
+/// 1. **Overview fetch** — Cache lookup → fall through to
+///    [`fetch_crypto_overview`] (which tries CMC, CoinGecko, CoinPaprika, CoinCap
+///    in order) → store result in cache.
+/// 2. **GitHub fetch** (when `include_github` is true and the overview has a
+///    GitHub URL) — Cache lookup → fall through to [`fetch_github_data`] → store.
+///    Returns an empty `GitHubData` (all `None`) if the API call fails.
+/// 3. **Rate limiting** — Sleeps `delay_ms` after a fresh API call (skipped on
+///    cache hits) and `github_delay_ms` after a fresh GitHub call.
+///
+/// Returns a 3-tuple `(overview, github_data, made_api_call)` where the bool
+/// indicates whether the call hit the API (used for cache-hit-rate statistics).
 async fn fetch_single_crypto(
   sid: i64,
   symbol: String,
@@ -420,7 +598,41 @@ async fn fetch_single_crypto(
   Ok((overview, github_data, made_api_call))
 }
 
-/// Main execute function
+/// Main entry point for `av-cli load crypto-overview`.
+///
+/// Orchestrates the full crypto overview loading pipeline:
+///
+/// 1. **API key validation** — Checks for `CMC_API_KEY` (warns if missing,
+///    falls back to free sources).
+/// 2. **Cache setup** — Creates a [`CacheRepository`] and runs
+///    [`CacheRepositoryExt::cleanup_expired`] for the `crypto_overview`
+///    namespace.
+/// 3. **HTTP client** — Builds a `reqwest::Client` with 30s timeout and a
+///    custom user agent string.
+/// 4. **GitHub rate-limit check** — When `--check-rate-limit` and
+///    `--include-github` are both set, queries GitHub `/rate_limit`.
+/// 5. **GitHub delay calculation** — 500 ms with token, 3000 ms anonymous.
+/// 6. **Symbol query** — [`get_crypto_symbols_to_load`] returns all crypto
+///    symbols where `overview = false`, optionally filtered by `--symbols`,
+///    `--limit`, and primary-only filtering.
+/// 7. **Dry-run check** — If `--dry-run`, logs the would-be-loaded symbols
+///    and returns.
+/// 8. **Effective delay calculation** — `max(delay_ms, 60_000 / requests_per_minute)`
+///    to satisfy both flags simultaneously.
+/// 9. **Parallel fetch** — Spawns concurrent fetches via
+///    `stream::buffer_unordered(concurrency)`. A [`Semaphore`] enforces the
+///    concurrency limit at the request boundary; an [`indicatif::ProgressBar`]
+///    tracks progress.
+/// 10. **Cache statistics** — Counts cache hits vs. API calls and logs the
+///     hit rate percentage.
+/// 11. **Persistence** — Calls [`save_crypto_overviews_with_github_to_db`]
+///     in a `spawn_blocking` task.
+///
+/// # Errors
+///
+/// Returns errors from: database context creation, HTTP client build, symbol
+/// query, or database save. Per-symbol fetch errors are logged but do not
+/// abort the run (they're treated as `None` results).
 pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
   info!("Starting cryptocurrency overview loader");
 
@@ -658,7 +870,26 @@ pub async fn execute(args: CryptoOverviewArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
-/// Update GitHub data for existing cryptocurrency overviews
+/// Main entry point for `av-cli load update-github`.
+///
+/// Refreshes GitHub repository statistics for crypto symbols that already
+/// have GitHub URLs in `crypto_social`. Unlike [`execute`], this only writes
+/// to `crypto_technical` and does not touch overview, basic, or social tables.
+///
+/// ## Pipeline
+///
+/// 1. Build HTTP client and optionally check GitHub rate limit.
+/// 2. Query [`get_symbols_with_github`] for symbols with non-NULL GitHub URLs.
+/// 3. For each symbol (sequentially, with `--delay-ms` between calls):
+///    - Fetch GitHub data via [`fetch_github_data`].
+///    - Update `crypto_technical` row with new statistics and refresh `m_time`.
+/// 4. Display progress bar and final updated count.
+///
+/// # Note
+///
+/// Processing is sequential (no concurrency), with a default delay of 3000 ms
+/// between requests, suitable for the 60-req/hour anonymous GitHub limit.
+/// Provide `--github-token` for the higher 5000-req/hour limit.
 pub async fn update_github_data(args: UpdateGitHubArgs, config: Config) -> Result<()> {
   info!("Starting GitHub data update for cryptocurrencies");
 
@@ -753,7 +984,19 @@ pub async fn update_github_data(args: UpdateGitHubArgs, config: Config) -> Resul
   Ok(())
 }
 
-/// Get cryptocurrency symbols that need overviews
+/// Selects cryptocurrency symbols that need overview data loaded.
+///
+/// Queries `symbols` filtered to:
+/// - `sec_type = "Cryptocurrency"`
+/// - `overview = false` (i.e., not yet loaded)
+/// - `priority < NO_PRIORITY` (unless `no_priority_filter` is true)
+///
+/// Optionally filters by an explicit symbol list and applies a row limit.
+/// Results are sorted alphabetically by symbol.
+///
+/// Logs a warning if the result is empty when a specific symbol filter was
+/// provided (suggesting the symbols may not be cryptocurrencies or may not
+/// exist).
 fn get_crypto_symbols_to_load(
   database_url: &str,
   specific_symbols: Option<Vec<String>>,
@@ -802,7 +1045,11 @@ fn get_crypto_symbols_to_load(
   Ok(results)
 }
 
-/// Get symbols with GitHub URLs for updating
+/// Selects crypto symbols that have a non-NULL GitHub URL in `crypto_social`.
+///
+/// Joins `symbols` with `crypto_social` on `sid`, filters to crypto symbols,
+/// applies optional symbol filter and limit, then post-filters out rows where
+/// `github_url` is `None`. Used by [`update_github_data`].
 fn get_symbols_with_github(
   database_url: &str,
   specific_symbols: Option<Vec<String>>,
@@ -832,7 +1079,20 @@ fn get_symbols_with_github(
   Ok(results.into_iter().filter(|(_, _, github)| github.is_some()).collect())
 }
 
-/// Fetch cryptocurrency overview from multiple sources
+/// Fetches cryptocurrency overview data using a fallback chain of API sources.
+///
+/// Tries each source in order, returning on the first success:
+///
+/// 1. **CoinMarketCap** ([`fetch_from_coinmarketcap`]) — Only if `cmc_api_key`
+///    is provided. Highest data quality. 500 ms delay before next source on failure.
+/// 2. **CoinGecko** ([`fetch_from_coingecko_free`]) — Free tier endpoint.
+///    *(Marked TODO for removal.)*
+/// 3. **CoinPaprika** ([`fetch_from_coinpaprika`]) — No API key required.
+///    *(Marked TODO for removal.)*
+/// 4. **CoinCap** ([`fetch_from_coincap`]) — Last resort, minimal data.
+///    *(Marked TODO for removal.)*
+///
+/// Returns an error if all sources fail.
 async fn fetch_crypto_overview(
   client: &reqwest::Client,
   sid: i64,
@@ -886,7 +1146,15 @@ async fn fetch_crypto_overview(
   Err(anyhow!("Failed to fetch data from all sources for {}", symbol))
 }
 
-/// Fetch from CoinGecko without API key (respects free tier limits)
+/// Fetches cryptocurrency overview from CoinGecko's free-tier `/coins/{id}` endpoint.
+///
+/// Calls `https://pro-api.coingecko.com/api/v3/coins/{id}` with `localization=false`,
+/// `tickers=false`, `market_data=true`, and `community_data=false`. Maps the
+/// response into [`CryptoOverviewData`], extracting price, market cap, ATH/ATL
+/// dates, website, whitepaper, and the first GitHub repo URL from `links.repos_url.github`.
+///
+/// Symbol-to-CoinGecko-ID translation is done via the hardcoded
+/// [`get_coingecko_id`] table. *(Marked TODO for removal.)*
 async fn fetch_from_coingecko_free(
   client: &reqwest::Client,
   sid: i64,
@@ -949,7 +1217,13 @@ async fn fetch_from_coingecko_free(
   })
 }
 
-/// Fetch from CoinPaprika (no API key required)
+/// Fetches cryptocurrency overview from CoinPaprika (no API key required).
+///
+/// Makes two API calls: `/v1/coins/{id}` for descriptions and links, and
+/// `/v1/tickers/{id}` for price and market cap data. CoinPaprika does not
+/// provide ATL data, so `atl` is set to `0.0` and `atl_date` to `None`.
+/// Symbol-to-CoinPaprika-ID translation uses [`get_coinpaprika_id`].
+/// *(Marked TODO for removal.)*
 async fn fetch_from_coinpaprika(
   client: &reqwest::Client,
   sid: i64,
@@ -1014,7 +1288,13 @@ async fn fetch_from_coinpaprika(
   })
 }
 
-/// Fetch from CoinCap (no API key required)
+/// Fetches cryptocurrency overview from CoinCap (no API key required).
+///
+/// Calls `https://api.coincap.io/v2/assets/{id}` and parses string-encoded
+/// numeric fields (CoinCap returns prices as strings). CoinCap provides
+/// minimal data: no descriptions, ATH/ATL, total supply, whitepaper, or
+/// GitHub URLs — these fields are set to defaults. Used as the last resort
+/// in the fallback chain. *(Marked TODO for removal.)*
 async fn fetch_from_coincap(
   client: &reqwest::Client,
   sid: i64,
@@ -1062,6 +1342,17 @@ async fn fetch_from_coincap(
   })
 }
 
+/// Fetches cryptocurrency overview from CoinMarketCap (requires API key).
+///
+/// Calls the `/v2/cryptocurrency/quotes/latest` endpoint with the symbol and
+/// USD conversion. Sends the API key via the `X-CMC_PRO_API_KEY` header.
+/// Validates the response status object for non-zero error codes and returns
+/// a descriptive error if the API rejects the request.
+///
+/// Provides high-quality price, supply, and market cap data but does **not**
+/// include ATH/ATL, descriptions, websites, or GitHub URLs in this basic
+/// endpoint — those fields are set to defaults. Use the metadata endpoint
+/// (not implemented here) for additional fields.
 async fn fetch_from_coinmarketcap(
   client: &reqwest::Client,
   sid: i64,
@@ -1144,8 +1435,22 @@ async fn fetch_from_coinmarketcap(
   })
 }
 
+// ============================================================================
 // Helper functions for API ID mapping
+// ============================================================================
+//
+// These hardcoded symbol → API-ID mappings exist because the legacy
+// fetch_from_* functions don't query crypto_api_map for the canonical
+// source ID. They're a known technical debt — see the TODO markers.
+// The dedicated crypto_details and crypto_metadata loaders use crypto_api_map
+// instead and should be preferred for new functionality.
 
+/// Translates a trading symbol (e.g., `BTC`) to a CoinGecko coin ID
+/// (e.g., `bitcoin`).
+///
+/// Uses a hardcoded match table for ~35 popular coins; falls back to the
+/// lowercased symbol for everything else (which is often wrong for less
+/// popular coins). *(Marked TODO for removal — use crypto_api_map instead.)*
 fn get_coingecko_id(symbol: &str) -> String {
   // todo: This is for the free access but should delete
   match symbol.to_uppercase().as_str() {
@@ -1188,6 +1493,10 @@ fn get_coingecko_id(symbol: &str) -> String {
   }
 }
 
+/// Translates a trading symbol to a CoinPaprika coin ID (e.g., `btc-bitcoin`).
+///
+/// Uses a hardcoded match table for ~25 popular coins; falls back to the
+/// lowercased symbol for everything else. *(Marked TODO for removal.)*
 fn get_coinpaprika_id(symbol: &str) -> String {
   //todo:: delete
   match symbol.to_uppercase().as_str() {
@@ -1219,6 +1528,10 @@ fn get_coinpaprika_id(symbol: &str) -> String {
   }
 }
 
+/// Translates a trading symbol to a CoinCap asset ID (e.g., `bitcoin`).
+///
+/// Uses a hardcoded match table for ~22 popular coins; falls back to the
+/// lowercased symbol for everything else. *(Marked TODO for removal.)*
 fn get_coincap_id(symbol: &str) -> String {
   //todo:: This should be deleted
   match symbol.to_uppercase().as_str() {
@@ -1248,7 +1561,31 @@ fn get_coincap_id(symbol: &str) -> String {
   }
 }
 
-/// Fetch GitHub repository data
+/// Fetches GitHub repository statistics from the GitHub REST API.
+///
+/// Parses the GitHub URL to extract `owner` and `repo`, then makes **four**
+/// API calls in sequence:
+///
+/// 1. **`GET /repos/{owner}/{repo}`** — forks, stars, watchers, open issues,
+///    last push date.
+/// 2. **`GET /repos/{owner}/{repo}/contributors?per_page=1`** — contributor
+///    count, derived from the `Link` header's `rel="last"` page number.
+/// 3. **`GET /repos/{owner}/{repo}/commits?since={30d_ago}&per_page=1`** —
+///    commit count over the last 30 days, derived the same way.
+/// 4. **`GET /repos/{owner}/{repo}/issues?state=closed&per_page=1`** —
+///    closed issues count, derived the same way.
+/// 5. **`GET /repos/{owner}/{repo}/pulls?state=closed&per_page=100`** —
+///    pull requests merged in the last 4 weeks (filters by `merged_at`).
+///
+/// Returns `None` if the URL can't be parsed, the repo API call fails, or any
+/// step encounters an error. The token is sent via the `Authorization: token`
+/// header for higher rate limits.
+///
+/// # Note
+///
+/// Five API calls per repo means GitHub rate limits are easy to exhaust —
+/// the unauthenticated 60-req/hour limit allows only ~12 repos per hour.
+/// Use `--github-token` for the 5000-req/hour limit (~1000 repos/hour).
 async fn fetch_github_data(
   client: &reqwest::Client,
   github_url: Option<&String>,
@@ -1413,7 +1750,11 @@ async fn fetch_github_data(
   })
 }
 
-/// Check GitHub rate limit
+/// Queries GitHub `/rate_limit` and logs the remaining/total core quota.
+///
+/// Logs a warning if fewer than 10 requests remain. Used by both
+/// [`execute`] (when `--check-rate-limit` and `--include-github` are set)
+/// and [`update_github_data`] (when `--check-rate-limit` is set).
 async fn check_github_rate_limit(
   client: &reqwest::Client,
   github_token: Option<&String>,
@@ -1441,7 +1782,41 @@ async fn check_github_rate_limit(
   Ok(())
 }
 
-/// Save cryptocurrency overviews with GitHub data to database
+/// Persists fetched overview and GitHub data across four database tables.
+///
+/// All inserts run inside a single transaction. For each `(overview, github_data)`
+/// tuple, this function:
+///
+/// 1. **Numeric conversion** — Converts `f64` price/supply values to
+///    [`bigdecimal::BigDecimal`] via [`f64_to_price_bigdecimal`] and
+///    [`f64_to_supply_bigdecimal`]. Uses a local `safe_f64_to_i64` closure
+///    that detects NaN/infinity and clamps overflow to `i64::MAX/MIN` with
+///    warnings.
+/// 2. **Fully diluted valuation** — Computes `price × max_supply` when both
+///    are present, with the same overflow protection.
+/// 3. **`crypto_overview_basic`** — Inserts symbol, name, slug (lowercased,
+///    spaces → hyphens), description, market cap rank, market cap, FDV,
+///    24h volume, current price, and supply fields. `ON CONFLICT (sid) DO NOTHING`.
+/// 4. **`crypto_overview_metrics`** — Inserts 24h price change percent,
+///    ATH/ATL with dates (converted from `NaiveDate` to `DateTime<Utc>` at
+///    midnight). All other price-change windows (7d, 14d, 30d, etc.) are `None`.
+///    `ON CONFLICT (sid) DO NOTHING`.
+/// 5. **`crypto_social`** — Inserts website, whitepaper, and GitHub URLs.
+///    All other social fields (Twitter, Reddit, Discord, scores, sentiment)
+///    are `None`. `ON CONFLICT (sid) DO NOTHING`.
+/// 6. **`crypto_technical`** (only if `github_data` is `Some`) — Inserts
+///    GitHub statistics (forks, stars, subscribers, issues, PRs, contributors,
+///    commits). All blockchain fields and classification flags are zero/false.
+///    `ON CONFLICT (sid) DO NOTHING`.
+/// 7. **`symbols` UPDATE** — Sets `symbols.overview = true` for the SID so
+///    subsequent runs skip this symbol.
+///
+/// Returns the count of overviews successfully processed (one per loop iteration).
+///
+/// # Note
+///
+/// The market cap rank is set to `None` when the rank is `0` or `NO_PRIORITY`,
+/// indicating the source did not provide a valid ranking.
 fn save_crypto_overviews_with_github_to_db(
   database_url: &str,
   overviews: Vec<(CryptoOverviewData, Option<GitHubData>)>,

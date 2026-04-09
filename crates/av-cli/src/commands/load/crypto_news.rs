@@ -27,6 +27,71 @@
  * SOFTWARE.
  */
 
+//! Crypto news and sentiment loader for `av-cli load crypto-news`.
+//!
+//! Fetches news articles and AlphaVantage sentiment scores for cryptocurrencies
+//! from the AlphaVantage `NEWS_SENTIMENT` endpoint, then persists them via
+//! [`super::news_utils::save_news_to_database`] into the news-related tables
+//! (news overviews, feeds, articles, ticker sentiments, topics).
+//!
+//! ## Symbol Selection
+//!
+//! Three mutually exclusive modes for choosing which crypto symbols to process:
+//!
+//! - **`--symbols BTC,ETH,...`** — Explicit list. Each symbol is looked up in
+//!   `symbols` (filtered to `sec_type = "Cryptocurrency"`); missing ones are
+//!   logged as warnings but do not abort.
+//! - **`--all`** — Every crypto symbol in the database.
+//! - **`--top N`** — Top N cryptocurrencies by `crypto_overview_basic.market_cap_rank`
+//!   ascending. Requires that `crypto_overview_basic` has been populated (e.g.,
+//!   via `av-cli update crypto-metadata` or `av-cli load crypto-overview`).
+//!
+//! At least one mode is required — the command errors if none is set.
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! symbols (sec_type = "Cryptocurrency")
+//!   │  [optionally joined with crypto_overview_basic for --top]
+//!   ▼
+//! get_top_crypto_symbols_by_market_cap()
+//! get_all_crypto_symbols()                  ── one of three selectors
+//! get_specific_crypto_symbols()
+//!   │
+//!   ▼
+//! load_crypto_news()  ── AlphaVantage NEWS_SENTIMENT API + cache
+//!   │
+//!   ▼
+//! save_news_to_database() (from super::news_utils)
+//!   ├── news overviews
+//!   ├── feeds
+//!   ├── articles  (deduplicated by hash)
+//!   ├── ticker sentiments
+//!   └── topics
+//! ```
+//!
+//! ## Topic Filtering
+//!
+//! When `--topics` is omitted, defaults to `["blockchain"]` — appropriate for
+//! crypto coverage. Other AlphaVantage topics include `defi`, `nft`,
+//! `cryptocurrency`, etc.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Top 50 cryptos by market cap, last 7 days
+//! av-cli load crypto-news --top 50
+//!
+//! # Specific symbols with custom topics
+//! av-cli load crypto-news --symbols BTC,ETH,SOL --topics blockchain,defi,nft
+//!
+//! # All crypto symbols, last 30 days, force refresh
+//! av-cli load crypto-news --all --days-back 30 --force-refresh
+//!
+//! # Dry run with verbose progress
+//! av-cli load crypto-news --top 10 --dry-run --progress-interval 1
+//! ```
+
 use anyhow::{Result, anyhow};
 use av_database_postgres::repository::DatabaseContext;
 use clap::Parser;
@@ -43,63 +108,96 @@ use chrono::{Duration, Utc};
 use super::news_utils::save_news_to_database;
 use crate::config::Config;
 
-/// Load crypto news and sentiment data from AlphaVantage
+/// Command-line arguments for `av-cli load crypto-news`.
+///
+/// Three symbol-selection flags (`--symbols`, `--all`, `--top`) are mutually
+/// exclusive — clap enforces this via `conflicts_with_all`. Other flags
+/// control date range, topic filtering, sort order, caching, rate limiting,
+/// and error handling.
 #[derive(Debug, Parser)]
 pub struct CryptoNewsArgs {
-  /// Symbols to load (e.g., BTC,ETH,ADA)
+  /// Comma-separated list of cryptocurrency symbols to load news for
+  /// (e.g., `BTC,ETH,ADA`).
+  ///
+  /// Mutually exclusive with `--all` and `--top`. Symbols not found in the
+  /// database are logged as warnings but do not abort the run.
   #[arg(short, long, value_delimiter = ',')]
   symbols: Option<Vec<String>>,
 
-  /// Load news for all crypto symbols in the database
+  /// Load news for **all** crypto symbols in the database.
+  ///
+  /// Mutually exclusive with `--symbols` and `--top`. May result in many
+  /// API calls — consider `--limit` and `--days-back` to control scope.
   #[arg(long, conflicts_with_all = ["symbols", "top"])]
   all: bool,
 
-  /// Load news for top N cryptocurrencies by market cap
+  /// Load news for the top N cryptocurrencies by `market_cap_rank`.
+  ///
+  /// Requires `crypto_overview_basic.market_cap_rank` to be populated.
+  /// Mutually exclusive with `--symbols` and `--all`.
   #[arg(long, conflicts_with_all = ["symbols", "all"])]
   top: Option<usize>,
 
-  /// Number of days back to fetch news
+  /// Number of days of historical news to fetch. Defaults to 7.
+  ///
+  /// Translated to a `time_from` parameter on the AlphaVantage API.
   #[arg(short = 'd', long, default_value = "7")]
   days_back: u32,
 
-  /// Topics to filter by (blockchain, defi, nft, etc.)
+  /// Comma-separated list of AlphaVantage news topics to filter by.
+  ///
+  /// Defaults to `["blockchain"]` if omitted. Other valid topics include
+  /// `defi`, `nft`, `cryptocurrency`, `economy_macro`, etc.
   #[arg(short = 't', long, value_delimiter = ',')]
   topics: Option<Vec<String>>,
 
-  /// Sort order (LATEST, EARLIEST, RELEVANCE)
+  /// Sort order for fetched articles.
+  ///
+  /// Valid values: `LATEST`, `EARLIEST`, `RELEVANCE`. Defaults to `LATEST`.
   #[arg(long, default_value = "LATEST")]
   sort: String,
 
-  /// Maximum articles per symbol
+  /// Maximum number of articles to fetch per symbol. Defaults to 1000.
   #[arg(short = 'l', long, default_value = "1000")]
   limit: u32,
 
-  /// Disable caching
+  /// Disable response caching entirely.
+  ///
+  /// When set, every request hits the AlphaVantage API directly.
   #[arg(long)]
   no_cache: bool,
 
-  /// Force refresh (bypass cache)
+  /// Bypass the cache and fetch fresh data, but continue to write new
+  /// responses into the cache.
   #[arg(long)]
   force_refresh: bool,
 
-  /// Continue on error
+  /// Continue processing remaining symbols if one fails. Defaults to `true`.
   #[arg(short = 'c', long, default_value = "true")]
   continue_on_error: bool,
 
-  /// Dry run (don't save to database)
+  /// Fetch news from the API but skip database writes.
   #[arg(long)]
   dry_run: bool,
 
-  /// API delay in milliseconds
+  /// Delay between API calls in milliseconds. Defaults to 800 ms.
   #[arg(long, default_value = "800")]
   api_delay: u64,
 
-  /// Show progress every N symbols
+  /// Log progress every N symbols. Defaults to 10.
   #[arg(long, default_value = "10")]
   progress_interval: usize,
 }
 
-/// Get top N crypto symbols by market cap rank
+/// Returns the top N cryptocurrency symbols ordered by `market_cap_rank` ascending.
+///
+/// Joins `symbols` (filtered to `sec_type = "Cryptocurrency"`) with
+/// `crypto_overview_basic` on `sid`, filters out rows with NULL ranks, and
+/// orders by `market_cap_rank ASC` (lower rank = higher market cap).
+///
+/// Logs each selected symbol with its rank. If the result is empty, logs a
+/// warning suggesting that the user run `av update crypto-metadata` first to
+/// populate market cap rankings.
 fn get_top_crypto_symbols_by_market_cap(
   database_url: &str,
   limit: usize,
@@ -138,7 +236,10 @@ fn get_top_crypto_symbols_by_market_cap(
   Ok(symbol_infos)
 }
 
-/// Get all crypto symbols from database
+/// Returns every cryptocurrency symbol in the database.
+///
+/// Queries `symbols` filtered to `sec_type = "Cryptocurrency"` with no other
+/// filters or limits. Each found symbol is logged. Used by the `--all` flag.
 fn get_all_crypto_symbols(database_url: &str) -> Result<Vec<SymbolInfo>> {
   use av_database_postgres::schema::symbols;
   use diesel::prelude::*;
@@ -161,7 +262,12 @@ fn get_all_crypto_symbols(database_url: &str) -> Result<Vec<SymbolInfo>> {
   )
 }
 
-/// Get specific crypto symbols from database
+/// Looks up a specific list of crypto symbols in the database.
+///
+/// Queries `symbols` for rows where `symbol IN (...)` AND `sec_type =
+/// "Cryptocurrency"`. Symbols in the input list that are not found in the
+/// database (or are not cryptocurrencies) are logged as warnings but do not
+/// cause an error. Used by the `--symbols` flag.
 fn get_specific_crypto_symbols(database_url: &str, symbols: &[String]) -> Result<Vec<SymbolInfo>> {
   use av_database_postgres::schema::symbols as sym_table;
   use diesel::prelude::*;
@@ -189,7 +295,41 @@ fn get_specific_crypto_symbols(database_url: &str, symbols: &[String]) -> Result
   Ok(results.into_iter().map(|(sid, symbol)| SymbolInfo { sid, symbol }).collect())
 }
 
-/// Execute crypto news loading command
+/// Main entry point for `av-cli load crypto-news`.
+///
+/// Orchestrates the full crypto news loading pipeline:
+///
+/// 1. **Symbol selection** — Dispatches to one of three selectors based on
+///    which flag is set: [`get_top_crypto_symbols_by_market_cap`] for
+///    `--top`, [`get_all_crypto_symbols`] for `--all`, or
+///    [`get_specific_crypto_symbols`] for `--symbols`. Errors if none is set.
+/// 2. **Topic configuration** — Defaults to `["blockchain"]` if `--topics` is
+///    omitted.
+/// 3. **Loader configuration** — Builds [`NewsLoaderConfig`] with date range,
+///    topics, sort order, limit, cache settings, retry behavior, and rate
+///    limiting.
+/// 4. **Time estimation** — Logs an estimated runtime based on
+///    `api_delay × symbol_count`.
+/// 5. **Infrastructure setup** — Creates [`AlphaVantageClient`],
+///    [`DatabaseContext`], and a [`LoaderContext`] with both news and cache
+///    repositories attached.
+/// 6. **API loading** — Calls [`load_crypto_news`] with a date range from
+///    `now - days_back` to `now`. Returns a structured output with
+///    `articles_processed`, `loaded_count`, `no_data_count`, `api_calls`,
+///    `data` (batches to save), and `errors`.
+/// 7. **Persistence** — Unless `--dry-run`, calls
+///    [`save_news_to_database`](super::news_utils::save_news_to_database)
+///    which writes news overviews, feeds, articles (deduplicated), ticker
+///    sentiments, and topics in a transaction.
+/// 8. **Error reporting** — Logs any per-symbol errors collected by the
+///    loader. Returns an error if `--continue-on-error` is `false` and any
+///    occurred.
+///
+/// # Errors
+///
+/// Returns errors from: missing symbol-selection flag, database queries, API
+/// client creation, news loader execution (unless `--continue-on-error`),
+/// database saves, or aggregated loader errors.
 pub async fn execute(args: CryptoNewsArgs, config: Config) -> Result<()> {
   info!("🚀 Starting crypto news loading process");
 

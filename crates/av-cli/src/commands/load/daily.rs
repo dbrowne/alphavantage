@@ -223,10 +223,8 @@ async fn save_summary_prices(
       .select((summaryprices::sid, diesel::dsl::max(summaryprices::date)))
       .load(&mut conn)?;
 
-    let latest_by_sid: std::collections::HashMap<i64, chrono::NaiveDate> = latest_dates
-      .into_iter()
-      .filter_map(|(sid, date)| date.map(|d| (sid, d)))
-      .collect();
+    let latest_by_sid: std::collections::HashMap<i64, chrono::NaiveDate> =
+      latest_dates.into_iter().filter_map(|(sid, date)| date.map(|d| (sid, d))).collect();
 
     info!("Found existing data for {} symbols", latest_by_sid.len());
 
@@ -263,7 +261,11 @@ async fn save_summary_prices(
 
     let unique_sids: Vec<i64> = unique_sids.into_iter().collect();
 
-    info!("Skipped {} existing records, inserting {} new records", skipped_count, records_to_insert.len());
+    info!(
+      "Skipped {} existing records, inserting {} new records",
+      skipped_count,
+      records_to_insert.len()
+    );
 
     // Insert new records in batches
     let progress = ProgressBar::new(records_to_insert.len() as u64);
@@ -279,8 +281,7 @@ async fn save_summary_prices(
     const BATCH_SIZE: usize = 1000;
 
     for chunk in records_to_insert.chunks(BATCH_SIZE) {
-      let inserted =
-        diesel::insert_into(summaryprices::table).values(chunk).execute(&mut conn)?;
+      let inserted = diesel::insert_into(summaryprices::table).values(chunk).execute(&mut conn)?;
       total_inserted += inserted;
       progress.inc(chunk.len() as u64);
     }
@@ -290,10 +291,7 @@ async fn save_summary_prices(
       total_inserted, skipped_count
     ));
 
-    info!(
-      "Database operation complete: {} inserted, {} skipped",
-      total_inserted, skipped_count
-    );
+    info!("Database operation complete: {} inserted, {} skipped", total_inserted, skipped_count);
 
     // Update symbols table to mark summary data as loaded
     if update_symbols && !unique_sids.is_empty() {
