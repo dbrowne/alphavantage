@@ -28,38 +28,116 @@
  */
 
 
-//! Process tracking models for ETL job monitoring
+//! Process tracking models for ETL job monitoring.
+//!
+//! This module provides a lightweight process/job lifecycle tracker stored
+//! across three tables. It enables monitoring which ETL jobs ran, when they
+//! started and finished, whether they succeeded or failed, and how many
+//! records were processed.
+//!
+//! # Database schema
+//!
+//! ```text
+//! proctypes ──1:N──► procstates ──N:1──► states
+//!   (what)             (runs)              (outcomes)
+//! ```
+//!
+//! | Table        | Model          | Purpose                                    |
+//! |--------------|----------------|--------------------------------------------|
+//! | `proctypes`  | [`ProcType`]   | Registry of ETL process names              |
+//! | `states`     | [`State`]      | Enumeration of outcome states              |
+//! | `procstates` | [`ProcState`]  | Individual process execution records       |
+//!
+//! # Lifecycle
+//!
+//! 1. **Start:** Look up (or create) the process type via
+//!    [`ProcType::find_or_create`], then insert a [`NewProcState`] with
+//!    `start_time` set and `end_state`/`end_time` set to `None`.
+//! 2. **Progress:** Optionally update `records_processed` via
+//!    [`ProcState::update_records_processed`].
+//! 3. **Complete:** Call [`ProcState::update_end_state`] with the
+//!    appropriate [`state_ids`] constant and the finish timestamp.
+//! 4. **Error:** Call [`ProcState::update_with_error`] to record both the
+//!    state and a diagnostic error message.
+//!
+//! # State IDs
+//!
+//! The [`state_ids`] module provides constants matching the seed data from
+//! the database migration:
+//!
+//! | Constant    | Value | Meaning                                      |
+//! |-------------|-------|----------------------------------------------|
+//! | `STARTED`   | 1     | Process is currently running                 |
+//! | `COMPLETED` | 2     | Process finished successfully                |
+//! | `FAILED`    | 3     | Process terminated with an error              |
+//! | `CANCELLED` | 4     | Process was manually cancelled               |
+//! | `RETRYING`  | 5     | Process failed but will be retried           |
+//!
+//! All query methods are **synchronous** (`&mut PgConnection`).
 
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// Note: The schema module should already have these tables defined from migrations
 use crate::schema::{procstates, proctypes, states};
 
-// ===== ProcType =====
+// ─── ProcType ───────────────────────────────────────────────────────────────
+
+/// A registered ETL process type (e.g., `"intraday_load"`, `"news_ingest"`).
+///
+/// Maps to the `proctypes` table. Each unique process name is stored once;
+/// use [`find_or_create`](ProcType::find_or_create) to ensure idempotent
+/// registration.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = proctypes)]
 pub struct ProcType {
+  /// Auto-increment primary key.
   pub id: i32,
+  /// Human-readable process name (unique).
   pub name: String,
 }
 
+/// Insertable (borrowed) form of [`ProcType`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = proctypes)]
 pub struct NewProcType<'a> {
   pub name: &'a str,
 }
 
-// ===== State =====
+// ─── State ──────────────────────────────────────────────────────────────────
+
+/// An outcome state from the `states` lookup table.
+///
+/// Seeded by a database migration with the values listed in [`state_ids`].
+/// Typically referenced by `id` rather than by name at runtime.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = states)]
 pub struct State {
+  /// State ID (matches [`state_ids`] constants).
   pub id: i32,
+  /// Human-readable state name (e.g., `"started"`, `"completed"`).
   pub name: String,
 }
 
-// ===== ProcState =====
+// ─── ProcState ──────────────────────────────────────────────────────────────
+
+/// An individual execution record for an ETL process.
+///
+/// Maps to the `procstates` table with PK `spid` (state-process ID).
+/// Each row tracks one run of a particular process type, including timing,
+/// outcome, error details, and throughput.
+///
+/// # Fields
+///
+/// | Field               | Type                    | Description                               |
+/// |---------------------|-------------------------|-------------------------------------------|
+/// | `spid`              | `i32`                   | Auto-increment primary key                |
+/// | `proc_id`           | `Option<i32>`           | FK to `proctypes.id`                      |
+/// | `start_time`        | `NaiveDateTime`         | When the process started                  |
+/// | `end_state`         | `Option<i32>`           | FK to `states.id` — `None` while running  |
+/// | `end_time`          | `Option<NaiveDateTime>` | When the process finished — `None` while running |
+/// | `error_msg`         | `Option<String>`        | Diagnostic message on failure             |
+/// | `records_processed` | `Option<i32>`           | Number of records handled (optional metric) |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = procstates)]
 #[diesel(primary_key(spid))]
@@ -73,6 +151,13 @@ pub struct ProcState {
   pub records_processed: Option<i32>,
 }
 
+/// Insertable form of [`ProcState`].
+///
+/// To start tracking a new process run:
+/// 1. Set `proc_id` to the [`ProcType::id`] (from [`ProcType::find_or_create`]).
+/// 2. Set `start_time` to `chrono::Utc::now().naive_utc()`.
+/// 3. Leave `end_state`, `end_time`, `error_msg`, and `records_processed`
+///    as `None` — they are updated later via [`ProcState`] methods.
 #[derive(Insertable, Debug)]
 #[diesel(table_name = procstates)]
 pub struct NewProcState {
@@ -84,9 +169,12 @@ pub struct NewProcState {
   pub records_processed: Option<i32>,
 }
 
-// Implementation methods
+/// Synchronous query methods for [`ProcType`].
 impl ProcType {
-  /// Find existing process type or create a new one
+  /// Looks up a process type by name, creating it if it doesn't exist
+  /// (find-or-create pattern).
+  ///
+  /// Returns the existing or newly-created [`ProcType`] with its `id`.
   pub fn find_or_create(
     conn: &mut PgConnection,
     process_name: &str,
@@ -103,7 +191,7 @@ impl ProcType {
     }
   }
 
-  /// Get process type by ID
+  /// Looks up a process type by its numeric ID.
   pub fn find_by_id(conn: &mut PgConnection, proc_id: i32) -> Result<Self, diesel::result::Error> {
     use crate::schema::proctypes::dsl::*;
 
@@ -112,7 +200,10 @@ impl ProcType {
 }
 
 impl NewProcState {
-  /// Insert a new process state record
+  /// Inserts this process state record and returns the created [`ProcState`]
+  /// (including the auto-generated `spid`).
+  ///
+  /// Consumes `self` because the record is moved into the database.
   pub fn insert(self, conn: &mut PgConnection) -> Result<ProcState, diesel::result::Error> {
     use crate::schema::procstates::dsl::*;
 
@@ -120,8 +211,13 @@ impl NewProcState {
   }
 }
 
+/// Synchronous mutation and query methods for [`ProcState`].
 impl ProcState {
-  /// Update the end state and time for a process
+  /// Marks a process as finished by setting `end_state` and `end_time`.
+  ///
+  /// Use [`state_ids::COMPLETED`] for success or [`state_ids::FAILED`] /
+  /// [`state_ids::CANCELLED`] for other outcomes. For failures with a
+  /// diagnostic message, prefer [`update_with_error`](Self::update_with_error).
   pub fn update_end_state(
     conn: &mut PgConnection,
     spid_val: i32,
@@ -135,7 +231,10 @@ impl ProcState {
       .execute(conn)
   }
 
-  /// Update with error message
+  /// Marks a process as finished with an error message.
+  ///
+  /// Sets `end_state`, `end_time`, and `error_msg` in a single update.
+  /// Typically called with [`state_ids::FAILED`].
   pub fn update_with_error(
     conn: &mut PgConnection,
     spid_val: i32,
@@ -154,7 +253,10 @@ impl ProcState {
       .execute(conn)
   }
 
-  /// Update records processed count
+  /// Updates the `records_processed` counter for a running process.
+  ///
+  /// Can be called multiple times during a long-running job to report
+  /// progress.
   pub fn update_records_processed(
     conn: &mut PgConnection,
     spid_val: i32,
@@ -165,7 +267,8 @@ impl ProcState {
     diesel::update(procstates.find(spid_val)).set(records_processed.eq(Some(count))).execute(conn)
   }
 
-  /// Get active processes (not completed)
+  /// Returns all currently-running processes (those with `end_state IS NULL`),
+  /// ordered by `start_time` descending (most recently started first).
   pub fn get_active(conn: &mut PgConnection) -> Result<Vec<Self>, diesel::result::Error> {
     use crate::schema::procstates::dsl::*;
 
@@ -174,7 +277,7 @@ impl ProcState {
 }
 
 impl State {
-  /// Get state by name
+  /// Looks up a state by its human-readable name (e.g., `"completed"`).
   pub fn find_by_name(
     conn: &mut PgConnection,
     state_name: &str,
@@ -185,11 +288,30 @@ impl State {
   }
 }
 
-// Constants for state IDs (based on migration data)
+/// Well-known state IDs matching the `states` table seed data.
+///
+/// These constants correspond to the rows inserted by the database migration.
+/// Use them with [`ProcState::update_end_state`] and
+/// [`ProcState::update_with_error`] to avoid hardcoding magic numbers.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use av_database_postgres::models::process::{ProcState, state_ids};
+///
+/// // Mark a process as successfully completed
+/// let now = chrono::Utc::now().naive_utc();
+/// ProcState::update_end_state(&mut conn, spid, state_ids::COMPLETED, now).unwrap();
+/// ```
 pub mod state_ids {
+  /// The process is currently running.
   pub const STARTED: i32 = 1;
+  /// The process finished successfully.
   pub const COMPLETED: i32 = 2;
+  /// The process terminated with an error.
   pub const FAILED: i32 = 3;
+  /// The process was manually cancelled.
   pub const CANCELLED: i32 = 4;
+  /// The process failed but is scheduled for retry.
   pub const RETRYING: i32 = 5;
 }

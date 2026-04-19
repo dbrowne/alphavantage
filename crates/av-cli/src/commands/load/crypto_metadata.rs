@@ -27,6 +27,68 @@
  * SOFTWARE.
  */
 
+//! Crypto metadata loader for `av-cli load crypto-metadata`.
+//!
+//! Fetches enhanced cryptocurrency metadata from CoinGecko (and optionally
+//! AlphaVantage) and persists it into the `crypto_metadata` table. Metadata
+//! includes the canonical source identifier, market cap rank, base/quote
+//! currencies, active status, and a JSON blob of source-specific extras
+//! stored in the `additional_data` column.
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! symbols ⟕ crypto_api_map  (crypto symbols with mappings, priority < NO_PRIORITY)
+//!   │
+//!   ▼
+//! load_crypto_symbols_from_db()  ── filtered by --symbols / --limit, deduplicated
+//!   │
+//!   ▼
+//! [optional] CryptoMetadataLoader::cleanup_expired_cache()  (--cleanup-cache)
+//!   │
+//!   ▼
+//! CryptoMetadataLoader::load()
+//!   │  ── CoinGecko + AlphaVantage APIs + cache ──▶ ProcessedCryptoMetadata
+//!   ▼
+//! save_metadata_to_db()
+//!   ├── per-row existence check on (sid)
+//!   ├── INSERT ... ON CONFLICT DO NOTHING       (new rows)
+//!   └── UPDATE ... SET ...                       (existing rows, --update-existing)
+//! ```
+//!
+//! ## Sources
+//!
+//! Currently supported:
+//!
+//! - **CoinGecko** (default, recommended) — Provides market cap rank and
+//!   detailed metadata. Requires `COINGECKO_API_KEY` for higher rate limits.
+//! - **AlphaVantage** — Currently mapped to [`CryptoDataSource::SosoValue`]
+//!   as a placeholder until the enum has a dedicated `AlphaVantage` variant.
+//!   Skipped by default (`--skip-alphavantage = true`) since the value of
+//!   AlphaVantage's crypto metadata for this project is still being evaluated.
+//!
+//! ## Prerequisites
+//!
+//! - Crypto symbols must be loaded with mappings in `crypto_api_map` (run
+//!   `av-cli load crypto` and `av-cli load crypto-mapping --discover-all` first).
+//! - At least one of `COINGECKO_API_KEY` or `ALPHA_VANTAGE_API_KEY` should be set.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load metadata for all mapped cryptos using CoinGecko
+//! av-cli load crypto-metadata
+//!
+//! # Load specific symbols and update existing records
+//! av-cli load crypto-metadata --symbols BTC,ETH,SOL --update-existing
+//!
+//! # Force refresh, bypassing cache
+//! av-cli load crypto-metadata --force-refresh --limit 100
+//!
+//! # Clean cache first, then load with verbose output
+//! av-cli load crypto-metadata --cleanup-cache --verbose
+//! ```
+
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use std::collections::HashSet;
@@ -44,93 +106,148 @@ use av_loaders::{
 };
 
 use crate::config::Config;
+
+/// Sentinel value for non-primary tokens (wrapped/bridged variants).
+/// Symbols with this priority are excluded from metadata loading.
 const NO_PRIORITY: i32 = 9_999_999;
-/// Arguments for the crypto metadata command
+
+/// Command-line arguments for `av-cli load crypto-metadata`.
+///
+/// Controls symbol selection, source selection (CoinGecko/AlphaVantage),
+/// API authentication, rate limiting, retries, caching, and dry-run/update
+/// behavior.
 #[derive(Args, Debug)]
 pub struct CryptoMetadataArgs {
-  /// Specific symbols to load (comma-separated). If not provided, loads for all crypto symbols
+  /// Comma-separated list of cryptocurrency symbols to load metadata for.
+  ///
+  /// When omitted, loads metadata for **all** crypto symbols that have
+  /// existing API mappings in `crypto_api_map`.
   #[arg(long, value_delimiter = ',')]
   pub symbols: Option<Vec<String>>,
 
-  /// Skip database updates (dry run)
+  /// Fetch metadata from APIs but skip database writes.
   #[arg(short, long)]
   pub dry_run: bool,
 
-  /// Update existing metadata entries
+  /// Update existing rows in `crypto_metadata` instead of skipping them.
+  ///
+  /// When `false` (default), existing rows are left untouched. When `true`,
+  /// all fields except `sid` are overwritten.
   #[arg(long)]
   pub update_existing: bool,
 
-  /// AlphaVantage API key
+  /// AlphaVantage API key.
+  ///
+  /// Can also be set via the `ALPHA_VANTAGE_API_KEY` environment variable.
+  /// Note that AlphaVantage metadata is skipped by default (see
+  /// `--skip-alphavantage`).
   #[arg(long, env = "ALPHA_VANTAGE_API_KEY")]
   pub alphavantage_api_key: Option<String>,
 
-  /// CoinGecko API key for enhanced metadata
+  /// CoinGecko API key for enhanced metadata and higher rate limits.
+  ///
+  /// Can also be set via the `COINGECKO_API_KEY` environment variable.
   #[arg(long, env = "COINGECKO_API_KEY")]
   pub coingecko_api_key: Option<String>,
 
-  /// Number of concurrent requests
+  /// Maximum number of concurrent API requests.
   #[arg(long, default_value = "5")]
   pub concurrent: usize,
 
-  /// Delay between requests in milliseconds
+  /// Delay between API requests in milliseconds. Defaults to 200 ms.
   #[arg(long, default_value = "200")]
   pub delay_ms: u64,
 
-  /// Batch size for processing
+  /// Batch size for processing. Defaults to 50.
   #[arg(long, default_value = "50")]
   pub batch_size: usize,
 
-  /// Maximum retry attempts per symbol
+  /// Maximum retry attempts per symbol when an API call fails. Defaults to 4.
   #[arg(long, default_value = "4")]
   pub max_retries: usize,
 
-  /// Request timeout in seconds
+  /// Request timeout in seconds. Defaults to 10.
   #[arg(long, default_value = "10")]
   pub timeout_seconds: u64,
 
-  /// Limit number of symbols to process (for testing)
+  /// Cap the number of symbols to process (useful for testing).
   #[arg(short, long)]
   pub limit: Option<usize>,
 
-  /// Show detailed progress information
+  /// Enable verbose output, including per-source error logging.
   #[arg(long)]
   pub verbose: bool,
 
-  /// Fetch enhanced metadata from CoinGecko
+  /// Fetch enhanced metadata fields from CoinGecko (additional data beyond basics).
+  ///
+  /// Defaults to `true`. Disable to fetch only minimal metadata.
   #[arg(long, default_value = "true")]
   pub fetch_enhanced: bool,
 
-  /// Data sources to use (alphavantage, coingecko)
+  /// Data sources to use (parsed but currently informational; actual source
+  /// selection is controlled by `--skip-coingecko` and `--skip-alphavantage`).
   #[arg(long, value_delimiter = ',', default_values = ["coingecko", "alphavantage"])]
   pub sources: Vec<String>,
 
-  /// Skip AlphaVantage metadata (use only CoinGecko)
+  /// Skip AlphaVantage as a metadata source (use only CoinGecko).
+  ///
+  /// Defaults to `true` because the value of AlphaVantage's crypto metadata
+  /// for this project is still being evaluated. See the TODO marker in source.
   #[arg(long, default_value = "true")]
   //todo: Determine if alphavantage is worth pulling for crypto data skip for now
   pub skip_alphavantage: bool,
 
-  /// Enable response caching to reduce API costs
+  /// Enable response caching to reduce API costs.
   #[arg(long, default_value = "true")]
   pub enable_cache: bool,
 
-  /// Cache TTL in hours
+  /// Cache TTL in hours. Defaults to 24.
   #[arg(long, default_value = "24")]
   pub cache_hours: u32,
 
-  /// Force refresh - ignore cache and fetch fresh data
+  /// Bypass the response cache and fetch fresh data from the source APIs.
   #[arg(long)]
   pub force_refresh: bool,
 
-  /// Skip CoinGecko metadata (use only AlphaVantage)
+  /// Skip CoinGecko as a metadata source (use only AlphaVantage).
   #[arg(long)]
   pub skip_coingecko: bool,
 
-  /// Clean up expired cache entries before processing
+  /// Delete expired entries from `api_response_cache` before processing.
   #[arg(long)]
   pub cleanup_cache: bool,
 }
 
-/// Main execution function for crypto metadata loading
+/// Main entry point for `av-cli load crypto-metadata`.
+///
+/// Orchestrates the full metadata loading pipeline:
+///
+/// 1. **API key validation** — Logs warnings if `ALPHA_VANTAGE_API_KEY` or
+///    `COINGECKO_API_KEY` is missing. Does not fail; the loader will use
+///    whatever sources are available.
+/// 2. **Cache cleanup** — When `--cleanup-cache` is set, calls
+///    [`CryptoMetadataLoader::cleanup_expired_cache`] to remove stale
+///    `api_response_cache` rows.
+/// 3. **Symbol query** — [`load_crypto_symbols_from_db`] joins `symbols` with
+///    `crypto_api_map` to find crypto symbols with mappings, optionally
+///    filtered by `--symbols` and `--limit`.
+/// 4. **Source selection** — Builds the [`CryptoDataSource`] list based on
+///    `--skip-coingecko` and `--skip-alphavantage` flags and which API keys
+///    are present. AlphaVantage is currently mapped to `SosoValue` as a
+///    placeholder.
+/// 5. **Loader configuration** — Builds [`CryptoMetadataConfig`] with API
+///    keys, rate limiting, retries, timeouts, and cache settings.
+/// 6. **API loading** — Calls [`CryptoMetadataLoader::load`] to fetch metadata
+///    for all symbols across all sources concurrently.
+/// 7. **Per-source reporting** — Logs success/failure counts and (when
+///    `--verbose`) detailed errors for each source.
+/// 8. **Persistence** — Unless `--dry-run`, calls [`save_metadata_to_db`] to
+///    insert/update records.
+///
+/// # Errors
+///
+/// Returns errors from: database context creation, symbol query, API client
+/// creation, loader execution, or database saves.
 pub async fn execute(args: CryptoMetadataArgs, config: &Config) -> Result<()> {
   info!("Starting crypto metadata loader");
 
@@ -310,7 +427,28 @@ pub async fn execute(args: CryptoMetadataArgs, config: &Config) -> Result<()> {
   Ok(())
 }
 
-/// Load crypto symbols from database for metadata processing
+/// Loads crypto symbols with API mappings from the database.
+///
+/// Joins `symbols` (filtered to `sec_type = "Cryptocurrency"` and
+/// `priority < NO_PRIORITY`) with `crypto_api_map` to get tuples of
+/// `(sid, symbol, name, api_source, api_id, api_slug, is_active)`. Optionally
+/// filters by an explicit symbol list and applies a row limit.
+///
+/// ## Deduplication
+///
+/// Because `crypto_api_map` may contain multiple rows per symbol (one per
+/// API source), the result set is deduplicated on `(sid, symbol)` using a
+/// [`HashSet`] to keep only the first mapping per symbol.
+///
+/// ## Source Mapping
+///
+/// The `api_source` string is mapped to a [`CryptoDataSource`] enum:
+///
+/// - `"coingecko"` → [`CryptoDataSource::CoinGecko`]
+/// - `"alphavantage"` → [`CryptoDataSource::SosoValue`] (placeholder, see TODO)
+/// - other / unknown → [`CryptoDataSource::CoinGecko`] (fallback)
+///
+/// The `source_id` field uses `api_slug` if available, otherwise falls back to `api_id`.
 fn load_crypto_symbols_from_db(
   database_url: &str,
   symbols_filter: &Option<Vec<String>>,
@@ -382,7 +520,26 @@ fn load_crypto_symbols_from_db(
   Ok(crypto_symbols)
 }
 
-/// Save metadata to database
+/// Persists processed metadata records to the `crypto_metadata` table.
+///
+/// Iterates over each [`ProcessedCryptoMetadata`] and decides between insert
+/// and update based on whether a row with that `sid` already exists:
+///
+/// - **New row** — `INSERT ... ON CONFLICT DO NOTHING` (the conflict guard
+///   handles the unique constraint on `(source, source_id)`).
+/// - **Existing row + `update_existing`** — `UPDATE` overwrites all fields
+///   except `sid`.
+/// - **Existing row + no update** — Skipped with an info log.
+///
+/// Returns `(inserted_count, updated_count)`. Note: each record requires two
+/// database round-trips (existence check + insert/update), which is acceptable
+/// for the relatively low volume of metadata records.
+///
+/// # Note
+///
+/// This function is `async` but uses synchronous Diesel operations on a
+/// blocking connection — there's no `spawn_blocking` wrapper. This works for
+/// CLI use but should not be called from a heavily concurrent async context.
 async fn save_metadata_to_db(
   database_url: &str,
   metadata: &[ProcessedCryptoMetadata],

@@ -6,24 +6,47 @@
 
 //! Cryptocurrency ID discovery via external APIs.
 //!
-//! This module provides functions to discover cryptocurrency IDs from
-//! various data providers by searching their APIs.
+//! Provides stateless async functions that resolve a cryptocurrency ticker
+//! symbol (e.g., `"BTC"`) to a provider-specific identifier by querying the
+//! provider's full coin-list endpoint and scanning for an exact match.
+//!
+//! # Functions
+//!
+//! | Function                    | Provider    | Endpoint                               | Match strategy              |
+//! |-----------------------------|-------------|----------------------------------------|-----------------------------|
+//! | [`discover_coingecko_id`]   | CoinGecko   | `/api/v3/coins/list`                   | `symbol` field, **lowercase** |
+//! | [`discover_coinpaprika_id`] | CoinPaprika | `/v1/coins`                            | `symbol` field, **uppercase** |
+//!
+//! # Important notes
+//!
+//! - Both functions fetch the **entire coin list** on each call. For batch
+//!   operations, consider caching the list externally or using
+//!   [`CryptoMappingService`](super::service::CryptoMappingService) which
+//!   handles this.
+//! - HTTP 429 responses are mapped to [`CryptoLoaderError::RateLimitExceeded`].
+//! - Multiple coins may share the same ticker symbol; the **first match**
+//!   in the API response is returned.
 
 use crate::CryptoLoaderError;
 
-/// Discover CoinGecko ID for a symbol using their API.
+/// Resolves a cryptocurrency ticker symbol to its CoinGecko coin ID.
 ///
-/// Searches the CoinGecko coins list for an exact symbol match.
+/// Fetches the full CoinGecko coin list and performs a case-insensitive
+/// exact match on the `symbol` field (input is lowercased before comparison).
 ///
 /// # Arguments
-/// * `client` - HTTP client to use for the request
-/// * `symbol` - The cryptocurrency symbol to search for (e.g., "BTC")
-/// * `api_key` - Optional CoinGecko Pro API key
+///
+/// - `client` — a reusable `reqwest::Client` (connection pooling recommended).
+/// - `symbol` — the ticker to search for (e.g., `"BTC"`).
+/// - `api_key` — optional CoinGecko Pro API key. When provided, uses the
+///   Pro endpoint (`pro-api.coingecko.com`); otherwise uses the free tier.
 ///
 /// # Returns
-/// * `Ok(Some(id))` - If a matching coin is found
-/// * `Ok(None)` - If no matching coin is found
-/// * `Err(_)` - If the API request fails
+///
+/// - `Ok(Some(id))` — the CoinGecko slug (e.g., `"bitcoin"` for `"BTC"`).
+/// - `Ok(None)` — no coin with that symbol was found.
+/// - `Err(RateLimitExceeded)` — HTTP 429 from CoinGecko.
+/// - `Err(ApiError)` — any other non-success HTTP status.
 pub async fn discover_coingecko_id(
   client: &reqwest::Client,
   symbol: &str,
@@ -58,18 +81,25 @@ pub async fn discover_coingecko_id(
   Ok(None)
 }
 
-/// Discover CoinPaprika ID for a symbol using their API.
+/// Resolves a cryptocurrency ticker symbol to its CoinPaprika coin ID.
 ///
-/// Searches the CoinPaprika coins list for an exact symbol match.
+/// Fetches the full CoinPaprika coin list and performs a case-insensitive
+/// exact match on the `symbol` field (input is uppercased before comparison).
+///
+/// CoinPaprika's public API does **not** require an API key but is
+/// rate-limited.
 ///
 /// # Arguments
-/// * `client` - HTTP client to use for the request
-/// * `symbol` - The cryptocurrency symbol to search for (e.g., "BTC")
+///
+/// - `client` — a reusable `reqwest::Client`.
+/// - `symbol` — the ticker to search for (e.g., `"BTC"`).
 ///
 /// # Returns
-/// * `Ok(Some(id))` - If a matching coin is found
-/// * `Ok(None)` - If no matching coin is found
-/// * `Err(_)` - If the API request fails
+///
+/// - `Ok(Some(id))` — the CoinPaprika slug (e.g., `"btc-bitcoin"` for `"BTC"`).
+/// - `Ok(None)` — no coin with that symbol was found.
+/// - `Err(RateLimitExceeded)` — HTTP 429 from CoinPaprika.
+/// - `Err(ApiError)` — any other non-success HTTP status.
 pub async fn discover_coinpaprika_id(
   client: &reqwest::Client,
   symbol: &str,

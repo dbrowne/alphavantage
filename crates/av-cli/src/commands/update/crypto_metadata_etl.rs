@@ -27,6 +27,88 @@
  * SOFTWARE.
  */
 
+//! Cryptocurrency metadata ETL (Extract-Transform-Load) pipeline.
+//!
+//! This module implements `av-cli update crypto metadata`, which reads raw
+//! CoinGecko JSON metadata from the `crypto_metadata` table and normalizes it
+//! into three destination tables:
+//!
+//! ```text
+//!   Source                         Destinations
+//! ┌──────────────────┐     ┌─────────────────────────────┐
+//! │  crypto_metadata  │────▶│  crypto_overview_basic       │  (market data, description)
+//! │  (additional_data │     ├─────────────────────────────┤
+//! │   JSONB column)   │────▶│  crypto_social               │  (links, followers, scores)
+//! │                   │     ├─────────────────────────────┤
+//! │                   │────▶│  crypto_technical             │  (classification, GitHub stats)
+//! └───��──────────────┘     └─────────────────────────────┘
+//! ```
+//!
+//! ## ETL Pipeline Overview
+//!
+//! 1. **Extract** — Reads rows from `crypto_metadata` joined with `symbols`
+//!    (to get `symbol` and `name`), batched in groups of 1,000, ordered by `sid`.
+//!    Only rows with non-null `additional_data` are processed.
+//!
+//! 2. **Transform** — Parses the `additional_data` JSON column and extracts
+//!    structured fields for each destination table:
+//!    - **Overview basic** — description, slug, current price (USD), market cap,
+//!      24h volume, circulating/total/max supply, market cap rank
+//!    - **Social** — website URL, whitepaper URL, GitHub URL, Twitter handle +
+//!      followers, Telegram URL + members, Discord URL, Reddit URL + subscribers,
+//!      Facebook URL + likes, CoinGecko/developer/community/liquidity/public
+//!      interest scores, sentiment vote percentages
+//!    - **Technical** — blockchain platform detection, category-based boolean
+//!      classifications (DeFi, stablecoin, NFT, exchange token, gaming, metaverse,
+//!      privacy coin, layer-2, wrapped), GitHub forks/stars/contributors/commits
+//!
+//! 3. **Load** — Upserts each record into its destination table using
+//!    `INSERT ... ON CONFLICT (sid) DO UPDATE`. The upsert uses `COALESCE` to
+//!    preserve existing non-null values when the new data is null, ensuring
+//!    partial updates don't erase previously loaded data.
+//!
+//! ## Execution Model
+//!
+//! Unlike most other command handlers in `av-cli`, this module runs
+//! **synchronously** (no `async`). It is called from
+//! [`handle_crypto_update`](super::crypto::handle_crypto_update) via:
+//! ```rust,ignore
+//! crypto_metadata_etl::execute_metadata_etl(&database_url)?;
+//! ```
+//!
+//! The database URL is read from the `DATABASE_URL` environment variable by the
+//! caller, since the `Metadata` variant receives `av_core::Config` (which lacks
+//! a database URL).
+//!
+//! ## Batch Processing
+//!
+//! Records are processed in batches of 1,000 to manage memory usage. The loop
+//! issues a `LIMIT/OFFSET` query per batch and terminates when an empty result
+//! set is returned. Progress is logged via [`tracing::info`] at each batch
+//! boundary and at completion.
+//!
+//! ## Error Handling
+//!
+//! - Individual row processing failures (JSON parse errors, missing fields) are
+//!   **silently skipped** — the ETL continues with the next row. The
+//!   [`ProcessingStats`] struct tracks counts but the `errors` field is not
+//!   currently incremented.
+//! - Batch-level failures (database connection loss, SQL errors in the `SELECT`
+//!   query) propagate immediately as `anyhow::Error`.
+//! - Upsert failures for individual records propagate via `?` and will abort
+//!   the entire ETL run.
+//!
+//! ## Blockchain Platform Detection
+//!
+//! The [`determine_blockchain_platform`] helper uses a three-tier detection
+//! strategy (see its documentation for details):
+//! 1. Blockchain explorer URLs (e.g., etherscan.io → Ethereum)
+//! 2. CoinGecko category tags (e.g., "polygon-ecosystem" → Polygon)
+//! 3. Well-known native coin symbols (e.g., BTC → Bitcoin, SOL → Solana)
+//!
+//! Supports 18+ blockchain platforms including Ethereum, Solana, Polygon,
+//! Arbitrum, Avalanche, Cosmos, and others.
+
 use anyhow::Result;
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
@@ -37,6 +119,43 @@ use tracing::info;
 
 use av_database_postgres::connection::establish_connection;
 
+/// Runs the full cryptocurrency metadata ETL pipeline.
+///
+/// This is the main entry point for `av-cli update crypto metadata`. It connects
+/// to the database, iterates through all `crypto_metadata` rows with non-null
+/// `additional_data` in batches of 1,000, and upserts the extracted fields into
+/// `crypto_overview_basic`, `crypto_social`, and `crypto_technical`.
+///
+/// ## Processing Flow
+///
+/// For each row with parseable JSON in `additional_data`:
+/// 1. [`process_overview_basic`] — Extracts market data and description,
+///    upserts into `crypto_overview_basic`
+/// 2. [`process_social`] — Extracts links, community data, and scores,
+///    upserts into `crypto_social` (skipped if no social data is present)
+/// 3. [`process_technical`] — Extracts category classifications and developer
+///    data, upserts into `crypto_technical`
+///
+/// Each processor runs independently — a failure in one does not prevent the
+/// others from executing for the same row. Success counts are tracked in
+/// [`ProcessingStats`] and logged at completion.
+///
+/// # Arguments
+///
+/// * `database_url` — PostgreSQL connection string (e.g.,
+///   `postgres://user:pass@localhost/alphavantage`).
+///
+/// # Errors
+///
+/// Returns [`anyhow::Error`] on:
+/// - Database connection failure
+/// - SQL query execution failure (batch SELECT or individual upsert)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// crypto_metadata_etl::execute_metadata_etl("postgres://localhost/alphavantage")?;
+/// ```
 pub fn execute_metadata_etl(database_url: &str) -> Result<()> {
   dotenvy::dotenv().ok();
   info!("Starting crypto metadata ETL");
@@ -109,6 +228,32 @@ pub fn execute_metadata_etl(database_url: &str) -> Result<()> {
   Ok(())
 }
 
+/// A single row from the ETL source query, mapped via Diesel's `QueryableByName`.
+///
+/// Represents the join of `crypto_metadata` and `symbols` tables:
+///
+/// ```sql
+/// SELECT cm.sid, s.symbol, s.name, cm.market_cap_rank,
+///        cm.additional_data::text AS json_data, cm.last_updated
+/// FROM crypto_metadata cm
+/// INNER JOIN symbols s ON cm.sid = s.sid
+/// WHERE cm.additional_data IS NOT NULL
+/// ```
+///
+/// # Fields
+///
+/// - `sid` — Unique symbol identifier, foreign key linking `crypto_metadata`
+///   to `symbols` and used as the primary key in all destination tables.
+/// - `symbol` — Ticker symbol (e.g., `"BTC"`, `"ETH"`), from the `symbols` table.
+/// - `name` — Full name (e.g., `"Bitcoin"`, `"Ethereum"`), from the `symbols` table.
+/// - `market_cap_rank` — CoinGecko market cap ranking, nullable (may be absent
+///   for low-cap or delisted coins).
+/// - `json_data` — The `additional_data` JSONB column cast to text for parsing
+///   with `serde_json`. Contains the full CoinGecko coin detail response.
+///   `None` when `additional_data` is SQL NULL (filtered out by the WHERE clause,
+///   but Diesel still requires the type to be `Option`).
+/// - `last_updated` — Timestamp of the last metadata update, propagated to
+///   destination tables as `last_updated`.
 #[derive(QueryableByName, Debug)]
 struct MetadataRow {
   #[diesel(sql_type = diesel::sql_types::BigInt)]
@@ -125,6 +270,43 @@ struct MetadataRow {
   last_updated: DateTime<Utc>,
 }
 
+/// Extracts market overview data from CoinGecko JSON and upserts into `crypto_overview_basic`.
+///
+/// Parses the following fields from the JSON `additional_data`:
+///
+/// | Field                | JSON Path                              | DB Column            | Type         |
+/// |----------------------|----------------------------------------|----------------------|--------------|
+/// | Description          | `.description` (string or `.description.en`) | `description`    | `TEXT`       |
+/// | Slug                 | `.id` (fallback: name slugified)       | `slug`               | `TEXT`       |
+/// | Current price (USD)  | `.market_data.current_price.usd`       | `current_price`      | `NUMERIC`    |
+/// | Market cap (USD)     | `.market_data.market_cap.usd`          | `market_cap`         | `BIGINT`     |
+/// | 24h volume (USD)     | `.market_data.total_volume.usd`        | `volume_24h`         | `BIGINT`     |
+/// | Circulating supply   | `.market_data.circulating_supply`      | `circulating_supply` | `NUMERIC`    |
+/// | Total supply         | `.market_data.total_supply`            | `total_supply`       | `NUMERIC`    |
+/// | Max supply           | `.market_data.max_supply`              | `max_supply`         | `NUMERIC`    |
+///
+/// The `sid`, `symbol`, `name`, `market_cap_rank`, and `last_updated` fields
+/// come from the [`MetadataRow`] (the source query), not from the JSON.
+///
+/// ## Description Handling
+///
+/// The description field supports two CoinGecko JSON formats:
+/// - Direct string: `"description": "A peer-to-peer..."`
+/// - Localized object: `"description": {"en": "A peer-to-peer...", "de": "..."}`
+///
+/// Empty strings are filtered out and treated as `None`.
+///
+/// ## Upsert Strategy
+///
+/// Uses `INSERT ... ON CONFLICT (sid) DO UPDATE` with `COALESCE` on nullable
+/// fields, so existing non-null values are preserved when the new data is null.
+/// The `symbol`, `name`, and `slug` fields are always overwritten. `last_updated`
+/// is always set to the source row's timestamp.
+///
+/// # Errors
+///
+/// Returns [`anyhow::Error`] if the SQL upsert query fails (e.g., connection
+/// loss, constraint violation).
 fn process_overview_basic(conn: &mut PgConnection, row: &MetadataRow, data: &Value) -> Result<()> {
   let market_data = data.get("market_data");
 
@@ -222,6 +404,53 @@ fn process_overview_basic(conn: &mut PgConnection, row: &MetadataRow, data: &Val
   Ok(())
 }
 
+/// Extracts social and community data from CoinGecko JSON and upserts into `crypto_social`.
+///
+/// Parses two categories of data from the JSON:
+///
+/// ### Link Data (from `.links`)
+///
+/// | Field            | JSON Path                           | Notes                            |
+/// |------------------|-------------------------------------|----------------------------------|
+/// | Website URL      | `.links.homepage[0]`                | First non-empty homepage entry   |
+/// | Whitepaper URL   | `.links.whitepaper`                 | Direct string                    |
+/// | GitHub URL       | `.links.repos_url.github[0]`        | First GitHub repo URL            |
+/// | Twitter handle   | `.links.twitter_screen_name`        | Handle only, no URL prefix       |
+/// | Telegram URL     | `.links.telegram_channel_identifier` | Prefixed with `https://t.me/`   |
+/// | Reddit URL       | `.links.subreddit_url`              | Full URL                         |
+/// | Discord URL      | `.links.chat_url[]` (containing "discord") | First Discord match     |
+/// | Facebook URL     | `.links.facebook_username`          | Prefixed with `https://facebook.com/` |
+///
+/// ### Community & Score Data
+///
+/// | Field                  | JSON Path                          | DB Type    |
+/// |------------------------|------------------------------------|------------|
+/// | Twitter followers      | `.community_data.twitter_followers` | `INTEGER` |
+/// | Telegram members       | `.community_data.telegram_channel_user_count` | `INTEGER` |
+/// | Reddit subscribers     | `.community_data.reddit_subscribers` | `INTEGER` |
+/// | Facebook likes         | `.community_data.facebook_likes`   | `INTEGER`  |
+/// | CoinGecko score        | `.coingecko_score`                 | `NUMERIC`  |
+/// | Developer score        | `.developer_score`                 | `NUMERIC`  |
+/// | Community score        | `.community_score`                 | `NUMERIC`  |
+/// | Liquidity score        | `.liquidity_score`                 | `NUMERIC`  |
+/// | Public interest score  | `.public_interest_score`           | `NUMERIC`  |
+/// | Sentiment up %         | `.sentiment_votes_up_percentage`   | `NUMERIC`  |
+/// | Sentiment down %       | `.sentiment_votes_down_percentage` | `NUMERIC`  |
+///
+/// ## Skip Condition
+///
+/// The upsert is **skipped entirely** if none of the six primary link fields
+/// (website, whitepaper, GitHub, Twitter, Telegram, Reddit) have a value. This
+/// avoids creating empty rows for coins with no social presence.
+///
+/// ## Upsert Strategy
+///
+/// Uses `INSERT ... ON CONFLICT (sid) DO UPDATE` with `COALESCE` on all fields,
+/// preserving existing non-null values when new data is null.
+///
+/// # Errors
+///
+/// Returns [`anyhow::Error`] if the SQL upsert query fails.
 fn process_social(conn: &mut PgConnection, sid: i64, data: &Value) -> Result<()> {
   let links = data.get("links");
 
@@ -409,6 +638,51 @@ fn process_social(conn: &mut PgConnection, sid: i64, data: &Value) -> Result<()>
   Ok(())
 }
 
+/// Extracts technical classification and developer data from CoinGecko JSON
+/// and upserts into `crypto_technical`.
+///
+/// This processor performs two distinct extraction tasks:
+///
+/// ### Category-Based Classification
+///
+/// Reads the `.categories` array from the JSON and sets boolean classification
+/// flags by checking for keyword matches (case-insensitive):
+///
+/// | Flag               | Matching Keywords                              |
+/// |--------------------|------------------------------------------------|
+/// | `is_defi`          | "defi", "decentralized-finance"                |
+/// | `is_stablecoin`    | "stablecoin", "stable"                         |
+/// | `is_nft_platform`  | "nft", "non-fungible"                          |
+/// | `is_exchange_token`| "exchange", "cex-token", "dex-token"           |
+/// | `is_gaming`        | "gaming", "game"                               |
+/// | `is_metaverse`     | "metaverse", "virtual"                         |
+/// | `is_privacy_coin`  | "privacy"                                      |
+/// | `is_layer2`        | "layer-2", "l2"                                |
+/// | `is_wrapped`       | "wrapped"                                      |
+///
+/// The `blockchain_platform` field is determined by
+/// [`determine_blockchain_platform`], which uses a multi-tier detection
+/// strategy (see its documentation).
+///
+/// ### Developer / GitHub Statistics (from `.developer_data`)
+///
+/// | Field                   | JSON Path                                | DB Type   |
+/// |-------------------------|------------------------------------------|-----------|
+/// | GitHub forks            | `.developer_data.forks`                  | `INTEGER` |
+/// | GitHub stars            | `.developer_data.stars`                  | `INTEGER` |
+/// | GitHub contributors     | `.developer_data.pull_request_contributors` | `INTEGER` |
+/// | GitHub commits (4 weeks)| `.developer_data.commit_count_4_weeks`   | `INTEGER` |
+///
+/// ## Upsert Strategy
+///
+/// Uses `INSERT ... ON CONFLICT (sid) DO UPDATE`. Boolean classification flags
+/// are **always overwritten** (no `COALESCE`) since they are deterministically
+/// derived from the current category data. Nullable fields (`blockchain_platform`,
+/// GitHub stats) use `COALESCE` to preserve existing values.
+///
+/// # Errors
+///
+/// Returns [`anyhow::Error`] if the SQL upsert query fails.
 fn process_technical(conn: &mut PgConnection, sid: i64, data: &Value) -> Result<()> {
   // Extract categories for classification
   let categories = data
@@ -505,7 +779,60 @@ fn process_technical(conn: &mut PgConnection, sid: i64, data: &Value) -> Result<
   Ok(())
 }
 
-/// Helper function to determine blockchain platform from various data sources
+/// Determines the blockchain platform for a cryptocurrency using a three-tier
+/// detection strategy.
+///
+/// Returns the first match found across the following tiers (checked in order):
+///
+/// ## Tier 1: Blockchain Explorer URLs
+///
+/// Examines `.links.blockchain_site` (an array of explorer URLs) and matches
+/// against known explorer domains:
+///
+/// | Domain Pattern       | Platform            |
+/// |----------------------|---------------------|
+/// | `etherscan`          | Ethereum            |
+/// | `bscscan`, `binance` | Binance Smart Chain |
+/// | `polygonscan`        | Polygon             |
+/// | `arbiscan`           | Arbitrum            |
+/// | `optimistic`         | Optimism            |
+/// | `snowtrace`          | Avalanche           |
+/// | `ftmscan`            | Fantom              |
+/// | `solscan`            | Solana              |
+/// | `cardanoscan`        | Cardano             |
+/// | `polkascan`          | Polkadot            |
+/// | `mintscan`, `cosmos` | Cosmos              |
+/// | `near`               | Near                |
+/// | `tronscan`           | Tron                |
+/// | `zklink`             | zkLink Nova         |
+/// | `zksync`             | zkSync              |
+/// | `base`               | Base                |
+/// | `cronos`             | Cronos              |
+/// | `algoexplorer`       | Algorand            |
+///
+/// ## Tier 2: CoinGecko Category Tags
+///
+/// Falls through to examine the `categories` slice (already lowercased by the
+/// caller) for ecosystem keywords (e.g., `"ethereum"`, `"polygon"`, `"solana"`).
+/// Matches the same set of 18+ platforms as Tier 1.
+///
+/// ## Tier 3: Well-Known Native Coin Symbols
+///
+/// As a final fallback, matches the coin's `.symbol` field against a hardcoded
+/// list of native blockchain coins:
+///
+/// `BTC` → Bitcoin, `ETH` → Ethereum, `BNB` → Binance Smart Chain,
+/// `ADA` → Cardano, `SOL` → Solana, `DOT` → Polkadot, `AVAX` → Avalanche,
+/// `MATIC` → Polygon, `ATOM` → Cosmos, `NEAR` → Near, `TRX` → Tron,
+/// `ALGO` → Algorand, `FTM` → Fantom, `XRP` → XRP Ledger, `XLM` → Stellar,
+/// `XTZ` → Tezos, `EOS` → EOS, `HBAR` → Hedera, `FLOW` → Flow,
+/// `ICP` → Internet Computer, `EGLD` → MultiversX
+///
+/// ## Returns
+///
+/// `Some(platform_name)` if a platform was identified, `None` otherwise.
+/// Tokens on unrecognized platforms or with insufficient metadata will
+/// return `None`.
 fn determine_blockchain_platform(data: &Value, categories: &[String]) -> Option<String> {
   // Check blockchain_site URLs for platform hints
   if let Some(blockchain_sites) =
@@ -629,6 +956,21 @@ fn determine_blockchain_platform(data: &Value, categories: &[String]) -> Option<
   None
 }
 
+/// Tracks processing counts across the ETL pipeline run.
+///
+/// Accumulated during [`execute_metadata_etl`] and logged at completion via
+/// [`tracing::info`].
+///
+/// # Fields
+///
+/// - `total_processed` — Number of `crypto_metadata` rows iterated (regardless
+///   of whether JSON parsing or upserts succeeded).
+/// - `basic_updated` — Number of successful upserts to `crypto_overview_basic`.
+/// - `social_updated` — Number of successful upserts to `crypto_social`.
+/// - `technical_updated` — Number of successful upserts to `crypto_technical`.
+/// - `errors` — Intended for error counting, but **not currently incremented**
+///   anywhere in the pipeline. Individual processor failures are silently
+///   skipped without incrementing this counter.
 #[derive(Debug, Default)]
 pub struct ProcessingStats {
   pub total_processed: usize,

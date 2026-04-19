@@ -27,6 +27,74 @@
  * SOFTWARE.
  */
 
+//! Crypto intraday price loader for `av-cli load crypto-intraday`.
+//!
+//! Fetches intraday cryptocurrency price data from the AlphaVantage
+//! `CRYPTO_INTRADAY` endpoint and persists it to the `intradayprices` table.
+//! Supports configurable time intervals (1min–60min), incremental loading
+//! via timestamp-based deduplication, and per-record duplicate checking for
+//! historical backfills.
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! symbols table (sec_type = "Cryptocurrency", priority < 9_999_999)
+//!   │
+//!   ▼
+//! get_crypto_symbols_to_load()    ── filtered by --skip-existing / --only-existing / --limit
+//!   │
+//!   ▼
+//! get_latest_timestamps()         ── MAX(tstamp) per SID from intradayprices
+//!   │
+//!   ▼
+//! CryptoIntradayLoader::load()    ── AlphaVantage API + cache ──▶ Vec<CryptoIntradayPriceData>
+//!   │
+//!   ▼
+//! save_crypto_intraday_prices_optimized()
+//!   ├── timestamp-based filtering  (skip records ≤ latest known timestamp)
+//!   ├── or per-record dedup        (--check-each-record for backfills)
+//!   ├── batch INSERT ... ON CONFLICT DO NOTHING  (chunks of 500)
+//!   └── UPDATE symbols SET intraday = true       (--update-symbols)
+//! ```
+//!
+//! ## Deduplication Strategy
+//!
+//! Two modes are available, selected by `--check-each-record`:
+//!
+//! - **Default (incremental)** — For each symbol, only records with a timestamp
+//!   **newer than** the latest existing timestamp in `intradayprices` are
+//!   inserted. Fast for real-time updates.
+//! - **Historical mode** (`--check-each-record`) — Queries the database for
+//!   all timestamps matching the incoming batch and filters out exact matches.
+//!   Slower but necessary for backfilling gaps in historical data.
+//!
+//! Both modes also use `ON CONFLICT DO NOTHING` as a safety net.
+//!
+//! ## Primary-Only Filtering
+//!
+//! Only symbols with `priority < 9_999_999` are loaded. Non-primary tokens
+//! (wrapped/bridged variants) are excluded at the query level in
+//! [`get_crypto_symbols_to_load`], not in the loader itself.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load 1-minute data for top 100 cryptos (compact = ~100 data points)
+//! av-cli load crypto-intraday --limit 100
+//!
+//! # Load specific symbol with full history
+//! av-cli load crypto-intraday --symbol BTC --outputsize full
+//!
+//! # Refresh only symbols that already have data
+//! av-cli load crypto-intraday --only-existing --limit 50
+//!
+//! # Historical backfill with per-record dedup
+//! av-cli load crypto-intraday --outputsize full --check-each-record
+//!
+//! # 5-minute intervals in EUR
+//! av-cli load crypto-intraday --interval 5min --market EUR
+//! ```
+
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -48,77 +116,122 @@ use av_loaders::{
 };
 
 use crate::config::Config;
+
+/// Sentinel value for non-primary tokens (wrapped/bridged variants).
+/// Symbols with this priority are excluded from intraday loading.
 const NO_PRIORITY: i32 = 9_999_999;
-/// Arguments for the crypto intraday price loader
+
+/// Command-line arguments for `av-cli load crypto-intraday`.
+///
+/// Controls symbol selection, AlphaVantage API parameters (interval, market,
+/// output size), deduplication strategy, rate limiting, and database behavior.
 #[derive(Parser, Debug)]
 #[clap(about = "Load crypto intraday price data from AlphaVantage")]
 pub struct CryptoIntradayArgs {
-  /// Specific symbol to load (defaults to top cryptocurrencies if not specified)
+  /// Specific symbol to load. When omitted, the top cryptocurrencies (by
+  /// `priority` ascending) are selected from the database.
+  ///
+  /// When set, only the single highest-priority instance of that symbol is loaded.
   #[clap(short, long)]
   symbol: Option<String>,
 
-  /// Market/currency for pricing (e.g., USD, EUR, GBP)
+  /// Quote currency for pricing (e.g., `USD`, `EUR`, `GBP`).
+  ///
+  /// Passed directly to the AlphaVantage `CRYPTO_INTRADAY` endpoint.
   #[clap(short, long, default_value = "USD")]
   market: String,
 
-  /// Time interval between data points (1min, 5min, 15min, 30min, 60min)
+  /// Time interval between data points.
+  ///
+  /// Valid values: `1min`, `5min`, `15min`, `30min`, `60min`. Parsed into
+  /// [`IntradayInterval`].
   #[clap(short, long, default_value = "1min")]
   interval: String,
 
-  /// Output size (compact=100 data points, full=full available history)
+  /// Output size — `compact` (last ~100 data points) or `full` (full history).
   #[clap(long, default_value = "compact")]
   outputsize: String,
 
-  /// Skip symbols that already have intraday data (symbols.intraday = true)
+  /// Skip symbols where `symbols.intraday = true` (already loaded).
+  ///
+  /// Mutually exclusive with `--only-existing`. Useful for initial loads
+  /// to avoid re-fetching symbols that have already been processed.
   #[clap(long)]
   skip_existing: bool,
 
-  /// Only load symbols that already have intraday data (useful for updates/refreshing)
+  /// Only load symbols where `symbols.intraday = true` (refresh mode).
+  ///
+  /// Mutually exclusive with `--skip-existing`. Useful for periodic updates
+  /// to symbols that already have intraday data.
   #[clap(long, conflicts_with = "skip_existing")]
   only_existing: bool,
 
-  /// Number of concurrent API requests
+  /// Maximum number of concurrent API requests.
   #[clap(long, default_value = "5")]
   concurrent: usize,
 
-  /// Delay between API calls in milliseconds (800ms = 75 calls/minute for premium)
+  /// Delay between API calls in milliseconds.
+  ///
+  /// Default of 800 ms ≈ 75 calls/minute, suitable for AlphaVantage premium tier.
   #[clap(long, default_value = "800")]
   api_delay: u64,
 
-  /// Dry run - don't save to database
+  /// Fetch data but skip database writes.
   #[clap(long)]
   dry_run: bool,
 
-  /// Force refresh - bypass cache and timestamp checks
+  /// Bypass response cache and timestamp checks.
+  ///
+  /// When set, all latest-timestamp lookups are skipped (`HashMap::new()`),
+  /// causing every fetched record to be considered new.
   #[clap(long)]
   force_refresh: bool,
 
-  /// Update existing records
+  /// Forwarded to [`CryptoIntradayConfig::update_existing`] (currently a no-op
+  /// in `save_crypto_intraday_prices_optimized` — see TODO at line in source).
   #[clap(long)]
   update: bool,
 
-  /// Continue on error (don't stop if one symbol fails)
+  /// Continue processing remaining symbols if one fails at the loader stage.
   #[clap(long)]
   continue_on_error: bool,
 
-  /// Update symbols table to mark intraday data as loaded
+  /// Mark `symbols.intraday = true` for symbols that successfully received data.
+  ///
+  /// Defaults to `true`. Useful for tracking which symbols have intraday
+  /// coverage in the database.
   #[clap(long, default_value = "true")]
   update_symbols: bool,
 
-  /// Maximum number of symbols to process (default: 100, use for smaller batches)
+  /// Maximum number of symbols to process.
+  ///
+  /// Defaults to 500 when omitted. Use smaller values for batch processing
+  /// to manage API rate limits and runtime.
   #[clap(long)]
   limit: Option<usize>,
 
-  /// Check each record individually for duplicates (use for historical/backfill data)
+  /// Per-record duplicate checking for historical/backfill data.
+  ///
+  /// When set, every record's timestamp is individually checked against the
+  /// database before insertion. When unset (default), only records newer than
+  /// the latest existing timestamp are inserted (much faster for real-time data).
   #[clap(long)]
   check_each_record: bool,
 
-  /// Show verbose output
+  /// Enable verbose output.
   #[clap(short, long)]
   verbose: bool,
 }
 
-/// Get the latest timestamp for each symbol from the database
+/// Queries the latest `tstamp` in `intradayprices` for each provided SID.
+///
+/// Runs in a [`tokio::task::spawn_blocking`] context because Diesel is
+/// synchronous. Performs one `SELECT MAX(tstamp)` query per SID and returns
+/// only the SIDs that have at least one existing row (SIDs with no data are
+/// omitted from the returned map).
+///
+/// The returned map is consumed by [`save_crypto_intraday_prices_optimized`]
+/// to filter out records that are not newer than what is already stored.
 async fn get_latest_timestamps(
   config: &Config,
   sids: &[i64],
@@ -155,7 +268,31 @@ async fn get_latest_timestamps(
   .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Save crypto intraday prices with optimized timestamp-based deduplication
+/// Persists fetched intraday prices with timestamp-based deduplication.
+///
+/// This is the main database write path. The function:
+///
+/// 1. **Groups by SID** — Builds a `HashMap<sid, Vec<price>>` so each symbol
+///    can be processed independently.
+/// 2. **Filters per symbol** — Two strategies based on `check_each_record`:
+///    - **Per-record mode** (`true`) — Queries `intradayprices` for the
+///      specific timestamps in the batch and excludes any matches.
+///    - **Latest-timestamp mode** (`false`) — Filters out records with
+///      `tstamp ≤ latest_timestamps[sid]`. If no entry exists for the SID,
+///      all records are kept.
+/// 3. **Sorts and inserts** — Sorts surviving records by `tstamp` and
+///    batch-inserts in chunks of 500 with `ON CONFLICT DO NOTHING`.
+/// 4. **Marks symbols as loaded** — When `update_symbols` is true, sets
+///    `symbols.intraday = true` for all SIDs that received at least one new
+///    record.
+///
+/// Returns the total number of records inserted.
+///
+/// # Note
+///
+/// The `_update_existing` parameter is currently unused (TODO marker in source)
+/// — duplicate handling is done via the dedup logic above plus
+/// `ON CONFLICT DO NOTHING`.
 async fn save_crypto_intraday_prices_optimized(
   config: &Config,
   prices: Vec<CryptoIntradayPriceData>,
@@ -293,7 +430,22 @@ async fn save_crypto_intraday_prices_optimized(
   .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Get crypto symbols to load based on command arguments
+/// Selects cryptocurrency symbols from the database for loading.
+///
+/// Two query paths based on whether `--symbol` is set:
+///
+/// - **Specific symbol** — Returns the single highest-priority row matching
+///   `symbol = <given>` with `sec_type = "Cryptocurrency"`. Used when the user
+///   wants to load one coin.
+///
+/// - **Bulk selection** — Returns crypto symbols with valid priorities
+///   (`priority < NO_PRIORITY`), ordered by priority ascending. Filters:
+///   - `--skip-existing` → only symbols where `intraday` is false or null
+///   - `--only-existing` → only symbols where `intraday = true`
+///   - `--limit` → caps the result count (defaults to 500 if unset)
+///
+/// Results are returned as [`CryptoIntradaySymbolInfo`] structs containing
+/// `(sid, symbol, priority)` tuples.
 async fn get_crypto_symbols_to_load(
   args: &CryptoIntradayArgs,
   config: &Config,
@@ -374,7 +526,11 @@ async fn get_crypto_symbols_to_load(
   )
 }
 
-/// Get the maximum event ID from the database
+/// Returns the maximum `eventid` currently in `intradayprices`.
+///
+/// Used to seed the [`CryptoIntradayLoader`]'s starting event ID so that
+/// newly inserted records get monotonically increasing IDs that don't collide
+/// with existing rows. Returns `0` if the table is empty.
 async fn get_max_eventid(config: &Config) -> Result<i64> {
   let mut conn = establish_connection(&config.database_url)?;
 
@@ -384,7 +540,11 @@ async fn get_max_eventid(config: &Config) -> Result<i64> {
   Ok(max_id.unwrap_or(0))
 }
 
-/// Clean up expired cache entries
+/// Deletes expired entries from the `api_response_cache` table.
+///
+/// Removes rows where `expires_at < NOW()`. Called at the start of [`execute`]
+/// as a maintenance step to keep the cache table from growing unbounded.
+/// Failures are logged as warnings but do not abort the run.
 async fn cleanup_expired_cache(config: &Config) -> Result<()> {
   tokio::task::spawn_blocking({
     let database_url = config.database_url.clone();
@@ -411,7 +571,34 @@ async fn cleanup_expired_cache(config: &Config) -> Result<()> {
   .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Execute the crypto intraday price loading command
+/// Main entry point for `av-cli load crypto-intraday`.
+///
+/// Orchestrates the full intraday price loading pipeline:
+///
+/// 1. **Cache cleanup** — Calls [`cleanup_expired_cache`] to remove stale
+///    `api_response_cache` rows. Failures are logged but non-fatal.
+/// 2. **Symbol selection** — [`get_crypto_symbols_to_load`] returns the
+///    filtered list of crypto symbols to process.
+/// 3. **Latest-timestamp lookup** — Unless `--force-refresh` or `--dry-run`
+///    is set, calls [`get_latest_timestamps`] to enable incremental loading.
+/// 4. **Time estimation** — For runs with more than 1 symbol, prints an
+///    estimated minimum runtime based on `api_delay × symbol_count`. Warns
+///    when processing more than 50 symbols.
+/// 5. **Loader setup** — Creates [`AlphaVantageClient`], [`LoaderContext`],
+///    [`CryptoIntradayConfig`], and [`CryptoIntradayLoader`]. Seeds the
+///    starting event ID via [`get_max_eventid`].
+/// 6. **API loading** — Calls [`DataLoader::load`] which fetches data for all
+///    symbols concurrently with rate limiting and optional caching.
+/// 7. **Summary display** — Prints a formatted ASCII box with totals.
+/// 8. **Persistence** — Unless `--dry-run`, calls
+///    [`save_crypto_intraday_prices_optimized`] with the dedup map and
+///    `--update-symbols` flag.
+///
+/// # Errors
+///
+/// Returns errors from: symbol query, latest-timestamp lookup, API client
+/// creation, interval parsing, loader execution (unless `--continue-on-error`),
+/// or database save.
 pub async fn execute(args: CryptoIntradayArgs, config: Config) -> Result<()> {
   // Clean up expired cache entries before starting
   info!("Cleaning up expired cache entries...");

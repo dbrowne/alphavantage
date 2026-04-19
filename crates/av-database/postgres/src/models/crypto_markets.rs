@@ -27,6 +27,46 @@
  * SOFTWARE.
  */
 
+//! Diesel models for cryptocurrency exchange and trading-pair market data.
+//!
+//! This module tracks **where** each cryptocurrency is traded, capturing
+//! per-exchange, per-trading-pair volume, liquidity, and trust metrics.
+//! It complements the [`crypto`](super::crypto) module, which stores
+//! fundamental *what* data (price, supply, technicals).
+//!
+//! # Database table
+//!
+//! All types map to the `crypto_markets` table, which uses a
+//! **natural composite unique constraint** on `(sid, exchange, base, target)` —
+//! one row per coin per exchange per trading pair.
+//!
+//! # Struct inventory
+//!
+//! | Type                   | Role                                                          |
+//! |------------------------|---------------------------------------------------------------|
+//! | [`CryptoMarket`]       | Queryable row from `crypto_markets`                           |
+//! | [`NewCryptoMarket`]    | Insertable struct for new/upserted market records             |
+//! | [`UpdateCryptoMarket`] | `AsChangeset` struct for partial field updates                 |
+//! | [`CryptoMarketInput`]  | Ingestion DTO; converts to `NewCryptoMarket` via `From`       |
+//! | [`CryptoMarketsSummary`] | Aggregate stats (total/active markets, exchanges, pairs)    |
+//! | [`ExchangeStats`]      | Per-exchange aggregate metrics                                |
+//!
+//! # Key operations
+//!
+//! All query methods on [`CryptoMarket`] are **synchronous** (`&mut PgConnection`).
+//! Major operations include:
+//!
+//! - **Insert / upsert:** [`insert`](CryptoMarket::insert),
+//!   [`insert_batch`](CryptoMarket::insert_batch),
+//!   [`upsert_markets`](CryptoMarket::upsert_markets).
+//! - **Query:** [`get_by_exchange`](CryptoMarket::get_by_exchange),
+//!   [`get_by_symbol`](CryptoMarket::get_by_symbol),
+//!   [`get_markets_with_symbols`](CryptoMarket::get_markets_with_symbols).
+//! - **Lifecycle:** [`mark_stale_markets`](CryptoMarket::mark_stale_markets),
+//!   [`cleanup_stale_markets`](CryptoMarket::cleanup_stale_markets).
+//! - **Analytics:** [`get_summary`](CryptoMarket::get_summary),
+//!   [`get_exchange_stats`](CryptoMarket::get_exchange_stats).
+
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
@@ -35,14 +75,44 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::crypto_markets;
 
-// Helper struct for raw SQL queries
+/// Helper for extracting a single `i64` count from a raw SQL query.
+///
+/// Used internally by [`CryptoMarket::get_summary`] to count distinct
+/// `(base, target)` pairs, which Diesel's DSL cannot express natively.
 #[derive(QueryableByName, Debug)]
 struct CountResult {
   #[diesel(sql_type = diesel::sql_types::BigInt)]
   count: i64,
 }
 
-/// Database model for crypto_markets table
+// ─── Queryable model ────────────────────────────────────────────────────────
+
+/// A single trading-pair listing on a cryptocurrency exchange.
+///
+/// Maps to one row of the `crypto_markets` table. Each row represents a
+/// specific `base/target` trading pair (e.g., `BTC/USDT`) on a specific
+/// exchange (e.g., `"binance"`).
+///
+/// # Key fields
+///
+/// | Field               | Type                 | Description                                      |
+/// |---------------------|----------------------|--------------------------------------------------|
+/// | `id`                | `i32`                | Auto-increment primary key                       |
+/// | `sid`               | `i64`                | Security ID (FK to `symbols`)                    |
+/// | `exchange`          | `String`             | Exchange name (e.g., `"binance"`, `"coinbase"`)  |
+/// | `base` / `target`   | `String`             | Trading pair (e.g., base=`"BTC"`, target=`"USDT"`) |
+/// | `market_type`       | `Option<String>`     | Market type (e.g., `"spot"`, `"futures"`)        |
+/// | `volume_24h`        | `Option<BigDecimal>` | 24-hour trading volume in target currency        |
+/// | `volume_percentage` | `Option<BigDecimal>` | This pair's share of the coin's total volume     |
+/// | `bid_ask_spread_pct`| `Option<BigDecimal>` | Bid-ask spread as a percentage                   |
+/// | `liquidity_score`   | `Option<String>`     | Qualitative liquidity rating                     |
+/// | `trust_score`       | `Option<String>`     | Exchange trust/reliability score                 |
+/// | `is_active`         | `Option<bool>`       | Whether this market is currently trading         |
+/// | `is_anomaly`        | `Option<bool>`       | Flagged for suspicious volume/price data         |
+/// | `is_stale`          | `Option<bool>`       | Not updated within the freshness threshold       |
+/// | `last_traded_at`    | `Option<DateTime<Utc>>` | Timestamp of the most recent trade            |
+/// | `last_fetch_at`     | `Option<DateTime<Utc>>` | When this row was last refreshed from the API |
+/// | `c_time`            | `DateTime<Utc>`      | Row creation timestamp                           |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = crypto_markets)]
 pub struct CryptoMarket {
@@ -65,7 +135,13 @@ pub struct CryptoMarket {
   pub c_time: DateTime<Utc>,
 }
 
-/// New crypto market for database insertion
+// ─── Insertable model ───────────────────────────────────────────────────────
+
+/// Insertable form of [`CryptoMarket`].
+///
+/// Omits the auto-increment `id` and `c_time` (database-defaulted).
+/// All fields are owned; use [`CryptoMarketInput`] and its `From` impl
+/// for ergonomic construction from ingestion pipeline data.
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = crypto_markets)]
 pub struct NewCryptoMarket {
@@ -86,7 +162,13 @@ pub struct NewCryptoMarket {
   pub last_fetch_at: Option<DateTime<Utc>>,
 }
 
-/// Updateable fields for crypto markets
+// ─── Changeset model ────────────────────────────────────────────────────────
+
+/// Partial-update changeset for [`CryptoMarket`].
+///
+/// Contains only the mutable metric and status fields — identity fields
+/// (`id`, `sid`, `exchange`, `base`, `target`, `c_time`) are excluded.
+/// Used by [`CryptoMarket::update_status`].
 #[derive(AsChangeset, Debug)]
 #[diesel(table_name = crypto_markets)]
 pub struct UpdateCryptoMarket {
@@ -102,7 +184,19 @@ pub struct UpdateCryptoMarket {
   pub last_fetch_at: Option<DateTime<Utc>>,
 }
 
-/// Market summary statistics
+// ─── Analytics / presentation structs ────────────────────────────────────────
+
+/// Aggregate summary of the entire `crypto_markets` table.
+///
+/// Returned by [`CryptoMarket::get_summary`]. Not a database-backed model.
+///
+/// # Fields
+///
+/// - `total_markets` — total row count in `crypto_markets`.
+/// - `active_markets` — rows where `is_active = true`.
+/// - `unique_exchanges` — `COUNT(DISTINCT exchange)`.
+/// - `unique_trading_pairs` — `COUNT(DISTINCT (base, target))`.
+/// - `last_updated` — `MAX(last_fetch_at)` across all rows.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CryptoMarketsSummary {
   pub total_markets: i64,
@@ -112,17 +206,40 @@ pub struct CryptoMarketsSummary {
   pub last_updated: Option<DateTime<Utc>>,
 }
 
-/// Market statistics by exchange
+/// Per-exchange aggregate metrics.
+///
+/// Returned by [`CryptoMarket::get_exchange_stats`]. Not a database-backed model.
+///
+/// Note: `average_trust_score` is currently always `None` because trust scores
+/// are stored as text and cannot be averaged natively.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExchangeStats {
+  /// Exchange name (e.g., `"binance"`).
   pub exchange: String,
+  /// Total market listings on this exchange.
   pub market_count: i64,
+  /// Active market listings on this exchange.
   pub active_markets: i64,
+  /// Sum of `volume_24h` across active markets.
   pub total_volume_24h: Option<BigDecimal>,
+  /// Average trust score (currently unimplemented — always `None`).
   pub average_trust_score: Option<String>,
 }
 
-/// Input data structure for creating crypto markets (replaces loader dependency)
+// ─── Ingestion DTO ──────────────────────────────────────────────────────────
+
+/// Input DTO for the data ingestion pipeline.
+///
+/// Provides a clean API boundary between the data loader and the database
+/// layer. Convert to [`NewCryptoMarket`] via the [`From`] implementation.
+///
+/// Key differences from [`NewCryptoMarket`]:
+/// - Boolean flags (`is_active`, `is_anomaly`, `is_stale`) are non-optional
+///   `bool` rather than `Option<bool>`.
+/// - `last_fetch_at` is a required `DateTime<Utc>` rather than `Option`.
+///
+/// The `From<CryptoMarketInput>` impl wraps booleans in `Some(…)` and
+/// `last_fetch_at` in `Some(…)` to match the database schema.
 #[derive(Debug, Clone)]
 pub struct CryptoMarketInput {
   pub sid: i64,
@@ -142,8 +259,13 @@ pub struct CryptoMarketInput {
   pub last_fetch_at: DateTime<Utc>,
 }
 
+/// Synchronous query and mutation methods for the `crypto_markets` table.
+///
+/// All methods take `&mut PgConnection` and block on the database call.
+/// For async usage, wrap calls in `tokio::task::spawn_blocking` or use
+/// the `diesel-async` repository layer.
 impl CryptoMarket {
-  /// Insert a new crypto market
+  /// Inserts a single market record, returning the inserted row.
   pub fn insert(
     conn: &mut PgConnection,
     new_market: &NewCryptoMarket,
@@ -156,7 +278,9 @@ impl CryptoMarket {
       .get_result(conn)
   }
 
-  /// Insert multiple crypto markets in a transaction
+  /// Inserts multiple market records in a single statement, returning all
+  /// inserted rows. Does **not** handle conflicts — use [`upsert_markets`](Self::upsert_markets)
+  /// if duplicates are possible.
   pub fn insert_batch(
     conn: &mut PgConnection,
     new_markets: &[NewCryptoMarket],
@@ -169,7 +293,17 @@ impl CryptoMarket {
       .get_results(conn)
   }
 
-  /// Upsert (insert or update) crypto markets
+  /// Upserts (insert-or-update) a batch of market records.
+  ///
+  /// Uses `ON CONFLICT (sid, exchange, base, target) DO UPDATE` to update
+  /// all metric and status fields when a record for the same trading pair
+  /// already exists. Identity fields and `c_time` are preserved on conflict.
+  ///
+  /// Each record is upserted individually within the same connection (no
+  /// explicit transaction wrapper — callers should wrap in a transaction if
+  /// atomicity across the batch is required).
+  ///
+  /// Logs an error and returns `Err` if any single upsert fails.
   pub fn upsert_markets(
     conn: &mut PgConnection,
     markets: &[NewCryptoMarket],
@@ -210,7 +344,11 @@ impl CryptoMarket {
     }
   }
 
-  /// Get market summary statistics
+  /// Computes aggregate statistics across all crypto markets.
+  ///
+  /// Executes five queries: total count, active count, distinct exchange
+  /// count, distinct trading-pair count (via raw SQL), and `MAX(last_fetch_at)`.
+  /// Returns a [`CryptoMarketsSummary`].
   pub fn get_summary(conn: &mut PgConnection) -> Result<CryptoMarketsSummary, DieselError> {
     use crate::schema::crypto_markets::dsl::*;
     use diesel::dsl::{count, max};
@@ -246,7 +384,11 @@ impl CryptoMarket {
     })
   }
 
-  /// Clean up stale market entries
+  /// Deletes market rows that are both marked stale (`is_stale = true`) and
+  /// have not been fetched within `threshold_hours`.
+  ///
+  /// Returns the number of rows deleted. Uses a PostgreSQL `interval` cast
+  /// for the time comparison.
   pub fn cleanup_stale_markets(
     conn: &mut PgConnection,
     threshold_hours: i64,
@@ -267,7 +409,13 @@ impl CryptoMarket {
     .execute(conn)
   }
 
-  /// Get markets with their symbol information
+  /// Returns active markets joined with their symbol name and ticker.
+  ///
+  /// Performs an inner join `crypto_markets → symbols` filtered to
+  /// `is_active = true`, ordered by `volume_24h DESC`. An optional `limit`
+  /// caps the result count.
+  ///
+  /// Returns `Vec<(CryptoMarket, symbol_ticker, symbol_name)>`.
   pub fn get_markets_with_symbols(
     conn: &mut PgConnection,
     limit: Option<i64>,
@@ -288,7 +436,10 @@ impl CryptoMarket {
     query.load::<(Self, String, String)>(conn)
   }
 
-  /// Get markets by exchange with active filter
+  /// Returns markets listed on a specific exchange, ordered by volume.
+  ///
+  /// When `active_only` is `true`, only rows with `is_active = true` are
+  /// returned.
   pub fn get_by_exchange(
     conn: &mut PgConnection,
     exchange_name: &str,
@@ -305,7 +456,10 @@ impl CryptoMarket {
     query.order(volume_24h.desc().nulls_last()).load::<Self>(conn)
   }
 
-  /// Get markets by symbol (sid) with active filter
+  /// Returns all markets for a given security ID (`sid`), ordered by volume.
+  ///
+  /// When `active_only` is `true`, only rows with `is_active = true` are
+  /// returned.
   pub fn get_by_symbol(
     conn: &mut PgConnection,
     symbol_id: i64,
@@ -322,7 +476,10 @@ impl CryptoMarket {
     query.order(volume_24h.desc().nulls_last()).load::<Self>(conn)
   }
 
-  /// Update market status (active/inactive/stale)
+  /// Applies a partial update to a single market row by its `id`.
+  ///
+  /// Only the fields present in the [`UpdateCryptoMarket`] changeset are
+  /// written; all other columns are left unchanged. Returns the updated row.
   pub fn update_status(
     conn: &mut PgConnection,
     market_id: i32,
@@ -336,7 +493,11 @@ impl CryptoMarket {
       .get_result(conn)
   }
 
-  /// Mark markets as stale if not updated within threshold
+  /// Marks markets as stale (`is_stale = true`) if their `last_fetch_at`
+  /// is older than `threshold_hours` ago and they are not already stale.
+  ///
+  /// Returns the number of rows updated. Intended to be run periodically
+  /// (e.g., via a cron job) before [`cleanup_stale_markets`](Self::cleanup_stale_markets).
   pub fn mark_stale_markets(
     conn: &mut PgConnection,
     threshold_hours: i64,
@@ -356,7 +517,13 @@ impl CryptoMarket {
     .execute(conn)
   }
 
-  /// Get exchange statistics
+  /// Computes per-exchange aggregate metrics.
+  ///
+  /// For each distinct exchange, queries total market count, active market
+  /// count, and sum of 24h volume. Returns a `Vec<ExchangeStats>`.
+  ///
+  /// Note: `average_trust_score` is always `None` in the current
+  /// implementation because trust scores are stored as text.
   pub fn get_exchange_stats(conn: &mut PgConnection) -> Result<Vec<ExchangeStats>, DieselError> {
     use crate::schema::crypto_markets::dsl::*;
     use diesel::dsl::{count, sum};
@@ -395,7 +562,10 @@ impl CryptoMarket {
     Ok(stats)
   }
 
-  /// Upsert batch - alternative name for compatibility
+  /// Convenience alias for [`upsert_markets`](Self::upsert_markets) that returns
+  /// only the count of upserted rows instead of the full row data.
+  ///
+  /// Retained for backward compatibility with callers that only need the count.
   pub fn upsert_batch(
     conn: &mut PgConnection,
     markets: &[NewCryptoMarket],
@@ -404,7 +574,12 @@ impl CryptoMarket {
   }
 }
 
-// Conversion from input data to database model
+/// Converts an ingestion-layer [`CryptoMarketInput`] into a database-layer
+/// [`NewCryptoMarket`].
+///
+/// Wraps the non-optional boolean flags (`is_active`, `is_anomaly`, `is_stale`)
+/// and `last_fetch_at` in `Some(…)` to match the `Option` columns in the
+/// database schema.
 impl From<CryptoMarketInput> for NewCryptoMarket {
   fn from(market: CryptoMarketInput) -> Self {
     Self {

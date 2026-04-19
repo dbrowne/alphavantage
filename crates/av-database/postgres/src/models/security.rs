@@ -27,6 +27,42 @@
  * SOFTWARE.
  */
 
+//! Diesel models for securities, company fundamentals, and symbol mappings.
+//!
+//! This module covers the core security master data — the central reference
+//! tables that all other domain modules (prices, news, crypto) link to via
+//! the `sid` (security ID) foreign key.
+//!
+//! # Database tables
+//!
+//! ```text
+//! symbols ──1:1──► overviews          (company profile & key metrics)
+//!    │     └──1:1──► overviewexts      (extended fundamentals & technicals)
+//!    ├──1:1──► equity_details          (exchange hours & timezone)
+//!    └──1:N──► symbol_mappings         (external source ID mappings)
+//! ```
+//!
+//! | Table              | Model              | Description                                |
+//! |--------------------|--------------------|--------------------------------------------|
+//! | `symbols`          | [`Symbol`]         | Core security record: ticker, type, region  |
+//! | `overviews`        | [`Overview`]       | Company profile: sector, P/E, EBITDA, etc.  |
+//! | `overviewexts`     | [`Overviewext`]    | Extended metrics: margins, beta, 52-week range |
+//! | `equity_details`   | [`EquityDetail`]   | Exchange trading hours and timezone          |
+//! | `symbol_mappings`  | [`SymbolMapping`]  | Maps `sid` to external source identifiers    |
+//!
+//! # Struct conventions
+//!
+//! Each table has up to three struct variants:
+//! - **Query** (e.g., `Symbol`) — `Queryable`, `Selectable`, `Identifiable`.
+//! - **Insertable borrowed** (e.g., `NewSymbol<'a>`) — borrows all fields.
+//! - **Insertable owned** (e.g., `NewSymbolOwned`) — owns all data, provides
+//!   `as_ref()` to convert to the borrowed form.
+//!
+//! `Overview` and `Overviewext` insertable types also derive `AsChangeset`
+//! for upsert-style updates.
+//!
+//! All query methods are **async** (`&mut AsyncPgConnection`).
+
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -34,6 +70,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::{equity_details, overviewexts, overviews, symbol_mappings, symbols};
 
+// ─── Symbol ─────────────────────────────────────────────────────────────────
+
+/// The core security master record.
+///
+/// Maps to the `symbols` table with PK `sid` (security ID, generated via
+/// [`SecurityType::encode`](av_core::types::market::security_type::SecurityType::encode)).
+/// Every other table in the database references this `sid`.
+///
+/// # Key fields
+///
+/// | Field      | Type            | Description                                     |
+/// |------------|-----------------|-------------------------------------------------|
+/// | `sid`      | `i64`           | Bitmap-encoded security ID (PK)                 |
+/// | `symbol`   | `String`        | Ticker symbol (e.g., `"AAPL"`)                  |
+/// | `priority` | `i32`           | Ingestion priority (lower = higher priority)    |
+/// | `name`     | `String`        | Full company/security name                      |
+/// | `sec_type` | `String`        | Security type (e.g., `"Equity"`, `"ETF"`)       |
+/// | `region`   | `String`        | Geographic region (e.g., `"United States"`)     |
+/// | `currency` | `String`        | Primary trading currency (e.g., `"USD"`)        |
+/// | `overview` | `bool`          | Whether overview data has been loaded            |
+/// | `intraday` | `bool`          | Whether intraday price data is being collected   |
+/// | `summary`  | `bool`          | Whether summary price data is being collected    |
+/// | `c_time`   | `NaiveDateTime` | Row creation timestamp                          |
+/// | `m_time`   | `NaiveDateTime` | Last modification timestamp                     |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = symbols)]
 #[diesel(primary_key(sid))]
@@ -52,6 +112,7 @@ pub struct Symbol {
   pub m_time: NaiveDateTime,
 }
 
+/// Insertable (borrowed) form of [`Symbol`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = symbols)]
 pub struct NewSymbol<'a> {
@@ -69,8 +130,9 @@ pub struct NewSymbol<'a> {
   pub m_time: &'a NaiveDateTime,
 }
 
-// Add async methods
+/// Async query methods for [`Symbol`].
 impl Symbol {
+  /// Looks up a symbol by its security ID.
   pub async fn find_by_sid(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -78,6 +140,7 @@ impl Symbol {
     symbols::table.find(sid).first(conn).await
   }
 
+  /// Looks up a symbol by its ticker string.
   pub async fn find_by_symbol(
     conn: &mut diesel_async::AsyncPgConnection,
     symbol: &str,
@@ -85,6 +148,8 @@ impl Symbol {
     symbols::table.filter(symbols::symbol.eq(symbol)).first(conn).await
   }
 
+  /// Returns all symbols that have at least one data-collection flag enabled
+  /// (`overview`, `intraday`, or `summary`).
   pub async fn active_symbols(
     conn: &mut diesel_async::AsyncPgConnection,
   ) -> Result<Vec<Self>, diesel::result::Error> {
@@ -97,6 +162,24 @@ impl Symbol {
   }
 }
 
+// ─── Overview ───────────────────────────────────────────────────────────────
+
+/// Company profile and key financial metrics from the Alpha Vantage
+/// `OVERVIEW` endpoint.
+///
+/// Maps to the `overviews` table with PK `sid`. Associated to [`Symbol`]
+/// via `belongs_to`.
+///
+/// # Field groups
+///
+/// - **Identity:** `symbol`, `name`, `description`, `cik`, `exchange`,
+///   `currency`, `country`, `address`.
+/// - **Classification:** `sector`, `industry`.
+/// - **Fiscal:** `fiscal_year_end`, `latest_quarter`.
+/// - **Valuation:** `market_capitalization`, `ebitda`, `pe_ratio`,
+///   `peg_ratio`, `book_value`, `eps`.
+/// - **Dividends:** `dividend_per_share`, `dividend_yield`.
+/// - **Timestamps:** `c_time`, `m_time`.
 #[derive(
   Queryable, Selectable, Identifiable, Associations, Debug, Clone, Serialize, Deserialize,
 )]
@@ -129,6 +212,9 @@ pub struct Overview {
   pub m_time: NaiveDateTime,
 }
 
+/// Insertable and updatable (borrowed) form of [`Overview`].
+///
+/// Derives both `Insertable` and `AsChangeset` for upsert operations.
 #[derive(Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = overviews)]
 pub struct NewOverview<'a> {
@@ -157,8 +243,9 @@ pub struct NewOverview<'a> {
   pub m_time: &'a NaiveDateTime,
 }
 
-// Implementation methods for Overview
+/// Async query methods for [`Overview`].
 impl Overview {
+  /// Looks up a company overview by its security ID.
   pub async fn find_by_sid(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -166,6 +253,7 @@ impl Overview {
     overviews::table.find(sid).first(conn).await
   }
 
+  /// Looks up a company overview by its ticker symbol.
   pub async fn find_by_symbol(
     conn: &mut diesel_async::AsyncPgConnection,
     symbol: &str,
@@ -173,6 +261,7 @@ impl Overview {
     overviews::table.filter(overviews::symbol.eq(symbol)).first(conn).await
   }
 
+  /// Returns all overviews in a given sector (e.g., `"Technology"`).
   pub async fn by_sector(
     conn: &mut diesel_async::AsyncPgConnection,
     sector: &str,
@@ -181,6 +270,27 @@ impl Overview {
   }
 }
 
+// ─── Overviewext ────────────────────────────────────────────────────────────
+
+/// Extended company fundamentals and technical indicators.
+///
+/// Maps to the `overviewexts` table with PK `sid`. Complements [`Overview`]
+/// with deeper financial metrics. Associated to [`Symbol`] via `belongs_to`.
+///
+/// # Field groups
+///
+/// - **Profitability:** `profit_margin`, `operating_margin_ttm`,
+///   `return_on_assets_ttm`, `return_on_equity_ttm`.
+/// - **Revenue:** `revenue_per_share_ttm`, `revenue_ttm`, `gross_profit_ttm`.
+/// - **Earnings:** `diluted_eps_ttm`, `quarterly_earnings_growth_yoy`,
+///   `quarterly_revenue_growth_yoy`.
+/// - **Valuation ratios:** `trailing_pe`, `forward_pe`,
+///   `price_to_sales_ratio_ttm`, `price_to_book_ratio`, `ev_to_revenue`,
+///   `ev_to_ebitda`.
+/// - **Technical:** `beta`, `week_high_52`, `week_low_52`,
+///   `day_moving_average_50`, `day_moving_average_200`.
+/// - **Shares & dividends:** `shares_outstanding`, `dividend_date`,
+///   `ex_dividend_date`, `analyst_target_price`.
 #[derive(
   Queryable, Selectable, Identifiable, Associations, Debug, Clone, Serialize, Deserialize,
 )]
@@ -218,6 +328,7 @@ pub struct Overviewext {
   pub m_time: NaiveDateTime,
 }
 
+/// Insertable and updatable (borrowed) form of [`Overviewext`].
 #[derive(Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = overviewexts)]
 pub struct NewOverviewext<'a> {
@@ -251,8 +362,9 @@ pub struct NewOverviewext<'a> {
   pub m_time: &'a NaiveDateTime,
 }
 
-// Implementation methods for Overviewext
+/// Async query methods for [`Overviewext`].
 impl Overviewext {
+  /// Looks up extended overview data by security ID.
   pub async fn find_by_sid(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -260,6 +372,7 @@ impl Overviewext {
     overviewexts::table.find(sid).first(conn).await
   }
 
+  /// Returns securities with beta at or above `min_beta` (high-volatility filter).
   pub async fn with_high_beta(
     conn: &mut diesel_async::AsyncPgConnection,
     min_beta: f32,
@@ -267,6 +380,7 @@ impl Overviewext {
     overviewexts::table.filter(overviewexts::beta.ge(min_beta)).load(conn).await
   }
 
+  /// Returns securities that have a non-null dividend date (dividend-paying filter).
   pub async fn with_dividend(
     conn: &mut diesel_async::AsyncPgConnection,
   ) -> Result<Vec<Self>, diesel::result::Error> {
@@ -274,7 +388,13 @@ impl Overviewext {
   }
 }
 
-// Create new wrapper for insertion with owned data
+// ─── Owned insertable variants ──────────────────────────────────────────────
+
+/// Insertable (owned) form of [`Symbol`].
+///
+/// Provides [`from_symbol_data`](NewSymbolOwned::from_symbol_data) for
+/// ergonomic construction and [`as_ref`](NewSymbolOwned::as_ref) for
+/// conversion to the borrowed [`NewSymbol`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = symbols)]
 pub struct NewSymbolOwned {
@@ -292,8 +412,11 @@ pub struct NewSymbolOwned {
   pub m_time: NaiveDateTime,
 }
 
-// Method to convert from symbol data to NewSymbolOwned
 impl NewSymbolOwned {
+  /// Constructs a new owned symbol from raw field values.
+  ///
+  /// Sets all data-collection flags (`overview`, `intraday`, `summary`) to
+  /// `false` and both timestamps to `Utc::now()`.
   pub fn from_symbol_data(
     symbol: &str,
     priority: i32,
@@ -320,6 +443,7 @@ impl NewSymbolOwned {
     }
   }
 
+  /// Converts to a borrowed [`NewSymbol`] for use with Diesel insert APIs.
   pub fn as_ref(&self) -> NewSymbol<'_> {
     NewSymbol {
       sid: &self.sid,
@@ -338,7 +462,8 @@ impl NewSymbolOwned {
   }
 }
 
-// Convert from borrowed NewSymbol to owned NewSymbolOwned
+/// Converts a borrowed [`NewSymbol`] to an owned [`NewSymbolOwned`] by
+/// cloning all fields.
 impl<'a> From<&NewSymbol<'a>> for NewSymbolOwned {
   fn from(new_symbol: &NewSymbol<'a>) -> Self {
     Self {
@@ -358,7 +483,8 @@ impl<'a> From<&NewSymbol<'a>> for NewSymbolOwned {
   }
 }
 
-// Add owned version for overviews
+/// Insertable and updatable (owned) form of [`Overview`].
+/// Provides [`as_ref`](NewOverviewOwned::as_ref) for conversion to borrowed form.
 #[derive(Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = overviews)]
 pub struct NewOverviewOwned {
@@ -388,6 +514,7 @@ pub struct NewOverviewOwned {
 }
 
 impl NewOverviewOwned {
+  /// Converts to a borrowed [`NewOverview`] for use with Diesel insert/update APIs.
   pub fn as_ref(&self) -> NewOverview<'_> {
     NewOverview {
       sid: &self.sid,
@@ -417,7 +544,8 @@ impl NewOverviewOwned {
   }
 }
 
-// Add owned version for overviewexts
+/// Insertable and updatable (owned) form of [`Overviewext`].
+/// Provides [`as_ref`](NewOverviewextOwned::as_ref) for conversion to borrowed form.
 #[derive(Insertable, AsChangeset, Debug, Clone)]
 #[diesel(table_name = overviewexts)]
 pub struct NewOverviewextOwned {
@@ -452,6 +580,7 @@ pub struct NewOverviewextOwned {
 }
 
 impl NewOverviewextOwned {
+  /// Converts to a borrowed [`NewOverviewext`] for use with Diesel insert/update APIs.
   pub fn as_ref(&self) -> NewOverviewext<'_> {
     NewOverviewext {
       sid: &self.sid,
@@ -486,7 +615,13 @@ impl NewOverviewextOwned {
   }
 }
 
-// ===== EQUITY DETAILS TABLE =====
+// ─── EquityDetail ───────────────────────────────────────────────────────────
+
+/// Exchange trading hours and timezone for an equity security.
+///
+/// Maps to the `equity_details` table with PK `sid`. Stores the exchange
+/// name, market open/close times as [`NaiveTime`], and the IANA timezone
+/// string. Associated to [`Symbol`] via `belongs_to`.
 #[derive(
   Queryable, Selectable, Identifiable, Associations, Debug, Clone, Serialize, Deserialize,
 )]
@@ -503,6 +638,7 @@ pub struct EquityDetail {
   pub m_time: NaiveDateTime,
 }
 
+/// Insertable (borrowed) form of [`EquityDetail`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = equity_details)]
 pub struct NewEquityDetail<'a> {
@@ -515,7 +651,7 @@ pub struct NewEquityDetail<'a> {
   pub m_time: &'a NaiveDateTime,
 }
 
-// Create new wrapper for insertion with owned data
+/// Insertable (owned) form of [`EquityDetail`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = equity_details)]
 pub struct NewEquityDetailOwned {
@@ -528,8 +664,8 @@ pub struct NewEquityDetailOwned {
   pub m_time: NaiveDateTime,
 }
 
-// Implementation methods for EquityDetail
 impl EquityDetail {
+  /// Looks up equity details by security ID.
   pub async fn find_by_sid(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -538,7 +674,24 @@ impl EquityDetail {
   }
 }
 
-// Symbol Mapping - Maps symbols to source-specific identifiers
+// ─── SymbolMapping ──────────────────────────────────────────────────────────
+
+/// Maps an internal `sid` to a source-specific external identifier.
+///
+/// Maps to the `symbol_mappings` table with auto-increment PK `id`.
+/// Unlike [`CryptoApiMap`](super::crypto::CryptoApiMap) (which is
+/// crypto-specific), this table is general-purpose and can map any
+/// security to any external data source.
+///
+/// # Key fields
+///
+/// | Field               | Type                    | Description                         |
+/// |---------------------|-------------------------|-------------------------------------|
+/// | `sid`               | `i64`                   | Internal security ID (FK to `symbols`) |
+/// | `source_name`       | `String`                | External source (e.g., `"AlphaVantage"`) |
+/// | `source_identifier` | `String`                | ID used by the external source       |
+/// | `verified`          | `Option<bool>`          | Whether the mapping has been confirmed |
+/// | `last_verified_at`  | `Option<NaiveDateTime>` | When verification last ran           |
 #[derive(
   Queryable, Selectable, Identifiable, Associations, Debug, Clone, Serialize, Deserialize,
 )]
@@ -556,6 +709,10 @@ pub struct SymbolMapping {
   pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Insertable (owned) form of [`SymbolMapping`].
+///
+/// `verified` defaults to `None` (unverified). Timestamps (`created_at`,
+/// `updated_at`) are omitted and defaulted by the database.
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = symbol_mappings)]
 pub struct NewSymbolMapping {
@@ -565,9 +722,9 @@ pub struct NewSymbolMapping {
   pub verified: Option<bool>,
 }
 
-// Implementation methods for SymbolMapping
+/// Async query methods for [`SymbolMapping`].
 impl SymbolMapping {
-  /// Find mapping for a specific symbol and source
+  /// Returns the mapping for a given `(sid, source_name)` pair.
   pub async fn find_by_sid_and_source(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -580,7 +737,7 @@ impl SymbolMapping {
       .await
   }
 
-  /// Find all mappings for a symbol
+  /// Returns all source mappings for a given security ID.
   pub async fn find_by_sid(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -588,7 +745,8 @@ impl SymbolMapping {
     symbol_mappings::table.filter(symbol_mappings::sid.eq(sid)).load(conn).await
   }
 
-  /// Find mapping by source identifier
+  /// Reverse-lookup: finds the mapping for a given external source and
+  /// identifier (e.g., source=`"AlphaVantage"`, identifier=`"AAPL"`).
   pub async fn find_by_source_identifier(
     conn: &mut diesel_async::AsyncPgConnection,
     source: &str,
@@ -601,7 +759,9 @@ impl SymbolMapping {
       .await
   }
 
-  /// Verify and update the mapping
+  /// Sets `verified = true` and `last_verified_at = now()` for a mapping.
+  ///
+  /// Returns the updated row.
   pub async fn mark_verified(
     conn: &mut diesel_async::AsyncPgConnection,
     mapping_id: i32,

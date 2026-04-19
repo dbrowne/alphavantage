@@ -27,6 +27,68 @@
  * SOFTWARE.
  */
 
+//! Diesel models for news articles, feeds, sentiment, and topic data.
+//!
+//! This module implements a normalized news storage schema that ingests data
+//! from the Alpha Vantage `NEWS_SENTIMENT` endpoint and stores it across
+//! nine interrelated tables. Unlike most other model modules in this crate,
+//! all query methods here are **async** (`&mut AsyncPgConnection`).
+//!
+//! # Database schema (ER overview)
+//!
+//! ```text
+//! newsoverviews ──1:N──► feeds ──1:N──► tickersentiments
+//!                          │
+//!                          ├──N:1──► articles ──N:1──► sources
+//!                          ├──1:N──► authormaps ──N:1──► authors
+//!                          └──1:N──► topicmaps  ──N:1──► topicrefs
+//! ```
+//!
+//! # Table / model mapping
+//!
+//! | Table              | Query model          | Insertable (borrowed)     | Insertable (owned)         |
+//! |--------------------|----------------------|---------------------------|----------------------------|
+//! | `newsoverviews`    | [`NewsOverview`]     | [`NewNewsOverview`]       | [`NewNewsOverviewOwned`]   |
+//! | `feeds`            | [`Feed`]             | [`NewFeed`]               | [`NewFeedOwned`]           |
+//! | `articles`         | [`Article`]          | [`NewArticle`]            | [`NewArticleOwned`]        |
+//! | `authors`          | [`Author`]           | [`NewAuthor`]             | [`NewAuthorOwned`]         |
+//! | `authormaps`       | [`AuthorMap`]        | [`NewAuthorMap`]          | [`NewAuthorMapOwned`]      |
+//! | `sources`          | [`Source`]           | [`NewSource`]             | [`NewSourceOwned`]         |
+//! | `tickersentiments` | [`TickerSentiment`]  | [`NewTickerSentiment`]    | [`NewTickerSentimentOwned`]|
+//! | `topicrefs`        | [`TopicRef`]         | [`NewTopicRef`]           | [`NewTopicRefOwned`]       |
+//! | `topicmaps`        | [`TopicMap`]         | [`NewTopicMap`]           | [`NewTopicMapOwned`]       |
+//!
+//! # Analytics query-result types
+//!
+//! | Type                   | Purpose                                                    |
+//! |------------------------|------------------------------------------------------------|
+//! | [`SentimentSummary`]   | Aggregated sentiment for a symbol over a time window       |
+//! | [`SentimentTrend`]     | Time-bucketed sentiment trend (uses TimescaleDB `time_bucket`) |
+//! | [`TrendingTopic`]      | Topics ranked by mention count with sentiment stats        |
+//! | [`ProcessedNewsStats`] | Counters returned by [`process_news_batch`]                |
+//!
+//! # Ingestion DTOs
+//!
+//! | Type                    | Purpose                                                   |
+//! |-------------------------|-----------------------------------------------------------|
+//! | [`NewsData`]            | Top-level ingestion input: one symbol's news batch        |
+//! | [`NewsItem`]            | A single news article with sentiment and topic data       |
+//! | [`TickerSentimentData`] | Per-ticker sentiment score within a news item             |
+//! | [`TopicData`]           | Topic tag with relevance score within a news item         |
+//!
+//! # Key operations
+//!
+//! - **Batch ingestion:** [`process_news_batch`] — transactional insert of a
+//!   full news batch, deduplicating by `hashid`.
+//! - **Sentiment analytics:** [`NewsOverview::with_sentiment_summary`],
+//!   [`TickerSentiment::get_sentiment_trend`].
+//! - **Topic analytics:** [`TopicMap::get_trending_topics`],
+//!   [`TopicMap::get_topic_correlation`].
+//! - **Find-or-create:** [`Author::find_or_create`], [`Source::find_or_create`],
+//!   [`TopicRef::find_or_create`].
+//! - **Bulk insert:** [`NewFeed::bulk_insert_refs`],
+//!   [`NewTickerSentiment::bulk_insert_refs`], [`NewTopicMap::bulk_insert_refs`].
+
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -37,9 +99,22 @@ use crate::schema::{
   topicrefs,
 };
 
-// ===== Query Result Types =====
-// These need to be at module level to be used as return types
+// ─── Analytics query-result types ───────────────────────────────────────────
 
+/// Aggregated sentiment statistics for a single symbol over a time window.
+///
+/// Returned by [`NewsOverview::with_sentiment_summary`] via a raw SQL CTE query.
+/// Not backed by a database table.
+///
+/// # Fields
+///
+/// - `sid` — the security ID that was queried.
+/// - `avg_sentiment` — mean overall sentiment score across matching feeds.
+/// - `article_count` — number of distinct news overview records.
+/// - `bullish_pct` / `bearish_pct` / `neutral_pct` — percentage distribution
+///   of sentiment labels.
+/// - `topics` — JSONB array of `{topic, avg_relevance}` objects for topics
+///   mentioned in the matching articles.
 #[derive(QueryableByName, Debug, Serialize)]
 pub struct SentimentSummary {
   #[diesel(sql_type = diesel::sql_types::BigInt)]
@@ -58,6 +133,15 @@ pub struct SentimentSummary {
   pub topics: serde_json::Value,
 }
 
+/// Time-bucketed sentiment trend for a symbol.
+///
+/// Returned by [`TickerSentiment::get_sentiment_trend`] using TimescaleDB's
+/// `time_bucket()` function. Each row represents one time bucket.
+///
+/// - `bucket` — the start of the time bucket.
+/// - `avg_sentiment` / `avg_relevance` — mean values within the bucket.
+/// - `mention_count` — number of ticker-sentiment records in the bucket.
+/// - `bullish_ratio` — fraction of mentions labeled `"Bullish"`.
 #[derive(QueryableByName, Debug, Serialize)]
 pub struct SentimentTrend {
   #[diesel(sql_type = diesel::sql_types::Timestamptz)]
@@ -72,6 +156,14 @@ pub struct SentimentTrend {
   pub bullish_ratio: f64,
 }
 
+/// A topic ranked by mention count with associated sentiment statistics.
+///
+/// Returned by [`TopicMap::get_trending_topics`].
+///
+/// - `topic_name` — the topic label (from `topicrefs`).
+/// - `mention_count` — total appearances across feeds in the time window.
+/// - `avg_relevance` / `avg_sentiment` — mean scores across mentions.
+/// - `unique_symbols` — number of distinct securities associated with this topic.
 #[derive(QueryableByName, Debug, Serialize)]
 pub struct TrendingTopic {
   #[diesel(sql_type = diesel::sql_types::Text)]
@@ -86,6 +178,11 @@ pub struct TrendingTopic {
   pub unique_symbols: i64,
 }
 
+/// Counters tracking how many records were inserted during a
+/// [`process_news_batch`] call.
+///
+/// All fields start at `0` (via `Default`) and are incremented as each
+/// entity is successfully inserted.
 #[derive(Debug, Default)]
 pub struct ProcessedNewsStats {
   pub news_overviews: usize,
@@ -95,7 +192,16 @@ pub struct ProcessedNewsStats {
   pub topics: usize,
 }
 
-// ===== NewsOverview =====
+// ─── NewsOverview ───────────────────────────────────────────────────────────
+
+/// A news-query snapshot for a single symbol at a point in time.
+///
+/// Maps to `newsoverviews` with composite PK `(creation, id)`.
+/// Each row represents one API call to `NEWS_SENTIMENT` for a given `sid`.
+///
+/// - `hashid` — deterministic hash of the query parameters, used for
+///   deduplication (see [`find_by_hashid`](NewsOverview::find_by_hashid)).
+/// - `items` — number of news items returned by the query.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = newsoverviews)]
 #[diesel(primary_key(creation, id))]
@@ -107,6 +213,7 @@ pub struct NewsOverview {
   pub hashid: String,
 }
 
+/// Insertable (borrowed) form of [`NewsOverview`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = newsoverviews)]
 pub struct NewNewsOverview<'a> {
@@ -116,6 +223,7 @@ pub struct NewNewsOverview<'a> {
   pub hashid: &'a str,
 }
 
+/// Insertable (owned) form of [`NewsOverview`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = newsoverviews)]
 pub struct NewNewsOverviewOwned {
@@ -125,7 +233,10 @@ pub struct NewNewsOverviewOwned {
   pub hashid: String,
 }
 
+/// Async query methods for [`NewsOverview`].
 impl NewsOverview {
+  /// Finds a news overview by its deterministic hash ID.
+  /// Used for deduplication — if a result is returned, the batch was already ingested.
   pub async fn find_by_hashid(
     conn: &mut diesel_async::AsyncPgConnection,
     hashid: &str,
@@ -133,6 +244,8 @@ impl NewsOverview {
     newsoverviews::table.filter(newsoverviews::hashid.eq(hashid)).first(conn).await.optional()
   }
 
+  /// Returns news overviews for a symbol within the last `days` days,
+  /// ordered by creation time descending (most recent first).
   pub async fn get_recent_by_symbol(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -146,6 +259,11 @@ impl NewsOverview {
       .await
   }
 
+  /// Returns aggregated sentiment statistics for a symbol over the last `days` days.
+  ///
+  /// Executes a raw SQL CTE that joins `newsoverviews → feeds → topicmaps → topicrefs`
+  /// to compute average sentiment, bullish/bearish/neutral percentages, and a JSONB
+  /// array of associated topics. Returns a [`SentimentSummary`].
   pub async fn with_sentiment_summary(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -210,7 +328,16 @@ impl NewsOverview {
   }
 }
 
-// ===== Feed =====
+// ─── Feed ───────────────────────────────────────────────────────────────────
+
+/// A single news feed entry linking a [`NewsOverview`] to an [`Article`].
+///
+/// Maps to `feeds`. Each feed record captures the overall sentiment score
+/// and label for one article within a news overview batch. The `belongs_to`
+/// association enables Diesel's `grouped_by` pattern for eager loading.
+///
+/// - `osentiment` — overall sentiment score (`f32`, range `[-1.0, 1.0]`).
+/// - `sentlabel` — sentiment label string (`"Bullish"`, `"Neutral"`, `"Bearish"`).
 #[derive(Queryable, Selectable, Identifiable, Associations, Debug, Clone, Serialize)]
 #[diesel(table_name = feeds)]
 #[diesel(belongs_to(NewsOverview, foreign_key = newsoverviewid))]
@@ -225,6 +352,7 @@ pub struct Feed {
   pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Insertable (borrowed) form of [`Feed`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = feeds)]
 pub struct NewFeed<'a> {
@@ -236,6 +364,7 @@ pub struct NewFeed<'a> {
   pub sentlabel: &'a str,
 }
 
+/// Insertable (owned) form of [`Feed`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = feeds)]
 pub struct NewFeedOwned {
@@ -248,6 +377,7 @@ pub struct NewFeedOwned {
 }
 
 impl<'a> NewFeed<'a> {
+  /// Inserts feeds in chunks of 500, returning all generated `id` values.
   pub async fn bulk_insert_refs(
     conn: &mut diesel_async::AsyncPgConnection,
     records: &[NewFeed<'a>],
@@ -268,6 +398,7 @@ impl<'a> NewFeed<'a> {
 }
 
 impl NewFeedOwned {
+  /// Converts to a borrowed [`NewFeed`] reference for use with bulk-insert APIs.
   pub fn as_ref(&self) -> NewFeed<'_> {
     NewFeed {
       sid: &self.sid,
@@ -279,6 +410,7 @@ impl NewFeedOwned {
     }
   }
 
+  /// Inserts owned feeds in chunks of 500, returning all generated `id` values.
   pub async fn bulk_insert(
     conn: &mut diesel_async::AsyncPgConnection,
     records: Vec<Self>,
@@ -298,7 +430,17 @@ impl NewFeedOwned {
   }
 }
 
-// ===== Article =====
+// ─── Article ────────────────────────────────────────────────────────────────
+
+/// A news article with content metadata, authorship, and media fields.
+///
+/// Maps to `articles` with PK `hashid` (a content-addressable hash of the
+/// article URL/title). Deduplicated on insert — the same article appearing
+/// in multiple feed batches is stored only once.
+///
+/// Fields like `source_link`, `release_time`, `author_description`,
+/// `author_avatar_url`, `feature_image`, and `author_nick_name` are optional
+/// extensions populated when the upstream API provides them.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = articles)]
 #[diesel(primary_key(hashid))]
@@ -320,6 +462,7 @@ pub struct Article {
   pub author_nick_name: Option<String>,
 }
 
+/// Insertable (borrowed) form of [`Article`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = articles)]
 pub struct NewArticle<'a> {
@@ -340,6 +483,7 @@ pub struct NewArticle<'a> {
   pub author_nick_name: Option<&'a str>,
 }
 
+/// Insertable (owned) form of [`Article`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = articles)]
 pub struct NewArticleOwned {
@@ -361,6 +505,7 @@ pub struct NewArticleOwned {
 }
 
 impl Article {
+  /// Finds an article by its content-addressable hash ID. Returns `None` if not found.
   pub async fn find_by_hashid(
     conn: &mut diesel_async::AsyncPgConnection,
     hashid: &str,
@@ -368,6 +513,7 @@ impl Article {
     articles::table.find(hashid).first(conn).await.optional()
   }
 
+  /// Returns up to `limit` articles in a given category, ordered by publish time descending.
   pub async fn get_by_category(
     conn: &mut diesel_async::AsyncPgConnection,
     category: &str,
@@ -382,7 +528,11 @@ impl Article {
   }
 }
 
-// ===== Author =====
+// ─── Author ─────────────────────────────────────────────────────────────────
+
+/// A news article author. Deduplicated by `author_name`.
+///
+/// Maps to `authors`. Linked to feeds via the [`AuthorMap`] junction table.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = authors)]
 pub struct Author {
@@ -390,12 +540,14 @@ pub struct Author {
   pub author_name: String,
 }
 
+/// Insertable (borrowed) form of [`Author`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = authors)]
 pub struct NewAuthor<'a> {
   pub author_name: &'a str,
 }
 
+/// Insertable (owned) form of [`Author`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = authors)]
 pub struct NewAuthorOwned {
@@ -403,6 +555,8 @@ pub struct NewAuthorOwned {
 }
 
 impl Author {
+  /// Returns the `id` of the author with the given name, creating a new
+  /// record if one doesn't exist (find-or-create pattern).
   pub async fn find_or_create(
     conn: &mut diesel_async::AsyncPgConnection,
     name: &str,
@@ -429,7 +583,9 @@ impl Author {
   }
 }
 
-// ===== AuthorMap =====
+// ─── AuthorMap ──────────────────────────────────────────────────────────────
+
+/// Junction table linking [`Feed`] records to [`Author`] records (many-to-many).
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = authormaps)]
 pub struct AuthorMap {
@@ -438,6 +594,7 @@ pub struct AuthorMap {
   pub authorid: i32,
 }
 
+/// Insertable (borrowed) form of [`AuthorMap`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = authormaps)]
 pub struct NewAuthorMap<'a> {
@@ -445,6 +602,7 @@ pub struct NewAuthorMap<'a> {
   pub authorid: &'a i32,
 }
 
+/// Insertable (owned) form of [`AuthorMap`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = authormaps)]
 pub struct NewAuthorMapOwned {
@@ -452,7 +610,12 @@ pub struct NewAuthorMapOwned {
   pub authorid: i32,
 }
 
-// ===== Source =====
+// ─── Source ─────────────────────────────────────────────────────────────────
+
+/// A news source (publisher). Deduplicated by `(source_name, domain)`.
+///
+/// Maps to `sources`. Each source has a human-readable `source_name`
+/// (e.g., `"Bloomberg"`) and a `domain` (e.g., `"bloomberg.com"`).
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = sources)]
 pub struct Source {
@@ -461,6 +624,7 @@ pub struct Source {
   pub domain: String,
 }
 
+/// Insertable (borrowed) form of [`Source`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = sources)]
 pub struct NewSource<'a> {
@@ -468,6 +632,7 @@ pub struct NewSource<'a> {
   pub domain: &'a str,
 }
 
+/// Insertable (owned) form of [`Source`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = sources)]
 pub struct NewSourceOwned {
@@ -476,6 +641,8 @@ pub struct NewSourceOwned {
 }
 
 impl Source {
+  /// Returns the `id` of the source matching `(name, domain)`, creating a
+  /// new record if one doesn't exist (find-or-create pattern).
   pub async fn find_or_create(
     conn: &mut diesel_async::AsyncPgConnection,
     name: &str,
@@ -504,7 +671,16 @@ impl Source {
   }
 }
 
-// ===== TickerSentiment =====
+// ─── TickerSentiment ────────────────────────────────────────────────────────
+
+/// Per-ticker sentiment score within a news feed entry.
+///
+/// Maps to `tickersentiments`. Each row links a [`Feed`] to a security
+/// (`sid`) with a relevance weight and sentiment score/label.
+///
+/// - `relevance` — how closely the article relates to this ticker (`0.0`–`1.0`).
+/// - `tsentiment` — sentiment score for this ticker mention (`-1.0`–`1.0`).
+/// - `sentiment_label` — `"Bullish"`, `"Neutral"`, or `"Bearish"`.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = tickersentiments)]
 pub struct TickerSentiment {
@@ -516,6 +692,7 @@ pub struct TickerSentiment {
   pub sentiment_label: String,
 }
 
+/// Insertable (borrowed) form of [`TickerSentiment`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = tickersentiments)]
 pub struct NewTickerSentiment<'a> {
@@ -526,6 +703,7 @@ pub struct NewTickerSentiment<'a> {
   pub sentiment_label: &'a str,
 }
 
+/// Insertable (owned) form of [`TickerSentiment`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = tickersentiments)]
 pub struct NewTickerSentimentOwned {
@@ -537,6 +715,7 @@ pub struct NewTickerSentimentOwned {
 }
 
 impl<'a> NewTickerSentiment<'a> {
+  /// Inserts ticker sentiments in chunks of 1000. Returns total rows inserted.
   pub async fn bulk_insert_refs(
     conn: &mut diesel_async::AsyncPgConnection,
     records: &[NewTickerSentiment<'a>],
@@ -556,6 +735,17 @@ impl<'a> NewTickerSentiment<'a> {
 }
 
 impl TickerSentiment {
+  /// Returns time-bucketed sentiment trends for a symbol.
+  ///
+  /// Uses TimescaleDB's `time_bucket()` to aggregate ticker sentiments into
+  /// uniform time intervals. Each bucket contains average sentiment, average
+  /// relevance, mention count, and bullish ratio.
+  ///
+  /// # Arguments
+  ///
+  /// - `sid` — security ID to query.
+  /// - `bucket_size` — TimescaleDB interval string (e.g., `"1 hour"`, `"1 day"`).
+  /// - `days` — look-back window in days.
   pub async fn get_sentiment_trend(
     conn: &mut diesel_async::AsyncPgConnection,
     sid: i64,
@@ -591,7 +781,12 @@ impl TickerSentiment {
   }
 }
 
-// ===== TopicRef =====
+// ─── TopicRef ───────────────────────────────────────────────────────────────
+
+/// A topic label in the topic taxonomy. Deduplicated by `name`.
+///
+/// Maps to `topicrefs`. Topics are linked to feeds via the [`TopicMap`]
+/// junction table.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = topicrefs)]
 pub struct TopicRef {
@@ -599,12 +794,14 @@ pub struct TopicRef {
   pub name: String,
 }
 
+/// Insertable (borrowed) form of [`TopicRef`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = topicrefs)]
 pub struct NewTopicRef<'a> {
   pub name: &'a str,
 }
 
+/// Insertable (owned) form of [`TopicRef`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = topicrefs)]
 pub struct NewTopicRefOwned {
@@ -612,6 +809,8 @@ pub struct NewTopicRefOwned {
 }
 
 impl TopicRef {
+  /// Returns the `id` of the topic with the given name, creating a new
+  /// record if one doesn't exist (find-or-create pattern).
   pub async fn find_or_create(
     conn: &mut diesel_async::AsyncPgConnection,
     name: &str,
@@ -636,7 +835,13 @@ impl TopicRef {
   }
 }
 
-// ===== TopicMap =====
+// ─── TopicMap ───────────────────────────────────────────────────────────────
+
+/// Junction table linking a [`Feed`] to a [`TopicRef`] with a relevance score.
+///
+/// Maps to `topicmaps`. Each row associates a feed entry with a topic and
+/// stores `relscore` — how relevant the topic is to that feed item
+/// (`0.0`–`1.0`).
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize)]
 #[diesel(table_name = topicmaps)]
 pub struct TopicMap {
@@ -647,6 +852,7 @@ pub struct TopicMap {
   pub relscore: f32,
 }
 
+/// Insertable (borrowed) form of [`TopicMap`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = topicmaps)]
 pub struct NewTopicMap<'a> {
@@ -656,6 +862,7 @@ pub struct NewTopicMap<'a> {
   pub relscore: &'a f32,
 }
 
+/// Insertable (owned) form of [`TopicMap`].
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = topicmaps)]
 pub struct NewTopicMapOwned {
@@ -666,6 +873,7 @@ pub struct NewTopicMapOwned {
 }
 
 impl<'a> NewTopicMap<'a> {
+  /// Inserts topic mappings in chunks of 1000. Returns total rows inserted.
   pub async fn bulk_insert_refs(
     conn: &mut diesel_async::AsyncPgConnection,
     records: &[NewTopicMap<'a>],
@@ -685,6 +893,11 @@ impl<'a> NewTopicMap<'a> {
 }
 
 impl TopicMap {
+  /// Returns the most-mentioned topics over the last `days` days, limited
+  /// to `limit` results, ordered by mention count descending.
+  ///
+  /// Each [`TrendingTopic`] includes average relevance, average sentiment,
+  /// and the number of unique securities associated with the topic.
   pub async fn get_trending_topics(
     conn: &mut diesel_async::AsyncPgConnection,
     days: i32,
@@ -717,6 +930,10 @@ impl TopicMap {
     .await
   }
 
+  /// Computes the Pearson correlation between two topics over the last `days` days.
+  ///
+  /// Measures how often the two topics co-occur in the same feed entries.
+  /// Returns a value in `[-1.0, 1.0]` where `1.0` means perfect co-occurrence.
   pub async fn get_topic_correlation(
     conn: &mut diesel_async::AsyncPgConnection,
     topic1: &str,
@@ -762,7 +979,25 @@ impl TopicMap {
   }
 }
 
-// ===== Helper Functions =====
+// ─── Batch ingestion ────────────────────────────────────────────────────────
+
+/// Ingests a batch of news data into all nine news tables within a single
+/// database transaction.
+///
+/// For each [`NewsData`] item:
+/// 1. Checks for an existing [`NewsOverview`] by `hash_id` (skip if duplicate).
+/// 2. Inserts the overview, then iterates over its [`NewsItem`] entries.
+/// 3. For each item: find-or-create the [`Source`] and [`Author`], insert
+///    the [`Article`] (if not already present), create the [`Feed`] and
+///    [`AuthorMap`], then insert all [`TickerSentiment`] and [`TopicMap`]
+///    records.
+///
+/// Returns a [`ProcessedNewsStats`] with insertion counts.
+///
+/// # Errors
+///
+/// Returns `Err` if any database operation fails — the entire transaction
+/// is rolled back in that case.
 pub async fn process_news_batch(
   conn: &mut diesel_async::AsyncPgConnection,
   news_data: Vec<NewsData>,
@@ -895,7 +1130,16 @@ pub async fn process_news_batch(
     .map_err(Into::into)
 }
 
-// Placeholder types for the above function
+// ─── Ingestion DTOs ─────────────────────────────────────────────────────────
+
+/// Top-level ingestion input representing one symbol's news batch.
+///
+/// Consumed by [`process_news_batch`]. Not backed by a database table.
+///
+/// - `sid` — the security ID this news batch relates to.
+/// - `hash_id` — deterministic hash for deduplication.
+/// - `timestamp` — when the API query was made.
+/// - `items` — the individual news articles in this batch.
 #[derive(Debug)]
 pub struct NewsData {
   pub sid: i64,
@@ -904,6 +1148,13 @@ pub struct NewsData {
   pub items: Vec<NewsItem>,
 }
 
+/// A single news article with metadata, sentiment, topics, and optional
+/// extended fields.
+///
+/// The required fields (`source_name`, `title`, `url`, etc.) map directly
+/// to Alpha Vantage `NEWS_SENTIMENT` response fields. Optional fields
+/// (`source_link`, `release_time`, `author_description`, etc.) are
+/// extensions populated when the upstream API provides them.
 #[derive(Debug)]
 pub struct NewsItem {
   pub source_name: String,
@@ -929,6 +1180,12 @@ pub struct NewsItem {
   pub author_nick_name: Option<String>, // Could be derived from author_name
 }
 
+/// Per-ticker sentiment data within a [`NewsItem`].
+///
+/// - `sid` — the security this sentiment refers to.
+/// - `relevance_score` — how relevant the article is to this ticker (`0.0`–`1.0`).
+/// - `sentiment_score` — sentiment for this ticker (`-1.0`–`1.0`).
+/// - `sentiment_label` — `"Bullish"`, `"Neutral"`, or `"Bearish"`.
 #[derive(Debug)]
 pub struct TickerSentimentData {
   pub sid: i64,
@@ -937,6 +1194,10 @@ pub struct TickerSentimentData {
   pub sentiment_label: String,
 }
 
+/// A topic tag with a relevance score within a [`NewsItem`].
+///
+/// - `name` — the topic label (e.g., `"Technology"`, `"Earnings"`).
+/// - `relevance_score` — how relevant this topic is to the article (`0.0`–`1.0`).
 #[derive(Debug)]
 pub struct TopicData {
   pub name: String,

@@ -27,6 +27,100 @@
  * SOFTWARE.
  */
 
+//! Equity company overview loader for `av-cli load overviews`.
+//!
+//! Fetches comprehensive company overview data (financials, ratios,
+//! identifiers, and corporate metadata) from the AlphaVantage `OVERVIEW`
+//! endpoint and persists it across two database tables: `overviews`
+//! (core fields) and `overviewext` (extended financial metrics).
+//!
+//! ## Data Captured
+//!
+//! ### `overviews` (core fields)
+//!
+//! - Identification: `symbol`, `name`, `cik`, `exchange`, `currency`, `country`
+//! - Classification: `sector`, `industry`, `address`, `fiscal_year_end`
+//! - Description and `latest_quarter` date
+//! - Headline financials: `market_capitalization`, `ebitda`, `pe_ratio`,
+//!   `peg_ratio`, `book_value`, `dividend_per_share`, `dividend_yield`, `eps`
+//!
+//! ### `overviewext` (extended metrics)
+//!
+//! - Profitability: `profit_margin`, `operating_margin_ttm`,
+//!   `return_on_assets_ttm`, `return_on_equity_ttm`
+//! - Revenue: `revenue_per_share_ttm`, `revenue_ttm`, `gross_profit_ttm`
+//! - Growth: `quarterly_earnings_growth_yoy`, `quarterly_revenue_growth_yoy`
+//! - Valuation: `analyst_target_price`, `trailing_pe`, `forward_pe`,
+//!   `price_to_sales_ratio_ttm`, `price_to_book_ratio`, `ev_to_revenue`, `ev_to_ebitda`
+//! - Risk and price: `beta`, `week_high_52`, `week_low_52`,
+//!   `day_moving_average_50`, `day_moving_average_200`
+//! - Capital structure: `shares_outstanding`
+//! - Dividends: `dividend_date`, `ex_dividend_date`
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! symbols (sec_type = "Equity", region = "USA", overview = false)
+//!   │  via OverviewRepository::get_symbols_to_load(filter)
+//!   ▼
+//! Vec<SymbolInfo>
+//!   │
+//!   ▼
+//! OverviewLoader::load()  ── AlphaVantage OVERVIEW API + cache
+//!   │
+//!   ▼
+//! save_overviews_to_db()
+//!   ├── parse strings → typed values (clean_string, parse_date, parse_i64, parse_f32)
+//!   ├── build (NewOverviewOwned, NewOverviewextOwned) pairs
+//!   └── OverviewRepository::batch_save_overviews()
+//! ```
+//!
+//! ## Symbol Selection
+//!
+//! - **`--symbols` or `--symbols-file`** — Explicit list (one symbol per line
+//!   when reading from file). Filters to `missing_overviews_only = true` so
+//!   already-loaded symbols are skipped.
+//! - **No flag** — Defaults to all US equities (`sec_type = "Equity"`,
+//!   `region = "USA"`) where `overview = false`.
+//!
+//! Both modes support `--limit` for testing.
+//!
+//! ## String Parsing
+//!
+//! AlphaVantage returns numeric fields as strings (e.g., `"123.45"`) and uses
+//! sentinel values for missing data (`""`, `"None"`, `"-"`). This module
+//! provides four small helpers to handle these conversions:
+//!
+//! - [`clean_string`] — Returns empty string for sentinels, otherwise the value.
+//! - [`parse_date`] — Parses `YYYY-MM-DD`; returns `None` for sentinels.
+//! - [`parse_i64`] — Parses integer; returns `None` for sentinels.
+//! - [`parse_f32`] — Parses float; returns `None` for sentinels.
+//!
+//! Numeric fields use `unwrap_or(0)` / `unwrap_or(0.0)` defaults rather than
+//! `Option<T>` because the database schema requires non-null values for these
+//! columns. Date fields with `None` are stored as `NULL` (where the column
+//! permits) or fall back to [`default_date`] (`2000-01-01`) for the required
+//! `latest_quarter` field.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load overviews for all US equities that don't have one yet
+//! av-cli load overviews
+//!
+//! # Specific symbols
+//! av-cli load overviews --symbols AAPL,MSFT,GOOGL
+//!
+//! # From a file (one symbol per line)
+//! av-cli load overviews --symbols-file sp500.txt
+//!
+//! # Test with first 10 symbols, dry run
+//! av-cli load overviews --limit 10 --dry-run
+//!
+//! # Higher concurrency
+//! av-cli load overviews --concurrent 10 --continue-on-error
+//! ```
+
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
 use av_database_postgres::models::security::{NewOverviewOwned, NewOverviewextOwned};
@@ -42,8 +136,13 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 
-/// Returns a default date (2000-01-01) for use when date parsing fails.
-/// This function is guaranteed not to panic as 2000-01-01 is always a valid date.
+/// Returns the default date `2000-01-01` for use when date parsing fails.
+///
+/// Used as a fallback for required date columns (e.g., `latest_quarter`) when
+/// the AlphaVantage response contains an unparseable, empty, or sentinel
+/// date value. The function is guaranteed not to panic — `2000-01-01` is
+/// always a valid date — and falls through to [`NaiveDate::default`] (Unix
+/// epoch) only as a defensive measure that's effectively unreachable.
 fn default_date() -> NaiveDate {
   // 2000-01-01 is always valid; from_ymd_opt returns Some for valid dates
   match NaiveDate::from_ymd_opt(2000, 1, 1) {
@@ -56,34 +155,68 @@ fn default_date() -> NaiveDate {
   }
 }
 
+/// Command-line arguments for `av-cli load overviews`.
+///
+/// Controls symbol selection (explicit list, file, or default US-equity pool),
+/// concurrency, and error/dry-run behavior.
 #[derive(Args, Clone, Debug)]
 pub struct OverviewsArgs {
-  /// Symbols to load (comma-separated)
+  /// Comma-separated list of symbols to load.
+  ///
+  /// When neither this nor `--symbols-file` is set, defaults to all US equities
+  /// (`sec_type = "Equity"`, `region = "USA"`) without an existing overview.
   #[arg(short, long, value_delimiter = ',')]
   symbols: Option<Vec<String>>,
 
-  /// File containing symbols (one per line)
+  /// Path to a text file containing symbols, one per line.
+  ///
+  /// Mutually convenient with `--symbols`. When both are set, the file takes
+  /// precedence. Empty lines and surrounding whitespace are ignored.
   #[arg(short = 'f', long)]
   symbols_file: Option<String>,
 
-  /// Limit number of symbols to load (for debugging)
+  /// Cap the number of symbols to process (useful for testing).
   #[arg(short, long)]
   limit: Option<usize>,
 
-  /// Number of concurrent requests
+  /// Maximum number of concurrent API requests. Defaults to 5.
   #[arg(short, long, default_value = "5")]
   concurrent: usize,
 
-  /// Continue on error instead of stopping
+  /// Continue processing remaining symbols when one fails at the loader stage.
   #[arg(long)]
   continue_on_error: bool,
 
-  /// Dry run - fetch data but don't save to database
+  /// Fetch data from the API but skip database writes.
   #[arg(long)]
   dry_run: bool,
 }
 
-/// Main execute function
+/// Main entry point for `av-cli load overviews`.
+///
+/// Orchestrates the equity overview loading pipeline:
+///
+/// 1. **Database setup** — Creates [`DatabaseContext`] and an
+///    [`OverviewRepository`] handle.
+/// 2. **Symbol selection** — [`get_symbols_to_load`] queries the database
+///    using the appropriate filter:
+///    - Explicit `--symbols` or `--symbols-file` → no type/region filter
+///    - Default → US equities only
+///    Both modes filter to `missing_overviews_only = true`.
+/// 3. **Loader setup** — Creates [`AlphaVantageClient`], [`LoaderContext`]
+///    with cache repository attached, and [`OverviewLoader`].
+/// 4. **API loading** — Calls [`DataLoader::load`] which fetches the
+///    `OVERVIEW` endpoint for each symbol concurrently with caching.
+/// 5. **Statistics report** — Logs counts: loaded, no-data, errors,
+///    cache-hits, api-calls.
+/// 6. **Persistence** — Unless `--dry-run`, calls [`save_overviews_to_db`]
+///    which parses string fields, builds `(NewOverviewOwned, NewOverviewextOwned)`
+///    pairs, and batch-saves via the repository.
+///
+/// # Errors
+///
+/// Returns errors from: database context creation, symbol query, API client
+/// creation, loader execution (unless `--continue-on-error`), or database save.
 pub async fn execute(args: OverviewsArgs, config: Config) -> Result<()> {
   info!("Starting overview loader");
 
@@ -174,7 +307,23 @@ pub async fn execute(args: OverviewsArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
-/// Get symbols to load based on command arguments using OverviewRepository
+/// Selects equity symbols to load overviews for, based on the CLI arguments.
+///
+/// Two modes:
+///
+/// - **Explicit list** (when `--symbols` or `--symbols-file` is provided) —
+///   Reads the file (if specified, one symbol per line, trimmed, empty lines
+///   skipped) or uses the comma-separated list. Builds an
+///   [`OverviewSymbolFilter`] with `symbols = Some(list)`, no type/region
+///   filter, and `missing_overviews_only = true`. Logs warnings if some
+///   requested symbols don't need overviews.
+///
+/// - **Default mode** (no flags) — Builds a filter for `sec_type = "Equity"`
+///   and `region = "USA"` with `missing_overviews_only = true`. Logs the
+///   number of US equities without overviews.
+///
+/// Both modes apply `--limit` if set. The filter is passed to
+/// [`OverviewRepository::get_symbols_to_load`] for execution.
 async fn get_symbols_to_load(
   repo: &impl OverviewRepository,
   symbols_arg: Option<Vec<String>>,
@@ -246,7 +395,26 @@ async fn get_symbols_to_load(
   )
 }
 
-/// Save overview data to database using OverviewRepository
+/// Transforms loaded overview data into database model structs and batch-saves them.
+///
+/// For each [`OverviewData`](av_loaders::overview_loader::OverviewData), builds
+/// a pair of records:
+///
+/// - **[`NewOverviewOwned`]** — Core overview fields including identification,
+///   classification, headline financials, and `latest_quarter` date.
+/// - **[`NewOverviewextOwned`]** — Extended financial metrics covering
+///   profitability, growth, valuation, risk, price ranges, and dividend dates.
+///
+/// All numeric string fields from the API response are parsed via [`parse_i64`]
+/// or [`parse_f32`] with `unwrap_or(0)` / `unwrap_or(0.0)` defaults (the
+/// columns are NOT NULL). String fields use [`clean_string`] to map sentinel
+/// values to empty strings. The required `latest_quarter` date falls back to
+/// [`default_date`] when parsing fails; nullable date fields (dividend dates)
+/// remain `None` on parse failure.
+///
+/// The pairs are then passed to [`OverviewRepository::batch_save_overviews`]
+/// which inserts both records atomically per symbol. Returns the count of
+/// successfully saved records.
 async fn save_overviews_to_db(
   repo: &impl OverviewRepository,
   data: Vec<av_loaders::overview_loader::OverviewData>,
@@ -350,7 +518,19 @@ async fn save_overviews_to_db(
   Ok(saved_count)
 }
 
-// Helper functions
+// ============================================================================
+// String parsing helpers
+// ============================================================================
+//
+// AlphaVantage's OVERVIEW endpoint returns all values as strings, with three
+// sentinel values for missing data: empty string, "None", or "-". These
+// helpers normalize those sentinels and parse the meaningful values into
+// the target Rust types.
+
+/// Returns an empty string for AlphaVantage sentinel values, otherwise the input.
+///
+/// Sentinels: `""`, `"None"`, `"-"`. Used for text fields where empty string
+/// is acceptable in the database.
 fn clean_string(value: &str) -> String {
   if value.is_empty() || value == "None" || value == "-" {
     String::new()
@@ -359,6 +539,11 @@ fn clean_string(value: &str) -> String {
   }
 }
 
+/// Parses an `YYYY-MM-DD` date string, returning `None` for sentinels or
+/// invalid dates.
+///
+/// Sentinels: `""`, `"None"`, `"-"`. Used for nullable date columns. The
+/// caller can fall back to [`default_date`] for required (NOT NULL) date columns.
 fn parse_date(value: &str) -> Option<NaiveDate> {
   if value.is_empty() || value == "None" || value == "-" {
     return None;
@@ -366,6 +551,10 @@ fn parse_date(value: &str) -> Option<NaiveDate> {
   NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
 }
 
+/// Parses an integer string, returning `None` for sentinels or non-numeric input.
+///
+/// Sentinels: `""`, `"None"`, `"-"`. Used for `BIGINT` columns; the caller
+/// typically applies `.unwrap_or(0)` since the columns are NOT NULL.
 fn parse_i64(value: &str) -> Option<i64> {
   if value.is_empty() || value == "None" || value == "-" {
     return None;
@@ -373,6 +562,10 @@ fn parse_i64(value: &str) -> Option<i64> {
   value.parse::<i64>().ok()
 }
 
+/// Parses a `f32` string, returning `None` for sentinels or non-numeric input.
+///
+/// Sentinels: `""`, `"None"`, `"-"`. Used for `REAL` columns; the caller
+/// typically applies `.unwrap_or(0.0)` since the columns are NOT NULL.
 fn parse_f32(value: &str) -> Option<f32> {
   if value.is_empty() || value == "None" || value == "-" {
     return None;

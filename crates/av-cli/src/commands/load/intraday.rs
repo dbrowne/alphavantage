@@ -27,6 +27,83 @@
  * SOFTWARE.
  */
 
+//! Equity intraday price loader for `av-cli load intraday`.
+//!
+//! Fetches intraday equity price data from the AlphaVantage `TIME_SERIES_INTRADAY`
+//! endpoint and persists it to the `intradayprices` table. Supports configurable
+//! time intervals (1min–60min), extended hours, split/dividend adjustments,
+//! month-specific historical data, and timestamp-based deduplication.
+//!
+//! ## Companion Modules
+//!
+//! This is the **equity** counterpart to
+//! [`crypto_intraday`](super::crypto_intraday). The two modules share the same
+//! `intradayprices` table but query different symbol types from the `symbols`
+//! table:
+//!
+//! | Module                               | `sec_type` filter   | Endpoint                |
+//! |--------------------------------------|---------------------|-------------------------|
+//! | [`intraday`](self)                   | `"Equity"`          | `TIME_SERIES_INTRADAY`  |
+//! | [`crypto_intraday`](super::crypto_intraday) | `"Cryptocurrency"` | `CRYPTO_INTRADAY` |
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! symbols (sec_type = "Equity", overview = true)
+//!   │
+//!   ▼
+//! get_symbols_to_load()    ── filtered by --symbol / --limit
+//!   │
+//!   ▼
+//! get_latest_timestamps()  ── MAX(tstamp) per SID from intradayprices
+//!   │
+//!   ▼
+//! IntradayPriceLoader::load()  ── AlphaVantage API + cache ──▶ Vec<IntradayPriceData>
+//!   │
+//!   ▼
+//! save_intraday_prices_optimized()
+//!   ├── timestamp-based filtering  (skip records ≤ latest known timestamp)
+//!   ├── or per-record dedup        (--check-each-record for backfills)
+//!   ├── batch INSERT ... ON CONFLICT DO NOTHING  (chunks of 500)
+//!   └── UPDATE symbols SET intraday = true       (--update-symbols)
+//! ```
+//!
+//! ## Deduplication Strategy
+//!
+//! Two modes selected by `--check-each-record`:
+//!
+//! - **Default (incremental)** — For each symbol, only records with a timestamp
+//!   **newer than** the latest existing timestamp in `intradayprices` are
+//!   inserted. Optimized for real-time updates.
+//! - **Historical mode** (`--check-each-record`) — Queries the database for all
+//!   timestamps matching the incoming batch and excludes exact matches. Slower
+//!   but necessary for backfilling gaps in historical data via `--month`.
+//!
+//! Both modes use `ON CONFLICT DO NOTHING` as a safety net.
+//!
+//! ## Symbol Selection
+//!
+//! - **`--symbol BTC`** — Loads a specific symbol (must be `sec_type = "Equity"`).
+//! - **No symbol** — Loads all equity symbols where `overview = true`, optionally
+//!   capped by `--limit`. The `overview = true` filter ensures we only load
+//!   intraday data for symbols whose company overview has already been ingested.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load 1-minute data for top 100 equities (full output)
+//! av-cli load intraday --limit 100
+//!
+//! # Specific symbol with 5-minute bars
+//! av-cli load intraday --symbol AAPL --interval 5min
+//!
+//! # Historical month with backfill dedup
+//! av-cli load intraday --symbol MSFT --month 2025-01 --check-each-record
+//!
+//! # Without extended hours or adjustments
+//! av-cli load intraday --no-extended-hours --no-adjusted --limit 50
+//! ```
+
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -50,79 +127,119 @@ use av_loaders::{
 
 use crate::config::Config;
 
-/// Symbol info for the loader
+/// Lightweight symbol-info struct used internally between database query
+/// and the loader's `IntradaySymbolInfo` format.
+///
+/// Holds just `(sid, symbol)` — converted to [`IntradaySymbolInfo`] in
+/// [`execute`] before being passed to the loader.
 #[derive(Debug, Clone)]
 struct LoaderSymbolInfo {
   pub sid: i64,
   pub symbol: String,
 }
 
-/// Arguments for the intraday price loader
+/// Command-line arguments for `av-cli load intraday`.
+///
+/// Controls symbol selection, AlphaVantage API parameters (interval, output
+/// size, extended hours, adjustments, month), deduplication strategy, rate
+/// limiting, and database behavior.
 #[derive(Parser, Debug)]
 #[clap(about = "Load intraday price data from AlphaVantage")]
 pub struct IntradayArgs {
-  /// Specific symbol to load (loads all equity symbols if not specified)
+  /// Specific equity symbol to load.
+  ///
+  /// When omitted, loads all equity symbols where `overview = true` (i.e.,
+  /// company overview data has been ingested), optionally capped by `--limit`.
   #[clap(short, long)]
   symbol: Option<String>,
 
-  /// Time interval between data points (1min, 5min, 15min, 30min, 60min)
+  /// Time interval between data points.
+  ///
+  /// Valid values: `1min`, `5min`, `15min`, `30min`, `60min`. Validated against
+  /// the allowlist before the loader starts. Parsed into [`IntradayInterval`].
   #[clap(short, long, default_value = "1min")]
   interval: String,
 
-  /// Specific month for historical data (format: YYYY-MM)
+  /// Specific month for historical data (format: `YYYY-MM`).
+  ///
+  /// When omitted, the AlphaVantage default time range is used. Required for
+  /// backfilling historical gaps; pair with `--check-each-record`.
   #[clap(long)]
   month: Option<String>,
 
-  /// Include extended trading hours
+  /// Include extended (pre/post-market) trading hours.
   #[clap(long, default_value = "true")]
   extended_hours: bool,
 
-  /// Include split/dividend adjustments
+  /// Apply split and dividend adjustments to historical prices.
   #[clap(long, default_value = "true")]
   adjusted: bool,
 
-  /// Number of concurrent API requests
+  /// Maximum number of concurrent API requests. Defaults to 5.
   #[clap(long, default_value = "5")]
   concurrent: usize,
 
-  /// Output size (compact or full)
+  /// Output size — `compact` (last ~100 data points) or `full` (full available history).
+  ///
+  /// Defaults to `full`.
   #[clap(long, default_value = "full")]
   outputsize: String,
 
-  /// Delay between API calls in milliseconds
+  /// Delay between API calls in milliseconds. Defaults to 800 ms.
   #[clap(long, default_value = "800")]
   api_delay: u64,
 
-  /// Dry run - don't save to database
+  /// Fetch data but skip database writes.
   #[clap(long)]
   dry_run: bool,
 
-  /// Force refresh - bypass cache and timestamp checks
+  /// Bypass response cache and skip latest-timestamp checks.
+  ///
+  /// Causes every fetched record to be considered new (no incremental filtering).
   #[clap(long)]
   force_refresh: bool,
 
-  /// Update existing records
+  /// Forwarded to [`IntradayPriceConfig::update_existing`] (currently unused
+  /// in `save_intraday_prices_optimized` — see TODO marker in source).
   #[clap(long)]
   update: bool,
 
-  /// Continue on error
+  /// Continue processing remaining symbols if the loader fails on one.
   #[clap(long)]
   continue_on_error: bool,
 
-  /// Update symbols table to mark intraday data as loaded
+  /// Mark `symbols.intraday = true` for symbols that successfully received data.
+  ///
+  /// Defaults to `true`. Useful for tracking which equities have intraday coverage.
   #[clap(long, default_value = "true")]
   update_symbols: bool,
 
-  /// Maximum number of symbols to process
+  /// Cap the number of symbols to process.
   #[clap(long)]
   limit: Option<usize>,
 
-  /// Check each record individually for duplicates (use for historical/backfill data)
+  /// Per-record duplicate checking for historical/backfill data.
+  ///
+  /// When set, every record's timestamp is individually checked against the
+  /// database before insertion. When unset, only records newer than the latest
+  /// existing timestamp are inserted (faster, suitable for real-time updates).
+  /// Pair with `--month` for historical backfills.
   #[clap(long)]
   check_each_record: bool,
 }
 
-/// Get symbols to load based on command arguments
+/// Selects equity symbols from the database for intraday loading.
+///
+/// Two query paths based on whether `--symbol` is set:
+///
+/// - **Specific symbol** — Returns the matching equity row(s) with
+///   `sec_type = "Equity"`. No additional filters.
+/// - **Bulk selection** — Returns all equity symbols with `overview = true`,
+///   optionally limited by `--limit`. The `overview = true` filter ensures
+///   we only load intraday data for symbols that have completed company
+///   overview ingestion.
+///
+/// Returns [`LoaderSymbolInfo`] structs containing `(sid, symbol)` tuples.
 async fn get_symbols_to_load(
   args: &IntradayArgs,
   config: &Config,
@@ -155,7 +272,11 @@ async fn get_symbols_to_load(
   Ok(symbols.into_iter().map(|(sid, symbol)| LoaderSymbolInfo { sid, symbol }).collect())
 }
 
-/// Get the maximum event ID from the database
+/// Returns the maximum `eventid` currently in `intradayprices`.
+///
+/// Used to seed the [`IntradayPriceLoader`]'s starting event ID so that newly
+/// inserted records receive monotonically increasing IDs that don't collide
+/// with existing rows. Returns `0` if the table is empty.
 async fn get_max_eventid(config: &Config) -> Result<i64> {
   let mut conn = establish_connection(&config.database_url)?;
 
@@ -165,7 +286,15 @@ async fn get_max_eventid(config: &Config) -> Result<i64> {
   Ok(max_id.unwrap_or(0))
 }
 
-/// Get the latest timestamp for each symbol from the database
+/// Queries the latest `tstamp` in `intradayprices` for each provided SID.
+///
+/// Runs in a [`tokio::task::spawn_blocking`] context because Diesel is
+/// synchronous. Performs one `SELECT MAX(tstamp)` query per SID and returns
+/// only the SIDs with at least one existing row (SIDs with no data are omitted
+/// from the returned map).
+///
+/// The result is consumed by [`save_intraday_prices_optimized`] to filter out
+/// records that are not newer than what is already stored.
 async fn get_latest_timestamps(
   config: &Config,
   sids: &[i64],
@@ -202,7 +331,34 @@ async fn get_latest_timestamps(
   .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Save intraday prices with optimized timestamp-based deduplication
+/// Persists fetched intraday prices with timestamp-based deduplication.
+///
+/// This is the main database write path. Steps:
+///
+/// 1. **Group by SID** — Builds `HashMap<sid, Vec<price>>` so each symbol can
+///    be processed independently.
+/// 2. **Filter per symbol** — Two strategies based on `check_each_record`:
+///    - **Per-record mode** (`true`) — Queries `intradayprices` for the
+///      specific timestamps in the batch and excludes any matches.
+///    - **Latest-timestamp mode** (`false`) — Filters out records with
+///      `tstamp ≤ latest_timestamps[sid]`. If no entry exists for the SID,
+///      all records are kept.
+/// 3. **Sort and insert** — Sorts surviving records by `tstamp` and
+///    batch-inserts in chunks of 500 with `ON CONFLICT DO NOTHING`. A
+///    progress bar tracks insertion progress.
+/// 4. **Mark symbols as loaded** — When `update_symbols` is true, sets
+///    `symbols.intraday = true` and refreshes `m_time` for all SIDs that
+///    received at least one new record.
+///
+/// Returns the total number of records inserted (excludes those skipped via
+/// the `ON CONFLICT` clause).
+///
+/// # Note
+///
+/// The `_update_existing` parameter is currently unused (TODO marker in source).
+/// All updates rely on the dedup logic above plus `ON CONFLICT DO NOTHING`.
+/// The `price_source_id` is hardcoded to `1` (TODO marker) — should be
+/// resolved from a price-sources lookup in a future revision.
 async fn save_intraday_prices_optimized(
   config: &Config,
   prices: Vec<IntradayPriceData>,
@@ -356,7 +512,36 @@ async fn save_intraday_prices_optimized(
   .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Main execute function
+/// Main entry point for `av-cli load intraday`.
+///
+/// Orchestrates the full equity intraday loading pipeline:
+///
+/// 1. **Cache cleanup** — Calls
+///    [`IntradayPriceLoader::cleanup_expired_cache`] to remove stale entries
+///    (skipped in dry-run mode). Failures are logged as warnings.
+/// 2. **Interval validation** — Validates `--interval` against the allowlist
+///    (`1min`, `5min`, `15min`, `30min`, `60min`).
+/// 3. **Symbol selection** — [`get_symbols_to_load`] returns the filtered list.
+/// 4. **Latest-timestamp lookup** — Unless `--force-refresh`, `--dry-run`, or
+///    `--check-each-record` is set, calls [`get_latest_timestamps`] to enable
+///    incremental loading.
+/// 5. **Loader setup** — Creates [`AlphaVantageClient`], [`LoaderContext`]
+///    with optional process tracking, [`IntradayPriceConfig`] (with parsed
+///    interval, extended hours, adjustments, month, cache settings), and
+///    [`IntradayPriceLoader`] seeded with the next event ID via
+///    [`get_max_eventid`].
+/// 6. **API loading** — Calls [`DataLoader::load`] which fetches data for all
+///    symbols concurrently with rate limiting, caching, and retries.
+/// 7. **Summary display** — Prints a formatted ASCII box with totals
+///    (loaded, failed, skipped, total records).
+/// 8. **Persistence** — Unless `--dry-run`, calls
+///    [`save_intraday_prices_optimized`] with the dedup map.
+///
+/// # Errors
+///
+/// Returns errors from: database context creation, interval validation,
+/// symbol query, latest-timestamp lookup, API client creation, loader
+/// execution (unless `--continue-on-error`), or database save.
 pub async fn execute(args: IntradayArgs, config: Config) -> Result<()> {
   info!("Starting intraday price loader");
 

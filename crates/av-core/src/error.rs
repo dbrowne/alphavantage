@@ -27,47 +27,166 @@
  * SOFTWARE.
  */
 
+//! Unified error handling for the `av-core` crate and its downstream consumers.
+//!
+//! This module defines a single [`Error`] enum that covers every failure mode
+//! the crate can encounter — from missing environment variables through HTTP
+//! transport errors to malformed API responses. A convenience [`Result<T>`] type
+//! alias is provided so callers don't have to spell `Result<T, av_core::Error>`
+//! everywhere.
+//!
+//! # Design
+//!
+//! The enum is built with [`thiserror`], which auto-derives [`std::error::Error`],
+//! [`Display`](std::fmt::Display), and `From` conversions for the variants that
+//! wrap standard-library or third-party error types.
+//!
+//! ## Automatic `From` conversions
+//!
+//! Three variants carry `#[from]` and can be produced via `?` from the wrapped
+//! error type:
+//!
+//! | Variant      | Converts from                | Triggered by                          |
+//! |--------------|------------------------------|---------------------------------------|
+//! | `EnvVar`     | [`std::env::VarError`]       | `env::var("KEY")?`                    |
+//! | `Serde`      | [`serde_json::Error`]        | `serde_json::from_str(…)?`            |
+//! | `ParseDate`  | [`chrono::ParseError`]       | `NaiveDate::parse_from_str(…)?`       |
+//!
+//! All other variants are constructed manually with a descriptive `String` payload.
+//!
+//! # Error categories
+//!
+//! | Category        | Variants                           | Typical cause                              |
+//! |-----------------|------------------------------------|--------------------------------------------|
+//! | **Setup**       | `EnvVar`, `Config`, `ApiKey`       | Missing or malformed configuration         |
+//! | **Parsing**     | `Serde`, `ParseDate`, `Parse`      | Malformed JSON, dates, or numeric values   |
+//! | **Validation**  | `MissingField`, `InvalidResponse`  | API response missing expected data         |
+//! | **Runtime**     | `RateLimit`, `Http`, `Api`         | Network/transport or API-level failures    |
+//! | **Catch-all**   | `Unexpected`                       | Anything that doesn't fit above            |
+//!
+//! # Examples
+//!
+//! ```rust
+//! use av_core::error::{Error, Result};
+//!
+//! fn get_symbol() -> Result<String> {
+//!     Err(Error::MissingField("symbol".to_string()))
+//! }
+//!
+//! let err = get_symbol().unwrap_err();
+//! assert_eq!(err.to_string(), "Missing required field: symbol");
+//! ```
+
 use thiserror::Error;
 
+/// Unified error type for the `av-core` crate.
+///
+/// Every function in the crate that can fail returns this enum (via the
+/// [`Result<T>`] alias). Variants are grouped by failure category — see the
+/// [module-level docs](self) for a category table.
+///
+/// # Display messages
+///
+/// Each variant produces a human-readable message via `#[error("…")]`.
+/// Variants that carry a `String` payload interpolate it into the message;
+/// variants with `#[from]` delegate to the wrapped error's `Display`.
 #[derive(Error, Debug)]
 pub enum Error {
+  /// An environment variable was missing or not valid Unicode.
+  ///
+  /// Automatically converted from [`std::env::VarError`] via `#[from]`.
+  /// Typically triggered when [`Config::from_env`](crate::Config::from_env)
+  /// calls `env::var()`.
   #[error("Environment variable error: {0}")]
   EnvVar(#[from] std::env::VarError),
 
+  /// A configuration value was present but invalid (e.g., non-numeric rate limit).
+  ///
+  /// Constructed manually in [`Config::from_env`](crate::Config::from_env)
+  /// when a `parse()` call fails on an optional environment variable.
   #[error("Configuration error: {0}")]
   Config(String),
 
+  /// The `ALPHA_VANTAGE_API_KEY` environment variable is not set.
+  ///
+  /// The `String` payload contains a diagnostic message. Note that the
+  /// `#[error]` template does **not** interpolate the payload — the display
+  /// message is always `"Failed to retrieve API key"`.
   #[error("Failed to retrieve API key")]
   ApiKey(String),
 
+  /// JSON serialization or deserialization failed.
+  ///
+  /// Automatically converted from [`serde_json::Error`] via `#[from]`.
+  /// Raised when parsing Alpha Vantage API JSON responses.
   #[error("Serialization error")]
   Serde(#[from] serde_json::Error),
 
+  /// A date/time string could not be parsed.
+  ///
+  /// Automatically converted from [`chrono::ParseError`] via `#[from]`.
+  /// Common when parsing timestamps from API response fields.
   #[error("Date parsing error")]
   ParseDate(#[from] chrono::ParseError),
 
+  /// A required field was absent from an API response or request.
+  ///
+  /// The `String` payload names the missing field (e.g., `"symbol"`,
+  /// `"close"`).
   #[error("Missing required field: {0}")]
   MissingField(String),
 
+  /// The API rate limit has been exceeded.
+  ///
+  /// Alpha Vantage returns a specific JSON message when the per-minute or
+  /// per-day request cap is hit. The `String` payload contains details
+  /// about the limit that was exceeded.
   #[error("Rate limit exceeded: {0}")]
   RateLimit(String),
 
+  /// The API returned a response that could not be interpreted.
+  ///
+  /// This covers cases where the HTTP status was 200 but the body did not
+  /// match the expected schema — e.g., an empty body, an error message
+  /// embedded in the JSON, or an unexpected top-level key.
   #[error("Invalid API response: {0}")]
   InvalidResponse(String),
 
+  /// A catch-all for errors that don't fit any other variant.
+  ///
+  /// Use sparingly — prefer a more specific variant when possible.
   #[error("Unexpected error: {0}")]
   Unexpected(String),
 
+  /// An HTTP transport-level error occurred.
+  ///
+  /// Covers connection failures, DNS resolution errors, TLS handshake
+  /// failures, and timeouts. The `String` payload contains the underlying
+  /// error message.
   #[error("HTTP error: {0}")]
   Http(String),
 
+  /// The Alpha Vantage API returned a logical error.
+  ///
+  /// Distinct from [`InvalidResponse`](Error::InvalidResponse): this variant
+  /// means the response was well-formed but indicated a domain error
+  /// (e.g., `"Invalid API call"`, `"No data found for symbol"`).
   #[error("API error: {0}")]
   Api(String),
 
+  /// A generic value-parsing error.
+  ///
+  /// Used when converting string fields to numeric types (e.g., parsing a
+  /// price string like `"182.63"` into `f64`) fails. For date-specific
+  /// parse failures, prefer [`ParseDate`](Error::ParseDate).
   #[error("Parse error: {0}")]
   Parse(String),
 }
 
+/// Convenience alias for `std::result::Result<T, av_core::error::Error>`.
+///
+/// Used throughout the crate and re-exported at the crate root as
+/// [`av_core::Result`](crate::Result).
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

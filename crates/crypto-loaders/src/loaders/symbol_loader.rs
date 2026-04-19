@@ -29,7 +29,48 @@
 
 //! Cryptocurrency symbol loader.
 //!
-//! Loads cryptocurrency symbols from multiple data providers.
+//! Loads cryptocurrency symbols from up to 5 external data providers,
+//! deduplicates the results, and returns a unified symbol list.
+//!
+//! # Supported providers
+//!
+//! | Provider       | Env var for API key    | Key required? | Priority |
+//! |----------------|-----------------------|---------------|----------|
+//! | CoinGecko      | `COINGECKO_API_KEY`   | Yes           | 1 (highest) |
+//! | CoinMarketCap  | `CMC_API_KEY`         | Yes           | 2        |
+//! | SosoValue      | `SOSOVALUE_API_KEY`   | Yes           | 3        |
+//! | CoinPaprika    | —                     | No (free)     | 4        |
+//! | CoinCap        | —                     | No (free)     | 5 (lowest) |
+//!
+//! Providers that require API keys are **silently skipped** if the
+//! corresponding environment variable is not set (with a `warn!` log).
+//!
+//! # Deduplication strategy
+//!
+//! When the same ticker symbol appears from multiple sources, the loader
+//! keeps the "best" record using this priority:
+//!
+//! 1. Prefer the record that has a `market_cap_rank` over one that doesn't.
+//! 2. Among records with ranks, prefer the lower (better) rank.
+//! 3. As a tiebreaker, prefer the source with higher priority (see table above).
+//!
+//! # Caching
+//!
+//! When a [`CryptoCache`] is provided via [`with_cache`](CryptoSymbolLoader::with_cache),
+//! fetched symbol lists are cached with a configurable TTL (default 24h).
+//! Cache keys follow the format `crypto_symbols_{source}`.
+//!
+//! # Data flow
+//!
+//! ```text
+//! CryptoSymbolLoader::load_all_symbols()
+//!   ├── for each source (sequential, respecting rate limits):
+//!   │     ├── check cache → hit? return cached symbols
+//!   │     └── miss → provider.fetch_symbols() → cache result
+//!   ├── collect all symbols
+//!   ├── deduplicate_symbols() → keep best per ticker
+//!   └── return LoadAllSymbolsResult
+//! ```
 
 use crate::error::CryptoLoaderError;
 use crate::providers::{
@@ -44,13 +85,24 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{error, info, warn};
 
+/// Source priority constants (lower = higher priority).
 const COINGECKO: u8 = 1;
 const COINMARKETCAP: u8 = 2;
 const SOSOVALUE: u8 = 3;
 const COINPAPRIKA: u8 = 4;
 const COINCAP: u8 = 5;
 
-/// Loads cryptocurrency symbols from various data providers.
+// ─── Loader ─────────────────────────────────────────────────────────────────
+
+/// Multi-provider cryptocurrency symbol loader.
+///
+/// Constructed via [`new`](Self::new) from a [`CryptoLoaderConfig`],
+/// optionally configured with [`with_api_keys`](Self::with_api_keys) and
+/// [`with_cache`](Self::with_cache), then invoked via
+/// [`load_all_symbols`](Self::load_all_symbols).
+///
+/// Provider instances are created during construction based on the
+/// `config.sources` list and available environment variables.
 pub struct CryptoSymbolLoader {
   config: CryptoLoaderConfig,
   client: Client,
@@ -59,7 +111,11 @@ pub struct CryptoSymbolLoader {
 }
 
 impl CryptoSymbolLoader {
-  /// Create a new symbol loader with the given configuration.
+  /// Creates a new loader, initializing providers based on `config.sources`
+  /// and available environment variables.
+  ///
+  /// Providers requiring API keys are silently skipped if the env var is
+  /// not set. The HTTP client uses a 30-second timeout.
   pub fn new(config: CryptoLoaderConfig) -> Self {
     let client = Client::builder()
       .timeout(std::time::Duration::from_secs(30))
@@ -111,7 +167,10 @@ impl CryptoSymbolLoader {
     Self { config, client, providers, cache: None }
   }
 
-  /// Set API keys for providers.
+  /// Overrides API keys for specific providers. Builder pattern.
+  ///
+  /// Replaces the provider instance for each source in the map. Sources
+  /// that don't support API keys (CoinPaprika, CoinCap) log a warning.
   pub fn with_api_keys(mut self, api_keys: HashMap<CryptoDataSource, String>) -> Self {
     for (source, api_key) in api_keys {
       match source {
@@ -132,13 +191,21 @@ impl CryptoSymbolLoader {
     self
   }
 
-  /// Set the cache for caching API responses.
+  /// Enables response caching with the given cache implementation. Builder pattern.
+  ///
+  /// Cache TTL defaults to 24 hours (overridden by `config.cache_ttl_hours`).
   pub fn with_cache(mut self, cache: Arc<dyn CryptoCache>) -> Self {
     self.cache = Some(cache);
     self
   }
 
-  /// Load symbols from all configured sources.
+  /// Loads symbols from all configured sources, deduplicates, and returns
+  /// a [`LoadAllSymbolsResult`].
+  ///
+  /// Sources are queried **sequentially** to respect rate limits. Each source
+  /// checks the cache first; on a miss, calls the provider API and caches
+  /// the result. A progress bar is shown when `config.enable_progress_bar`
+  /// is `true`.
   pub async fn load_all_symbols(&self) -> Result<LoadAllSymbolsResult, CryptoLoaderError> {
     let start_time = Instant::now();
     info!("Loading symbols from {} sources", self.config.sources.len());
@@ -235,7 +302,12 @@ impl CryptoSymbolLoader {
     })
   }
 
-  /// Remove duplicate symbols, preferring symbols from sources in priority order.
+  /// Deduplicates symbols by ticker, keeping the "best" record.
+  ///
+  /// Priority rules:
+  /// 1. Prefer records with a `market_cap_rank` over those without.
+  /// 2. Among records with ranks, prefer the lower (better) rank.
+  /// 3. Tiebreaker: prefer the source with higher priority (CoinGecko > … > CoinCap).
   fn deduplicate_symbols(&self, symbols: Vec<CryptoSymbol>) -> Vec<CryptoSymbol> {
     let mut unique_symbols: HashMap<String, CryptoSymbol> = HashMap::new();
 
@@ -274,7 +346,10 @@ impl CryptoSymbolLoader {
     unique_symbols.into_values().collect()
   }
 
-  /// Load symbols from a specific source.
+  /// Loads symbols from a single source, using the cache when available.
+  ///
+  /// Returns [`CryptoLoaderError::SourceUnavailable`] if no provider is
+  /// configured for the given source.
   pub async fn load_from_source(
     &self,
     source: CryptoDataSource,
@@ -351,13 +426,32 @@ impl Clone for CryptoSymbolLoader {
   }
 }
 
-/// Result of loading symbols from all sources.
+// ─── Result type ────────────────────────────────────────────────────────────
+
+/// Aggregated result from [`CryptoSymbolLoader::load_all_symbols`].
+///
+/// # Fields
+///
+/// | Field               | Description                                          |
+/// |---------------------|------------------------------------------------------|
+/// | `symbols_loaded`    | Number of unique symbols after deduplication          |
+/// | `symbols_failed`    | Number of sources that returned errors                |
+/// | `symbols_skipped`   | Duplicate symbols removed during deduplication        |
+/// | `symbols`           | The deduplicated [`CryptoSymbol`] list                |
+/// | `source_results`    | Per-source [`SourceResult`] with counts and timing    |
+/// | `processing_time_ms`| Total wall-clock time for the entire operation        |
 #[derive(Debug)]
 pub struct LoadAllSymbolsResult {
+  /// Unique symbols after deduplication.
   pub symbols_loaded: usize,
+  /// Number of sources that failed to load.
   pub symbols_failed: usize,
+  /// Symbols removed by deduplication (`total_loaded - symbols_loaded`).
   pub symbols_skipped: usize,
+  /// The final deduplicated symbol list.
   pub symbols: Vec<CryptoSymbol>,
+  /// Per-source fetch results with counts, errors, and timing.
   pub source_results: HashMap<CryptoDataSource, SourceResult>,
+  /// Total wall-clock time in milliseconds.
   pub processing_time_ms: u64,
 }

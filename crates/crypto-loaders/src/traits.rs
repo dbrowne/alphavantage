@@ -27,7 +27,22 @@
  * SOFTWARE.
  */
 
-//! Traits for cryptocurrency data providers.
+//! Core trait definitions for the `crypto-loaders` crate.
+//!
+//! This module defines the two fundamental abstractions that the rest of the
+//! crate depends on:
+//!
+//! - [`CryptoCache`] — a storage-agnostic cache for API responses.
+//! - [`CryptoDataProvider`] — the interface every data-source provider must implement.
+//!
+//! Both traits are `Send + Sync` and use `#[async_trait]` for async methods.
+//!
+//! # Implementing a new provider
+//!
+//! To add a new crypto data source:
+//! 1. Create a struct in [`providers`](crate::providers).
+//! 2. Implement [`CryptoDataProvider`] on it.
+//! 3. Register it in [`CryptoSymbolLoader::new`](crate::loaders::CryptoSymbolLoader::new).
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -35,16 +50,32 @@ use std::sync::Arc;
 use crate::error::CryptoLoaderError;
 use crate::types::CryptoSymbol;
 
-/// Cache interface for crypto data providers.
+// ─── CryptoCache ────────────────────────────────────────────────────────────
+
+/// Storage-agnostic cache for API responses.
 ///
-/// This trait allows crypto-loaders to cache API responses without depending
-/// on a specific database implementation.
+/// Allows the loader layer to cache raw JSON responses without depending on
+/// a specific database or in-memory store. Implementations are injected via
+/// `Arc<dyn CryptoCache>`.
+///
+/// # Key structure
+///
+/// Cache entries are keyed by a `(cache_type, key)` pair:
+/// - `cache_type` groups entries by purpose (e.g., `"coingecko_http"`,
+///   `"crypto_loader"`).
+/// - `key` is a unique identifier within that group (e.g.,
+///   `"coingecko_http_coins_list"`, `"crypto_symbols_CoinGecko"`).
+///
+/// Values are opaque `String`s (typically serialized JSON).
 #[async_trait]
 pub trait CryptoCache: Send + Sync {
-  /// Get a cached value by key.
+  /// Returns the cached value for `(cache_type, key)`, or `None` if missing
+  /// or expired.
   async fn get(&self, cache_type: &str, key: &str) -> Result<Option<String>, CryptoLoaderError>;
 
-  /// Store a value in the cache with TTL in hours.
+  /// Stores a value in the cache with the given TTL (in hours).
+  ///
+  /// If an entry with the same key already exists, it is overwritten.
   async fn set(
     &self,
     cache_type: &str,
@@ -53,28 +84,48 @@ pub trait CryptoCache: Send + Sync {
     ttl_hours: u32,
   ) -> Result<(), CryptoLoaderError>;
 
-  /// Clean up expired cache entries.
+  /// Removes all expired entries for the given `cache_type`.
+  ///
+  /// Returns the number of entries removed.
   async fn cleanup_expired(&self, cache_type: &str) -> Result<usize, CryptoLoaderError>;
 }
 
-/// Trait for cryptocurrency data providers.
+// ─── CryptoDataProvider ─────────────────────────────────────────────────────
+
+/// Interface for a cryptocurrency data source.
 ///
-/// Implement this trait to add a new crypto data source.
+/// Each provider (CoinGecko, CoinMarketCap, etc.) implements this trait.
+/// The [`CryptoSymbolLoader`](crate::loaders::CryptoSymbolLoader) calls
+/// `fetch_symbols` on each configured provider and merges the results.
+///
+/// # Required methods
+///
+/// | Method              | Purpose                                           |
+/// |---------------------|---------------------------------------------------|
+/// | `fetch_symbols`     | Fetch the coin list from the external API          |
+/// | `source_name`       | Human-readable provider name (e.g., `"CoinGecko"`) |
+/// | `rate_limit_delay`  | Milliseconds to wait between API calls             |
+/// | `requires_api_key`  | Whether the provider needs an API key              |
 #[async_trait]
 pub trait CryptoDataProvider: Send + Sync {
-  /// Fetch cryptocurrency symbols from this provider.
+  /// Fetches the cryptocurrency symbol list from this provider's API.
+  ///
+  /// An optional [`CryptoCache`] is passed for providers that support
+  /// HTTP-level response caching (e.g., CoinGecko caches `/coins/list`).
+  /// The `client` is a shared `reqwest::Client` for connection pooling.
   async fn fetch_symbols(
     &self,
     client: &reqwest::Client,
     cache: Option<&Arc<dyn CryptoCache>>,
   ) -> Result<Vec<CryptoSymbol>, CryptoLoaderError>;
 
-  /// Get the name of this data source.
+  /// Returns the human-readable name of this data source (e.g., `"CoinGecko"`).
   fn source_name(&self) -> &'static str;
 
-  /// Get the rate limit delay in milliseconds.
+  /// Returns the recommended delay in milliseconds between consecutive
+  /// API calls to this provider.
   fn rate_limit_delay(&self) -> u64;
 
-  /// Whether this provider requires an API key.
+  /// Returns `true` if this provider requires an API key to function.
   fn requires_api_key(&self) -> bool;
 }

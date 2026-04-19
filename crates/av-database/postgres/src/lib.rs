@@ -29,38 +29,130 @@
 
 //! # av-database-postgres
 //!
-//! TimescaleDB/PostgreSQL integration for AlphaVantage time-series data.
+//! TimescaleDB/PostgreSQL integration for the Alpha Vantage data pipeline.
 //!
-//! This crate provides async database operations using Diesel ORM with BB8 connection
-//! pooling, optimized for storing and querying financial market data.
+//! This crate is the database layer for the `alphavantage` workspace. It
+//! provides Diesel ORM models, repository abstractions, and query helpers
+//! optimized for storing and querying financial market data in a
+//! PostgreSQL/TimescaleDB backend.
 //!
-//! ## Features
+//! ## Crate architecture
 //!
-//! - **Async Support**: Uses `diesel-async` with BB8 connection pool
-//! - **TimescaleDB**: Optimized for time-series data with hypertables
-//! - **Repository Pattern**: Clean abstractions for data access
-//! - **Caching**: Built-in response caching layer
-//!
-//! ## Example
-//!
-//! ```ignore
-//! use av_database_postgres::{establish_connection, Repository};
-//!
-//! let pool = establish_connection(&database_url).await?;
-//! let repo = Repository::new(pool);
+//! ```text
+//! av-database-postgres
+//! ├── connection     → single-connection factory (establish_connection)
+//! ├── schema         → Diesel table! macros (auto-generated from migrations)
+//! ├── models/        → Diesel structs: Queryable, Insertable, AsChangeset
+//! │   ├── security   → symbols, overviews, overviewexts, equity_details, symbol_mappings
+//! │   ├── price      → intradayprices, summaryprices, topstats (TimescaleDB hypertables)
+//! │   ├── news       → newsoverviews, feeds, articles, authors, sources, sentiment, topics
+//! │   ├── crypto     → crypto_overview_basic/metrics, crypto_technical/social, crypto_api_map
+//! │   ├── crypto_markets → crypto exchange/trading-pair market data
+//! │   └── missing_symbols → unresolved symbol tracking & resolution workflow
+//! ├── repository     → DbPool, RepositoryError, traits (Repository, CacheRepository, etc.)
+//! └── repositories/  → concrete async repository implementations (SymbolRepository)
 //! ```
+//!
+//! ## Key features
+//!
+//! - **Dual async strategy:**
+//!   - [`models`] use `diesel-async` (`AsyncPgConnection`) for direct async queries.
+//!   - [`repositories`] use `spawn_blocking` over an `r2d2` synchronous pool
+//!     for the repository pattern layer.
+//! - **TimescaleDB integration:** Hypertables for time-series data
+//!   (`intradayprices`, `summaryprices`, `topstats`) with `time_bucket()`,
+//!   `first()` / `last()`, and continuous aggregates.
+//! - **Repository pattern:** [`DatabaseContext`] provides a single entry point
+//!   for obtaining domain-specific repositories (overview, news, crypto).
+//! - **Caching:** [`CacheRepository`] / [`CacheRepositoryExt`] traits for
+//!   response caching with TTL.
+//! - **Precision:** Financial values use `BigDecimal` (not `f64`) to avoid
+//!   floating-point rounding.
+//!
+//! ## Quick start
+//!
+//! ```rust,no_run
+//! use av_database_postgres::{DatabaseContext, RepositoryResult};
+//!
+//! fn main() -> RepositoryResult<()> {
+//!     let db = DatabaseContext::new("postgres://user:pass@localhost/alphavantage")?;
+//!     let conn = db.get_connection()?;
+//!     println!("Connected to database");
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Module overview
+//!
+//! | Module           | Purpose                                                        |
+//! |------------------|----------------------------------------------------------------|
+//! | [`connection`]   | Bare `PgConnection` factory ([`establish_connection`])          |
+//! | [`schema`]       | Auto-generated Diesel `table!` macros from SQL migrations      |
+//! | [`models`]       | ORM structs for all database tables (query, insert, update)    |
+//! | [`repository`]   | Pool management, error types, trait definitions, `DatabaseContext` |
+//! | [`repositories`] | Concrete async repository implementations                      |
+//!
+//! ## Re-exports
+//!
+//! The `pub use` statements below hoist the most commonly used types to
+//! the crate root so downstream code can write
+//! `use av_database_postgres::{DatabaseContext, RepositoryResult}` etc.
 
+/// Bare PostgreSQL connection factory.
+///
+/// Provides [`establish_connection`] for creating a single `PgConnection`
+/// from a database URL. For pooled access, use
+/// [`DatabaseContext`](crate::repository::DatabaseContext) instead.
 pub mod connection;
+
+/// Diesel ORM models for all database tables.
+///
+/// Organized by domain: [`models::security`], [`models::price`],
+/// [`models::news`], [`models::crypto`], [`models::crypto_markets`],
+/// [`models::missing_symbols`]. See the [`models`] module documentation
+/// for the full type inventory.
 pub mod models;
+
+/// Concrete async repository implementations.
+///
+/// Currently contains [`SymbolRepository`]. See the [`repositories`]
+/// module documentation for the architecture pattern.
 pub mod repositories;
+
+/// Database infrastructure: pool management, error types, and trait definitions.
+///
+/// Key exports: [`DbPool`](repository::DbPool),
+/// [`DatabaseContext`](repository::DatabaseContext),
+/// [`RepositoryError`](repository::RepositoryError),
+/// [`RepositoryResult`](repository::RepositoryResult),
+/// and domain traits ([`Repository`](repository::Repository),
+/// [`OverviewRepository`](repository::OverviewRepository),
+/// [`NewsRepository`](repository::NewsRepository),
+/// [`CryptoRepository`](repository::CryptoRepository)).
 pub mod repository;
+
+/// Auto-generated Diesel `table!` macros.
+///
+/// Generated by `diesel print-schema` from the database migrations. Do not
+/// edit manually — changes are overwritten on migration runs.
 pub mod schema;
 
-// Re-export commonly used items
+// ─── Convenience re-exports ─────────────────────────────────────────────────
+
+/// Re-exported from [`connection`]: creates a bare `PgConnection`.
 pub use connection::establish_connection;
+
+/// Re-exported from [`diesel`]: brings Diesel query DSL into scope.
 pub use diesel::prelude::*;
+
+/// Re-exported from [`models::crypto`]: aggregate crypto mapping statistics.
 pub use models::crypto::CryptoSummary;
+
+/// Re-exported from [`repositories`]: async symbol CRUD repository.
 pub use repositories::SymbolRepository;
+
+/// Re-exported from [`repository`]: pool management, error types, traits,
+/// and the [`DatabaseContext`] entry point.
 pub use repository::{
   CacheRepository, CacheRepositoryExt, CryptoRepository, DatabaseContext, NewsRepository,
   OverviewRepository, OverviewSymbolFilter, Repository, RepositoryError, RepositoryResult,

@@ -27,6 +27,79 @@
  * SOFTWARE.
  */
 
+//! Equity news and sentiment loader for `av-cli load news`.
+//!
+//! Fetches news articles and AlphaVantage sentiment scores for **equity**
+//! securities from the AlphaVantage `NEWS_SENTIMENT` endpoint, then persists
+//! them via [`save_news_to_database`] into the news-related tables (news
+//! overviews, feeds, articles, ticker sentiments, topics).
+//!
+//! ## Companion Module
+//!
+//! This is the **equity** counterpart to
+//! [`crypto_news`](super::crypto_news). The two modules share the same
+//! news persistence infrastructure but query different symbol pools:
+//!
+//! | Module                            | Symbol selection                  |
+//! |-----------------------------------|-----------------------------------|
+//! | [`news`](self)                    | Equities with `overview = true`   |
+//! | [`crypto_news`](super::crypto_news) | Cryptos via `--top`/`--all`/`--symbols` |
+//!
+//! ## Symbol Selection
+//!
+//! Two mutually exclusive modes — exactly one is required:
+//!
+//! - **`--all-equity`** — Loads news for all equity symbols where
+//!   `overview = true`. Uses [`NewsLoader::get_equity_symbols_with_overview`].
+//!   The `overview = true` filter ensures we only fetch news for symbols
+//!   that have already been fully ingested via `av-cli load overviews`.
+//! - **`--symbols TSLA,AAPL,...`** — Explicit list. Symbols are looked up via
+//!   [`get_specific_symbols`] which calls [`NewsRepository::get_all_symbols`]
+//!   and filters by the input list.
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! symbols (Equity, overview = true)
+//!   │
+//!   ▼  via NewsRepository
+//! Vec<SymbolInfo>
+//!   │
+//!   ▼
+//! NewsLoader::load()  ── AlphaVantage NEWS_SENTIMENT API + cache
+//!   │
+//!   ▼
+//! save_news_to_database() (from super::news_utils)
+//!   ├── news overviews
+//!   ├── feeds
+//!   ├── articles  (deduplicated by hash)
+//!   ├── ticker sentiments
+//!   └── topics
+//! ```
+//!
+//! ## API Limits
+//!
+//! - `--limit` is capped at **1000** (the AlphaVantage API maximum) and must
+//!   be at least 1. Validation runs at the start of [`execute`].
+//! - `--api-delay-ms` defaults to 800 ms ≈ 75 calls/minute, suitable for the
+//!   premium tier.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load news for all equities with overview data
+//! av-cli load news --all-equity --days-back 7
+//!
+//! # Load specific equity symbols with topic filter
+//! av-cli load news --symbols AAPL,MSFT,GOOGL --topics earnings,technology
+//!
+//! # Test with first 10 symbols, dry run
+//! av-cli load news --all-equity --symbol-limit 10 --dry-run
+//!
+//! # Force refresh, bypass cache
+//! av-cli load news --symbols TSLA --force-refresh
+//! ```
+
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
 use av_database_postgres::repository::DatabaseContext;
@@ -47,69 +120,138 @@ use tracing::{error, info, warn};
 use super::news_utils::save_news_to_database;
 use crate::config::Config;
 
-// Use the NewsSymbolInfo type alias from av_loaders
+/// Type alias for [`av_loaders::news_loader::SymbolInfo`] — the lightweight
+/// `(sid, symbol)` struct used by the news loader.
 type SymbolInfo = av_loaders::news_loader::SymbolInfo;
 
+/// Command-line arguments for `av-cli load news`.
+///
+/// Controls symbol selection (`--all-equity` vs `--symbols`), date range,
+/// topic filtering, sort order, caching, rate limiting, and error handling.
 #[derive(Args, Clone, Debug)]
 pub struct NewsArgs {
-  /// Load for all equity symbols with overview=true
+  /// Load news for **all** equity symbols where `symbols.overview = true`.
+  ///
+  /// Mutually exclusive with `--symbols` (one of the two is required).
+  /// Uses [`NewsLoader::get_equity_symbols_with_overview`] to query the
+  /// pool — the `overview = true` filter ensures we only fetch news for
+  /// symbols that have already been ingested via `av-cli load overviews`.
   #[arg(long)]
   all_equity: bool,
 
-  /// Comma-separated list of specific tickers
+  /// Comma-separated list of specific equity tickers to load news for.
+  ///
+  /// Mutually exclusive with `--all-equity`. Symbols not found in the
+  /// database are silently skipped (the filter is `HashMap::get` against the
+  /// repository's symbol map).
   #[arg(short = 's', long, value_delimiter = ',')]
   symbols: Option<Vec<String>>,
 
-  /// Number of days back to fetch news
+  /// Number of days of historical news to fetch. Defaults to 7.
+  ///
+  /// Translated to a `time_from = now - days_back` parameter on the
+  /// AlphaVantage API.
   #[arg(short = 'd', long, default_value = "7")]
   days_back: u32,
 
-  /// Topics to filter by (comma-separated)
+  /// Comma-separated list of AlphaVantage news topics to filter by.
+  ///
+  /// Optional. Valid topics include `earnings`, `ipo`, `mergers_and_acquisitions`,
+  /// `financial_markets`, `economy_macro`, `economy_monetary`, `economy_fiscal`,
+  /// `energy_transportation`, `finance`, `life_sciences`, `manufacturing`,
+  /// `real_estate`, `retail_wholesale`, `technology`.
   #[arg(short = 't', long, value_delimiter = ',')]
   topics: Option<Vec<String>>,
 
-  /// Sort order (LATEST, EARLIEST, RELEVANCE)
+  /// Sort order for fetched articles.
+  ///
+  /// Valid values: `LATEST`, `EARLIEST`, `RELEVANCE`. Defaults to `LATEST`.
   #[arg(long, default_value = "LATEST")]
   sort_order: String,
 
-  /// Maximum number of articles to fetch per symbol (default: 1000, max: 1000)
+  /// Maximum number of articles to fetch per symbol.
+  ///
+  /// Defaults to 1000 (also the API maximum). Validated at the start of
+  /// [`execute`] — values >1000 or <1 return an error.
   #[arg(short, long, default_value = "1000")]
   limit: u32,
 
-  /// Disable caching
+  /// Disable response caching entirely.
+  ///
+  /// When set, every request hits the AlphaVantage API directly.
   #[arg(long)]
   no_cache: bool,
 
-  /// Force refresh (bypass cache)
+  /// Bypass the cache and fetch fresh data, but continue to write new
+  /// responses into the cache.
   #[arg(long)]
   force_refresh: bool,
 
-  /// Cache TTL in hours
+  /// Cache TTL in hours. Defaults to 24.
   #[arg(long, default_value = "24")]
   cache_ttl_hours: i64,
 
-  /// Continue on error instead of stopping
+  /// Continue processing remaining symbols on error. Defaults to `true`.
   #[arg(long, default_value = "true")]
   continue_on_error: bool,
 
-  /// Stop on first error (opposite of continue-on-error)
+  /// Stop on the first error (semantic inverse of `--continue-on-error`).
+  ///
+  /// **Note**: There's a TODO marker in source — currently the binding
+  /// `_continue_on_error` is computed but unused; the original
+  /// `continue_on_error` is what actually controls behavior.
   #[arg(long)]
   stop_on_error: bool,
 
-  /// Dry run - fetch but don't save to database
+  /// Fetch news from the API but skip database writes.
   #[arg(long)]
   dry_run: bool,
 
-  /// Delay between API calls in milliseconds (default: 800ms for ~75 requests/minute)
+  /// Delay between API calls in milliseconds.
+  ///
+  /// Defaults to 800 ms ≈ 75 calls/minute, suitable for AlphaVantage premium tier.
   #[arg(long, default_value = "800")]
   api_delay_ms: u64,
 
-  /// Process only first N symbols (for testing)
+  /// Process only the first N symbols (useful for testing).
+  ///
+  /// Applied **after** symbol selection (`--all-equity` or `--symbols`).
   #[arg(long)]
   symbol_limit: Option<usize>,
 }
 
-/// Main execute function with inline persistence
+/// Main entry point for `av-cli load news`.
+///
+/// Orchestrates the equity news loading pipeline:
+///
+/// 1. **Limit validation** — Returns an error if `--limit > 1000` or `--limit < 1`.
+/// 2. **Infrastructure setup** — Creates [`AlphaVantageClient`],
+///    [`DatabaseContext`], and the news/cache repositories.
+/// 3. **Symbol selection** — Dispatches to one of two paths:
+///    - `--all-equity` → [`NewsLoader::get_equity_symbols_with_overview`]
+///    - `--symbols` → [`get_specific_symbols`]
+///    Returns an error if neither flag is set.
+/// 4. **Symbol limit** — Applies `--symbol-limit` (post-selection cap).
+/// 5. **Time estimation** — Logs an estimated runtime based on
+///    `api_delay_ms × symbol_count`.
+/// 6. **Loader configuration** — Builds [`NewsLoaderConfig`] with date range,
+///    topics, sort order, limit, cache settings, retry behavior, and rate
+///    limiting (progress every 10 symbols).
+/// 7. **API loading** — Calls [`NewsLoader::load`] (with concurrency = 5)
+///    over a date range from `now - days_back` to `now`.
+/// 8. **Persistence** — Unless `--dry-run`, calls [`save_news_to_database`]
+///    which writes news overviews, feeds, articles (deduplicated by hash),
+///    ticker sentiments, and topics in a transaction.
+/// 9. **Error reporting** — Logs any per-symbol errors collected by the
+///    loader. Returns an error if `--continue-on-error = false` and any
+///    occurred.
+///
+/// # Errors
+///
+/// Returns errors from: limit validation, missing symbol-selection flag,
+/// API client creation, database context creation, symbol query, news loader
+/// execution (unless `--continue-on-error`), database save, or aggregated
+/// loader errors.
 pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
   info!("Starting news sentiment loader");
 
@@ -263,7 +405,14 @@ pub async fn execute(args: NewsArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
-/// Helper function to get specific symbols from database
+/// Looks up specific equity symbols by name and returns [`SymbolInfo`] structs.
+///
+/// Calls [`NewsRepository::get_all_symbols`] to fetch the full
+/// `HashMap<symbol, sid>`, then filters by the input list. Symbols not found
+/// in the map are silently dropped — no warning is logged (unlike the more
+/// strict resolution paths in [`super::crypto_news`] and [`super::missing_symbols`]).
+///
+/// Used by [`execute`] when `--symbols` is set.
 async fn get_specific_symbols(
   news_repo: &Arc<dyn av_database_postgres::repository::NewsRepository>,
   symbols: &[String],

@@ -27,6 +27,72 @@
  * SOFTWARE.
  */
 
+//! Cryptocurrency symbol loader for `av-cli load crypto`.
+//!
+//! This module fetches cryptocurrency symbol listings from multiple external APIs
+//! (CoinGecko, CoinMarketCap, SosoValue) and persists them to PostgreSQL. It is
+//! the **primary ingestion path** for populating the `symbols`, `crypto_api_map`,
+//! and `symbol_mappings` tables with cryptocurrency data.
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! CoinGecko / CoinMarketCap / SosoValue APIs
+//!   │
+//!   ▼
+//! CryptoDbLoader (av_loaders) ── fetches & deduplicates ──▶ Vec<CryptoSymbolForDb>
+//!   │
+//!   ▼
+//! save_crypto_symbol_to_database() ── per-symbol persistence
+//!   │
+//!   ├── find_existing_token_in_db()   (symbols ⟕ crypto_api_map lookup)
+//!   ├── insert_new_token_in_db()      (symbols + crypto_api_map + symbol_mappings)
+//!   └── update_existing_token_in_db() (update all three tables)
+//! ```
+//!
+//! ## Multi-Token Support
+//!
+//! A single trading symbol (e.g., `SOL`) may correspond to multiple tokens across
+//! different sources (Solana, Allbridge Bridged SOL, etc.). This module handles
+//! that by keying uniqueness on the triple `(symbol, api_source, api_id)` rather
+//! than on `symbol` alone. Each distinct token gets its own SID.
+//!
+//! ## Primary vs. Non-Primary Tokens
+//!
+//! Tokens are classified by their `priority` field:
+//!
+//! - **Primary tokens** (`priority != 9_999_999`) — The canonical version of a
+//!   trading symbol. Gets entries in all three tables: `symbols`, `crypto_api_map`,
+//!   and `symbol_mappings`.
+//! - **Non-primary tokens** (`priority == 9_999_999`, [`NO_PRIORITY`]) — Wrapped,
+//!   bridged, or duplicate variants. Gets entries in `symbols` and `crypto_api_map`
+//!   only — `symbol_mappings` is skipped to avoid ambiguous lookups.
+//!
+//! ## Database Tables Written
+//!
+//! | Table              | Purpose                                                |
+//! |--------------------|--------------------------------------------------------|
+//! | `symbols`          | Core symbol record (SID, name, type, region, currency) |
+//! | `crypto_api_map`   | Links SID to external API source/ID with rank and status |
+//! | `symbol_mappings`  | Canonical source→SID lookup (primary tokens only)       |
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load from CoinGecko and CoinMarketCap (defaults)
+//! av-cli load crypto
+//!
+//! # Load from all three sources with API keys
+//! av-cli load crypto --sources coin-gecko,coin-market-cap,soso-value \
+//!   --coingecko-api-key <KEY> --coinmarketcap-api-key <KEY> --sosovalue-api-key <KEY>
+//!
+//! # Dry run to test API connectivity
+//! av-cli load crypto --dry-run --verbose
+//!
+//! # Update existing symbols, continue past errors
+//! av-cli load crypto --update-existing --continue-on-error --limit 500
+//! ```
+
 use anyhow::{Result, anyhow};
 use clap::Args;
 use std::collections::HashMap;
@@ -49,11 +115,21 @@ use crate::config::Config;
 use av_database_postgres::models::crypto::NewCryptoApiMap;
 use av_database_postgres::models::security::NewSymbolOwned;
 use av_loaders::crypto::database::CryptoSymbolForDb;
+
+/// Sentinel value for non-primary tokens. Tokens with this priority are
+/// wrapped/bridged variants that should not be inserted into `symbol_mappings`.
 const NO_PRIORITY: i32 = 9_999_999;
 
+/// Command-line arguments for `av-cli load crypto`.
+///
+/// Controls which external APIs to fetch from, how to handle existing records,
+/// API authentication, concurrency, and output verbosity.
 #[derive(Args, Debug)]
 pub struct CryptoArgs {
-  /// Data sources to use for crypto symbol loading
+  /// External API sources to fetch cryptocurrency listings from.
+  ///
+  /// Accepts a comma-separated list. Defaults to `coin-gecko,coin-market-cap`.
+  /// Each source is validated for its required API key before fetching begins.
   #[arg(
     long,
     value_enum,
@@ -62,55 +138,76 @@ pub struct CryptoArgs {
     )]
   sources: Vec<CryptoDataSourceArg>,
 
-  /// Skip database updates (dry run)
+  /// Enable dry-run mode — test API connectivity without writing to the database.
+  ///
+  /// When set, [`execute_dry_run`] is called instead of the full pipeline.
   #[arg(short, long)]
   dry_run: bool,
 
-  /// Continue on errors
+  /// Continue processing remaining symbols when one fails.
+  ///
+  /// When `false` (default), the first save error aborts the entire run.
   #[arg(short = 'k', long)]
   continue_on_error: bool,
 
-  /// Limit number of symbols to load (for debugging)
+  /// Cap the number of symbols to process (useful for debugging/testing).
   #[arg(short, long)]
   limit: Option<usize>,
 
-  /// Update existing symbols in database
+  /// Update records for tokens that already exist in the database.
+  ///
+  /// When `false` (default), existing tokens are skipped (though primary tokens
+  /// still get their `symbol_mappings` entry ensured via `ON CONFLICT DO NOTHING`).
   #[arg(long)]
   update_existing: bool,
 
-  /// SosoValue API key (can also be set via SOSOVALUE_API_KEY env var)
+  /// SosoValue API key. **Required** when `soso-value` is in `--sources`.
+  ///
+  /// Can also be set via the `SOSOVALUE_API_KEY` environment variable.
   #[arg(long, env = "SOSOVALUE_API_KEY")]
   sosovalue_api_key: Option<String>,
 
-  /// CoinGecko API key (optional, increases rate limits)
+  /// CoinGecko API key (optional — increases rate limits beyond free tier).
+  ///
+  /// Can also be set via the `COINGECKO_API_KEY` environment variable.
   #[arg(long, env = "COINGECKO_API_KEY")]
   coingecko_api_key: Option<String>,
 
-  /// CoinMarketCap API key (optional, for CMC data source)
+  /// CoinMarketCap API key (optional).
+  ///
+  /// Can also be set via the `CMC_API_KEY` environment variable.
   #[arg(long, env = "CMC_API_KEY")]
   coinmarketcap_api_key: Option<String>,
 
-  /// Maximum concurrent requests
+  /// Maximum number of concurrent API requests.
   #[arg(long, default_value = "5")]
   concurrent: usize,
 
-  /// Batch size for database operations
+  /// Number of symbols to process per database batch operation.
   #[arg(long, default_value = "100")]
   batch_size: usize,
 
-  /// Show detailed progress information
+  /// Enable detailed progress output and progress bar in the loader.
   #[arg(long)]
   verbose: bool,
 
-  /// Track the loading process in the database
+  /// Record the loading process in the database via [`ProcessTracker`].
   #[arg(long)]
   track_process: bool,
 }
 
+/// CLI-level enum for crypto data source selection.
+///
+/// Maps 1:1 to [`CryptoDataSource`] from `av_loaders`. The separation exists
+/// because `CryptoDataSource` does not derive [`clap::ValueEnum`], so this
+/// wrapper provides the clap integration and converts via [`From`].
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum CryptoDataSourceArg {
+  /// CoinGecko API (free tier available, API key optional).
   CoinGecko,
+  /// CoinMarketCap API.
   CoinMarketCap,
+  /// SosoValue API (API key required).
   SosoValue,
 }
 
@@ -124,13 +221,34 @@ impl From<CryptoDataSourceArg> for CryptoDataSource {
   }
 }
 
-/// SID generator using existing SecurityType system
+/// Sequential Security ID (SID) generator for cryptocurrency symbols.
+///
+/// Reads the maximum existing cryptocurrency SID from the `symbols` table,
+/// decodes it via [`SecurityIdentifier::decode`] to extract the raw numeric
+/// component, and generates the next sequential ID using
+/// [`SecurityType::encode`].
+///
+/// ## SID Encoding
+///
+/// SIDs are encoded as `i64` values where the [`SecurityType`] (e.g.,
+/// `Cryptocurrency`) is embedded in the upper bits and a sequential `raw_id`
+/// occupies the lower bits. This generator only increments the `raw_id` portion.
+///
+/// ## Thread Safety
+///
+/// This generator is **not** thread-safe — it maintains a mutable counter and
+/// must be used within a single connection/transaction. Each call to [`next_sid`]
+/// increments the counter without checking the database.
 struct CryptoSidGenerator {
   next_raw_id: u32,
 }
 
 impl CryptoSidGenerator {
-  /// Initialize by reading max cryptocurrency SIDs from database
+  /// Creates a new generator by scanning all existing cryptocurrency SIDs.
+  ///
+  /// Queries `symbols` for rows where `sec_type = "Cryptocurrency"`, decodes
+  /// each SID, and finds the maximum `raw_id`. The generator will start
+  /// producing IDs from `max_raw_id + 1`.
   fn new(conn: &mut PgConnection) -> Result<Self> {
     use av_database_postgres::schema::symbols::dsl::*;
 
@@ -155,7 +273,10 @@ impl CryptoSidGenerator {
     Ok(Self { next_raw_id: max_raw_id + 1 })
   }
 
-  /// Generate the next SID using existing SecurityType::encode
+  /// Returns the next SID and advances the internal counter.
+  ///
+  /// Each call produces a unique SID by encoding [`SecurityType::Cryptocurrency`]
+  /// with the current `next_raw_id`, then incrementing `next_raw_id`.
   fn next_sid(&mut self) -> i64 {
     let sid = SecurityType::encode(SecurityType::Cryptocurrency, self.next_raw_id);
     self.next_raw_id += 1;
@@ -163,7 +284,38 @@ impl CryptoSidGenerator {
   }
 }
 
-/// Main execute function supporting multiple APIs
+/// Main entry point for `av-cli load crypto`.
+///
+/// Orchestrates the full crypto symbol loading pipeline:
+///
+/// 1. **Dry-run check** — If `--dry-run` is set, delegates to [`execute_dry_run`]
+///    and returns early.
+/// 2. **Source conversion & API key validation** — Converts [`CryptoDataSourceArg`]
+///    to [`CryptoDataSource`] and validates that required keys are present
+///    (SosoValue requires a key; CoinGecko warns if absent).
+/// 3. **Infrastructure setup** — Creates:
+///    - [`DatabaseContext`](av_database_postgres::repository::DatabaseContext) for
+///      repository access
+///    - [`AlphaVantageClient`] for HTTP operations
+///    - [`CryptoDbLoader`] with [`CryptoLoaderConfig`] and a cache repository
+///    - [`LoaderContext`] with retry, concurrency, and optional process tracking
+/// 4. **Loader execution** — Calls [`CryptoDbLoader::load`] which fetches symbol
+///    listings from all configured sources, deduplicates, and returns
+///    `Vec<CryptoSymbolForDb>`.
+/// 5. **Per-symbol persistence** — Iterates over the returned symbols and calls
+///    [`save_crypto_symbol_to_database`] for each, which handles the
+///    find-or-insert/update logic across all three database tables.
+///
+/// # Arguments
+///
+/// * `args` — The parsed [`CryptoArgs`] from the CLI.
+/// * `config` — The full CLI [`Config`](crate::config::Config) providing
+///   `database_url` and `api_config`.
+///
+/// # Errors
+///
+/// Returns errors from API key validation, database connection, loader execution,
+/// or individual symbol saves (unless `--continue-on-error` is set).
 pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
   info!("Starting crypto symbol loader with sources: {:?}", args.sources);
 
@@ -292,6 +444,16 @@ pub async fn execute(args: CryptoArgs, config: Config) -> Result<()> {
 
   Ok(())
 }
+/// Updates an existing token's records across all three database tables.
+///
+/// Performs three operations in sequence:
+///
+/// 1. **`symbols`** — Updates `name` and `m_time`.
+/// 2. **`crypto_api_map`** — Updates `api_id`, `api_symbol`, `rank`,
+///    `last_verified`, and `m_time` for the matching `(sid, api_source)` row.
+/// 3. **`symbol_mappings`** — Upserts the `(sid, source_name)` row **only for
+///    primary tokens** (`priority != NO_PRIORITY`). Non-primary tokens are
+///    skipped to avoid polluting the canonical lookup table.
 fn update_existing_token_in_db(
   conn: &mut PgConnection,
   sid: i64,
@@ -350,7 +512,24 @@ fn update_existing_token_in_db(
   Ok(())
 }
 
-/// Save individual crypto symbol to database, allowing multiple tokens per trading symbol
+/// Persists a single crypto symbol to the database, handling the
+/// find-or-insert/update decision.
+///
+/// Opens a new database connection per call (one connection per symbol). The
+/// flow is:
+///
+/// 1. **Lookup** — [`find_existing_token_in_db`] checks if a row with the same
+///    `(symbol, api_source, api_id)` triple already exists in `symbols ⟕
+///    crypto_api_map`.
+/// 2. **Existing + update** — If found and `update_existing` is `true`, calls
+///    [`update_existing_token_in_db`] to refresh all three tables.
+/// 3. **Existing + no update** — If found but `update_existing` is `false`,
+///    ensures the `symbol_mappings` entry exists for primary tokens (via
+///    `ON CONFLICT DO NOTHING`) and skips the symbol otherwise.
+/// 4. **New** — If not found, calls [`insert_new_token_in_db`] to generate a
+///    new SID and insert into all tables.
+///
+/// Returns the SID of the saved or existing token.
 async fn save_crypto_symbol_to_database(
   database_url: &str,
   db_symbol: &CryptoSymbolForDb,
@@ -411,7 +590,14 @@ async fn save_crypto_symbol_to_database(
   }
 }
 
-/// Find existing token by checking symbols + crypto_api_map tables
+/// Looks up an existing token by the `(symbol, api_source, api_id)` triple.
+///
+/// Performs an `INNER JOIN` between `symbols` and `crypto_api_map` to find a
+/// row matching all three fields. Returns `Some(sid)` if found, `None` otherwise.
+///
+/// This triple-key lookup (rather than just `symbol`) is what enables
+/// multi-token support — multiple tokens can share the same trading symbol
+/// if they come from different sources or have different source IDs.
 fn find_existing_token_in_db(
   conn: &mut PgConnection,
   symbol: &str,
@@ -433,6 +619,21 @@ fn find_existing_token_in_db(
   Ok(existing_sid)
 }
 
+/// Inserts a new crypto token into all three database tables.
+///
+/// 1. **SID generation** — Creates a [`CryptoSidGenerator`] (scans the `symbols`
+///    table) and generates the next sequential SID.
+/// 2. **`symbols` insert** — Creates a [`NewSymbolOwned`] with `sec_type =
+///    "Cryptocurrency"`, `region = "Global"`, `currency = "USD"`, and the
+///    token's priority.
+/// 3. **`crypto_api_map` insert** — Links the new SID to the external API
+///    source/ID with rank and active status.
+/// 4. **`symbol_mappings` insert** — Creates the canonical source→SID mapping
+///    **only for primary tokens** (`priority != NO_PRIORITY`). Uses
+///    `ON CONFLICT DO UPDATE` to refresh verification timestamps if the mapping
+///    already exists.
+///
+/// Returns the newly generated SID.
 fn insert_new_token_in_db(conn: &mut PgConnection, db_symbol: &CryptoSymbolForDb) -> Result<i64> {
   use av_database_postgres::schema::{crypto_api_map, symbol_mappings, symbols};
   use diesel::prelude::*;
@@ -508,7 +709,11 @@ fn insert_new_token_in_db(conn: &mut PgConnection, db_symbol: &CryptoSymbolForDb
 
   Ok(new_sid)
 }
-/// Execute in dry run mode - test API connections
+/// Dry-run mode — logs configuration and tests API key availability.
+///
+/// Prints the selected sources, concurrency settings, and API key status
+/// for each source. Does **not** make any API calls or database writes.
+/// Called by [`execute`] when `--dry-run` is set.
 async fn execute_dry_run(args: CryptoArgs) -> Result<()> {
   info!("Executing crypto loader in dry run mode");
 
@@ -552,6 +757,12 @@ async fn execute_dry_run(args: CryptoArgs) -> Result<()> {
   Ok(())
 }
 
+/// Validates that required API keys are present for each selected source.
+///
+/// - **SosoValue** — Key is required; returns an error if missing.
+/// - **CoinGecko** — Key is optional; logs a warning about free-tier rate limits
+///   if absent.
+/// - **Other sources** — Logs a warning that validation is not implemented.
 fn validate_api_keys(sources: &[CryptoDataSource], args: &CryptoArgs) -> Result<()> {
   for source in sources {
     match source {
@@ -576,7 +787,21 @@ fn validate_api_keys(sources: &[CryptoDataSource], args: &CryptoArgs) -> Result<
   Ok(())
 }
 
-/// Save crypto symbols to database using existing patterns
+/// Batch-saves crypto symbols to the database within a single transaction.
+///
+/// This is an **alternative** to the per-symbol [`save_crypto_symbol_to_database`]
+/// flow. It processes all symbols in a single `conn.transaction()` block,
+/// using [`CryptoSidGenerator`] for sequential SID assignment. Supports
+/// `update_existing` and `continue_on_error` semantics.
+///
+/// Returns `(saved_count, updated_count, failed_count)`.
+///
+/// ## Differences from `save_crypto_symbol_to_database`
+///
+/// - Uses a **single transaction** (all-or-nothing unless `continue_on_error`).
+/// - Runs in a **blocking Tokio task** via `spawn_blocking`.
+/// - Does **not** write to `symbol_mappings` — only `symbols` and `crypto_api_map`.
+/// - Validates symbol length (max 20 chars) and rejects empty symbol/name.
 #[allow(dead_code)] // Retained for potential direct database operations bypassing repository
 async fn save_crypto_symbols_to_db(
   database_url: &str,
@@ -722,7 +947,11 @@ async fn save_crypto_symbols_to_db(
   .await?
 }
 
-/// Insert API mapping for a cryptocurrency
+/// Inserts a `crypto_api_map` row linking a SID to its external API source.
+///
+/// Used by [`save_crypto_symbols_to_db`] (the batch path) to create the
+/// API mapping after inserting a new symbol. Only handles CoinGecko and
+/// SosoValue sources; other sources are silently skipped.
 fn insert_api_mapping(
   conn: &mut PgConnection,
   sid: i64,

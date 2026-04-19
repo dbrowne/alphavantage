@@ -27,10 +27,40 @@
  * SOFTWARE.
  */
 
+//! Cryptocurrency OHLCV and exchange-rate response models.
+//!
+//! This module provides serde-deserializable structs for the Alpha Vantage
+//! cryptocurrency endpoints:
+//!
+//! | Endpoint                     | Model                   | Time-series key in JSON                      |
+//! |------------------------------|-------------------------|----------------------------------------------|
+//! | `CURRENCY_EXCHANGE_RATE`     | [`CryptoExchangeRate`]  | N/A (single-value, not a time series)        |
+//! | `CRYPTO_INTRADAY`            | [`CryptoIntraday`]      | Flattened via `#[serde(flatten)]`            |
+//! | `DIGITAL_CURRENCY_DAILY`     | [`CryptoDaily`]         | `"Time Series (Digital Currency Daily)"`     |
+//! | `DIGITAL_CURRENCY_WEEKLY`    | [`CryptoWeekly`]        | `"Time Series (Digital Currency Weekly)"`    |
+//! | `DIGITAL_CURRENCY_MONTHLY`   | [`CryptoMonthly`]       | `"Time Series (Digital Currency Monthly)"`   |
+//!
+//! # Key differences from equity time-series
+//!
+//! - Prices include a `"(USD)"` suffix in the JSON keys (e.g., `"1a. open (USD)"`).
+//! - Each bar includes a `market_cap_usd` field.
+//! - Volume is a `String` that may contain fractional values (crypto volume can
+//!   be non-integer).
+//! - Metadata uses crypto-specific fields (`Digital Currency Code/Name`,
+//!   `Market Code/Name`) rather than the standard `Symbol` field.
+//!
+//! All price/volume fields are stored as `String` for lossless round-tripping.
+//! Use the helper methods on [`CryptoOhlcvData`] for numeric access.
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Cryptocurrency exchange rate response
+// ─── Exchange rate ──────────────────────────────────────────────────────────
+
+/// Top-level response from the `CURRENCY_EXCHANGE_RATE` endpoint for crypto pairs.
+///
+/// Wraps a single [`CryptoExchangeRateData`] object under the JSON key
+/// `"Realtime Currency Exchange Rate"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoExchangeRate {
   /// Realtime currency exchange rate
@@ -38,7 +68,10 @@ pub struct CryptoExchangeRate {
   pub realtime_currency_exchange_rate: CryptoExchangeRateData,
 }
 
-/// Cryptocurrency exchange rate data
+/// Real-time exchange rate data for a cryptocurrency pair.
+///
+/// Contains the from/to currency codes and names, the exchange rate,
+/// bid/ask prices, and a timestamp. All numeric values are strings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoExchangeRateData {
   /// From currency code
@@ -78,7 +111,12 @@ pub struct CryptoExchangeRateData {
   pub ask_price: String,
 }
 
-/// Cryptocurrency intraday time series
+// ─── Time series responses ──────────────────────────────────────────────────
+
+/// Response from the `CRYPTO_INTRADAY` endpoint.
+///
+/// Uses `#[serde(flatten)]` for the time-series data because the JSON key
+/// varies by interval (e.g., `"Time Series Crypto (5min)"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoIntraday {
   /// Metadata
@@ -90,7 +128,7 @@ pub struct CryptoIntraday {
   pub time_series: BTreeMap<String, CryptoOhlcvData>,
 }
 
-/// Cryptocurrency daily time series
+/// Response from the `DIGITAL_CURRENCY_DAILY` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoDaily {
   /// Metadata
@@ -102,7 +140,7 @@ pub struct CryptoDaily {
   pub time_series: BTreeMap<String, CryptoOhlcvData>,
 }
 
-/// Cryptocurrency weekly time series
+/// Response from the `DIGITAL_CURRENCY_WEEKLY` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoWeekly {
   /// Metadata
@@ -114,7 +152,7 @@ pub struct CryptoWeekly {
   pub time_series: BTreeMap<String, CryptoOhlcvData>,
 }
 
-/// Cryptocurrency monthly time series
+/// Response from the `DIGITAL_CURRENCY_MONTHLY` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoMonthly {
   /// Metadata
@@ -126,7 +164,21 @@ pub struct CryptoMonthly {
   pub time_series: BTreeMap<String, CryptoOhlcvData>,
 }
 
-/// Cryptocurrency OHLCV data with USD values
+// ─── OHLCV data point ───────────────────────────────────────────────────────
+
+/// A single OHLCV bar for a cryptocurrency, denominated in USD.
+///
+/// Differs from the equity [`OhlcvData`](super::common::OhlcvData) in that:
+/// - JSON keys include a `"(USD)"` suffix (e.g., `"1a. open (USD)"`).
+/// - Includes a `market_cap_usd` field.
+/// - Volume may be fractional (stored as `String`).
+///
+/// # Helper methods
+///
+/// - [`close_as_f64`](CryptoOhlcvData::close_as_f64) — parse close price.
+/// - [`volume_as_f64`](CryptoOhlcvData::volume_as_f64) — parse volume (fractional).
+/// - [`market_cap_as_f64`](CryptoOhlcvData::market_cap_as_f64) — parse market cap.
+/// - [`price_change_percent`](CryptoOhlcvData::price_change_percent) — `((close - open) / open) * 100`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoOhlcvData {
   /// Open price in USD
@@ -154,7 +206,14 @@ pub struct CryptoOhlcvData {
   pub market_cap_usd: String,
 }
 
-/// Cryptocurrency metadata
+// ─── Metadata ───────────────────────────────────────────────────────────────
+
+/// Metadata block for cryptocurrency time-series responses.
+///
+/// Uses crypto-specific field names (`Digital Currency Code/Name`,
+/// `Market Code/Name`) instead of the standard equity `Symbol` field.
+/// The `interval` and `output_size` fields are only present for intraday
+/// responses and are skipped during serialization when `None`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CryptoMetadata {
   /// Information
@@ -194,23 +253,26 @@ pub struct CryptoMetadata {
   pub time_zone: String,
 }
 
+/// Numeric parsing and derived-value helpers for [`CryptoOhlcvData`].
 impl CryptoOhlcvData {
-  /// Parse close price as f64
+  /// Parses the USD closing price as `f64`.
   pub fn close_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.close_usd.parse()
   }
 
-  /// Parse volume as f64
+  /// Parses volume as `f64` (crypto volume can be fractional).
   pub fn volume_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.volume.parse()
   }
 
-  /// Parse market cap as f64
+  /// Parses the USD market capitalization as `f64`.
   pub fn market_cap_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.market_cap_usd.parse()
   }
 
-  /// Calculate price change percentage from open to close
+  /// Computes `((close - open) / open) * 100.0` (percentage change).
+  ///
+  /// Returns `0.0` if `open` is zero (avoids division by zero).
   pub fn price_change_percent(&self) -> Result<f64, std::num::ParseFloatError> {
     let open: f64 = self.open_usd.parse()?;
     let close: f64 = self.close_usd.parse()?;

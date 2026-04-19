@@ -4,6 +4,61 @@
  * dwight[-at-]dwightjbrowne[-dot-]com
  */
 
+//! Social and technical data loader for `av-cli load crypto-details`.
+//!
+//! Fetches detailed cryptocurrency information from the CoinGecko
+//! `/coins/{id}` endpoint and persists it into two database tables:
+//! `crypto_social` (community links, scores, sentiment) and
+//! `crypto_technical` (blockchain metadata, GitHub activity, token
+//! classification flags).
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! crypto_api_map (CoinGecko mappings)
+//!   │
+//!   ▼
+//! CryptoRepository::get_cryptos_with_coingecko_ids()
+//!   │  returns Vec<(sid, symbol, coingecko_id)>
+//!   ▼
+//! CoinGeckoDetailsLoader::load()  ── CoinGecko API + cache ──▶ Vec<CryptoDetailedData>
+//!   │
+//!   ▼
+//! save_details_to_db()
+//!   ├── batch_upsert_social()      → crypto_social table
+//!   └── batch_upsert_technical()   → crypto_technical table
+//! ```
+//!
+//! ## Prerequisites
+//!
+//! - Crypto symbols must already be loaded (`av-cli load crypto`) with CoinGecko
+//!   mappings in `crypto_api_map`.
+//! - The `COINGECKO_API_KEY` environment variable must be set.
+//!
+//! ## Database Tables Written
+//!
+//! | Table              | Data                                                       |
+//! |--------------------|------------------------------------------------------------|
+//! | `crypto_social`    | URLs (website, whitepaper, GitHub, social media), follower  |
+//! |                    | counts, CoinGecko scores (developer, community, liquidity),|
+//! |                    | sentiment vote percentages                                 |
+//! | `crypto_technical` | Blockchain platform, token standard, genesis date, GitHub   |
+//! |                    | repo stats (forks, stars, issues, commits), classification  |
+//! |                    | flags (DeFi, stablecoin, NFT, gaming, L2, wrapped, etc.)   |
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Load details for all coins with CoinGecko mappings
+//! av-cli load crypto-details
+//!
+//! # Load first 50 coins with 3 concurrent requests
+//! av-cli load crypto-details --limit 50 --concurrent 3
+//!
+//! # Dry run to test API without database writes
+//! av-cli load crypto-details --dry-run
+//! ```
+
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
 use av_database_postgres::models::crypto::{NewCryptoSocial, NewCryptoTechnical};
@@ -19,25 +74,56 @@ use tracing::{error, info};
 
 use crate::config::Config;
 
+/// Command-line arguments for `av-cli load crypto-details`.
 #[derive(Args, Clone, Debug)]
 pub struct CryptoDetailsArgs {
-  /// Limit number of coins to load (for debugging)
+  /// Cap the number of coins to process (useful for debugging/testing).
+  ///
+  /// Passed to [`CryptoRepository::get_cryptos_with_coingecko_ids`] to limit
+  /// the query result set.
   #[arg(short, long)]
   limit: Option<usize>,
 
-  /// Number of concurrent requests
+  /// Maximum number of concurrent CoinGecko API requests.
   #[arg(short, long, default_value = "5")]
   concurrent: usize,
 
-  /// Continue on error instead of stopping
+  /// Continue processing remaining coins when one fails.
+  ///
+  /// When `false` (default), the first loader error aborts the run.
+  /// Note: only applies to the API loading phase; database save errors
+  /// always propagate.
   #[arg(long)]
   continue_on_error: bool,
 
-  /// Dry run - fetch data but don't save to database
+  /// Fetch data from CoinGecko but skip database writes.
+  ///
+  /// Useful for verifying API connectivity and data quality. The loaded
+  /// count is logged at the end.
   #[arg(long)]
   dry_run: bool,
 }
 
+/// Main entry point for `av-cli load crypto-details`.
+///
+/// Orchestrates the full pipeline:
+///
+/// 1. **Query existing mappings** — Calls
+///    [`CryptoRepository::get_cryptos_with_coingecko_ids`] to get all coins
+///    that have a CoinGecko mapping in `crypto_api_map`, optionally limited
+///    by `--limit`.
+/// 2. **Read API key** — Reads `COINGECKO_API_KEY` from the environment
+///    (required; returns an error if missing).
+/// 3. **Fetch details** — Creates a [`CoinGeckoDetailsLoader`] with response
+///    caching and calls [`DataLoader::load`] to fetch `/coins/{id}` for each
+///    coin. Retries up to 3 times with 1-second delays.
+/// 4. **Persist** — Unless `--dry-run` is set, calls [`save_details_to_db`]
+///    to batch-upsert social and technical records.
+///
+/// # Errors
+///
+/// Returns errors from: database connection, missing `COINGECKO_API_KEY`,
+/// API loading failures (unless `--continue-on-error`), or database saves.
 pub async fn execute(args: CryptoDetailsArgs, config: Config) -> Result<()> {
   info!("Starting CoinGecko details loader");
 
@@ -128,6 +214,30 @@ pub async fn execute(args: CryptoDetailsArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
+/// Transforms loaded [`CryptoDetailedData`](av_loaders::crypto::CryptoDetailedData)
+/// into database model structs and batch-upserts them.
+///
+/// Builds two parallel vectors from the input data:
+///
+/// - **Social records** ([`NewCryptoSocial`]) — Populated from `data.social`:
+///   website/whitepaper/social URLs, follower/member counts, CoinGecko scores
+///   (developer, community, liquidity, public interest), and sentiment vote
+///   percentages. Float scores are converted to [`BigDecimal`] via
+///   `to_string()` → `FromStr` for database `NUMERIC` column compatibility.
+///
+/// - **Technical records** ([`NewCryptoTechnical`]) — Populated from
+///   `data.technical`: blockchain platform, token standard, genesis date,
+///   GitHub repository statistics (forks, stars, subscribers, issues, PRs,
+///   contributors, recent commits), and boolean classification flags (DeFi,
+///   stablecoin, NFT platform, exchange token, gaming, metaverse, privacy,
+///   L2, wrapped). Fields not available from CoinGecko (consensus mechanism,
+///   hashing algorithm, block metrics, ICO data) are set to `None`.
+///   Optional booleans default to `false` via `unwrap_or(false)`.
+///
+/// Both vectors are persisted via [`CryptoRepository::batch_upsert_social`]
+/// and [`CryptoRepository::batch_upsert_technical`] respectively.
+///
+/// Returns `(social_saved_count, technical_saved_count)`.
 async fn save_details_to_db<R: CryptoRepository>(
   repo: &R,
   data: Vec<av_loaders::crypto::CryptoDetailedData>,

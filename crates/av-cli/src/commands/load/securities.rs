@@ -27,6 +27,108 @@
  * SOFTWARE.
  */
 
+//! Equity securities loader for `av-cli load securities`.
+//!
+//! This is the **bootstrap loader** for the equity portion of the database.
+//! It reads NASDAQ and NYSE symbol listings from CSV files (downloaded from
+//! the official exchange feeds), enriches each symbol via the AlphaVantage
+//! `SYMBOL_SEARCH` endpoint, generates Security IDs (SIDs) via [`SidGenerator`],
+//! and persists the results to `symbols` and `equity_details`.
+//!
+//! ## Data Flow
+//!
+//! ```text
+//! NASDAQ CSV (nasdaqlisted.txt) ──┐
+//!                                  │
+//! NYSE CSV (otherlisted.txt) ─────┤
+//!                                  ▼
+//! SecurityLoader::load()  ── AlphaVantage SYMBOL_SEARCH (per symbol) + cache
+//!   │  applies match_mode (Exact / All / Top N)
+//!   ▼
+//! Vec<SecurityData>
+//!   │  combined from both exchanges, processed in a single transaction
+//!   ▼
+//! save_symbols_to_db()
+//!   ├── normalize_alpha_region()  ── e.g., "United States" → "USA"
+//!   ├── parse market hours / timezone (with defaults: 09:30 / 16:00 / US/Eastern)
+//!   ├── SidGenerator::next_sid(security_type)
+//!   ├── INSERT INTO symbols (or UPDATE if same symbol+region)
+//!   └── INSERT INTO equity_details (skipped for Cryptocurrency type)
+//! ```
+//!
+//! ## Symbol Matching Modes
+//!
+//! AlphaVantage's `SYMBOL_SEARCH` endpoint may return multiple matches per
+//! query. The [`MatchMode`] enum controls which matches are accepted:
+//!
+//! | Mode    | Description                                              |
+//! |---------|----------------------------------------------------------|
+//! | `Exact` | Only the result whose `symbol` exactly equals the query  |
+//! | `All`   | Every result returned by the API                         |
+//! | `Top`   | The top N results by `match_score` (`--top-matches=3`)   |
+//!
+//! `All` is the default and produces the broadest coverage.
+//!
+//! ## Region Normalization
+//!
+//! AlphaVantage returns full region names (e.g., `"United States"`,
+//! `"Toronto Venture"`) but the database `region` column is `VARCHAR(10)`.
+//! [`normalize_alpha_region`] maps the most common full names to short codes
+//! (e.g., `"USA"`, `"TOR"`, `"Bomb"`) and truncates anything longer than 10
+//! characters with a warning.
+//!
+//! This function is also re-exported through [`super::missing_symbols`] and
+//! used during the missing-symbol resolution pass.
+//!
+//! ## Insert vs. Update Semantics
+//!
+//! For each symbol from the loader, [`save_symbols_to_db`] checks for an
+//! existing row by `symbol` and decides:
+//!
+//! - **Existing, same region** — Updates `name`, `currency`, and `m_time`.
+//!   Diesel returns `0` rows affected if nothing actually changed, in which
+//!   case the symbol is counted as "skipped" rather than "updated".
+//! - **Existing, different region** — Logs a warning and skips (we don't
+//!   want to overwrite a symbol's region).
+//! - **New** — Generates a new SID, validates field lengths against the
+//!   schema (`symbol ≤ 20`, `region ≤ 10`, `currency ≤ 10`), inserts into
+//!   `symbols`, then inserts into `equity_details` (unless the type is
+//!   `Cryptocurrency`).
+//!
+//! ## Equity Details
+//!
+//! Non-cryptocurrency securities also get an `equity_details` row capturing
+//! exchange, market open/close times, and timezone. Market hours default to
+//! `09:30`-`16:00` and timezone defaults to `US/Eastern` (or the [`Exchange`]
+//! enum's known timezone) if the API doesn't supply them.
+//!
+//! ## Caching
+//!
+//! Symbol search responses are cached via [`CacheRepository`] with a default
+//! TTL of **168 hours** (1 week) — the symbol metadata changes infrequently
+//! enough that aggressive caching is safe and dramatically reduces API costs
+//! on repeated runs.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Bootstrap with default CSV paths from config
+//! av-cli load securities
+//!
+//! # Custom CSV paths and exact-match mode
+//! av-cli load securities --nasdaq-csv ./nasdaq.txt --nyse-csv ./nyse.txt \
+//!   --match-mode exact
+//!
+//! # Top 3 matches per query, higher concurrency
+//! av-cli load securities --match-mode top --top-matches 3 --concurrent 10
+//!
+//! # Dry run to verify CSVs and API connectivity
+//! av-cli load securities --dry-run
+//!
+//! # Force refresh, ignoring the 1-week cache
+//! av-cli load securities --force-refresh
+//! ```
+
 use super::sid_generator::SidGenerator;
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
@@ -49,64 +151,105 @@ use diesel::prelude::*;
 
 use crate::config::Config;
 
+/// Command-line arguments for `av-cli load securities`.
+///
+/// Controls CSV file paths, concurrency, symbol-matching strategy, caching,
+/// and dry-run/error behavior.
 #[derive(Args, Debug)]
 pub struct SecuritiesArgs {
-  /// Path to NASDAQ CSV file
+  /// Path to the NASDAQ-listed symbols CSV file (`nasdaqlisted.txt`).
+  ///
+  /// When omitted, falls back to `config.nasdaq_csv_path`. Can also be set
+  /// via the `NASDAQ_LISTED` environment variable. The file is silently
+  /// skipped (with a warning) if it doesn't exist.
   #[arg(long, env = "NASDAQ_LISTED")]
   nasdaq_csv: Option<String>,
 
-  /// Path to NYSE CSV file
+  /// Path to the NYSE / other-listed symbols CSV file (`otherlisted.txt`).
+  ///
+  /// When omitted, falls back to `config.nyse_csv_path`. Can also be set
+  /// via the `OTHER_LISTED` environment variable.
   #[arg(long, env = "OTHER_LISTED")]
   nyse_csv: Option<String>,
 
-  /// Maximum concurrent API requests
+  /// Maximum number of concurrent API requests. Defaults to 5.
   #[arg(short, long, default_value = "5")]
   concurrent: usize,
 
-  /// Skip database updates (dry run)
+  /// Fetch from the API but skip database writes.
+  ///
+  /// Routes to [`execute_dry_run`] which uses an empty cache and reports
+  /// per-exchange counts.
   #[arg(short, long)]
   dry_run: bool,
 
-  /// Continue on errors
+  /// Continue processing remaining CSVs/symbols when one fails.
   #[arg(short = 'k', long)]
   continue_on_error: bool,
 
-  /// Symbol matching mode
+  /// Symbol matching strategy. Defaults to `all`.
+  ///
+  /// See the [`MatchMode`] enum for the three options.
   #[arg(long, value_enum, default_value = "all")]
   match_mode: MatchMode,
 
-  /// Number of top matches to accept (only used with --match-mode=top)
+  /// Number of top matches to accept when `--match-mode=top` is set. Defaults to 3.
   #[arg(long, default_value = "3")]
   top_matches: usize,
 
-  /// Disable caching
+  /// Disable response caching entirely.
   #[arg(long)]
   no_cache: bool,
 
-  /// Force refresh (bypass cache)
+  /// Bypass the cache and fetch fresh data, but continue to write new
+  /// responses into the cache.
   #[arg(long)]
   force_refresh: bool,
 
-  /// Cache TTL in hours
+  /// Cache TTL in hours. Defaults to 168 (1 week).
+  ///
+  /// Symbol metadata changes infrequently so aggressive caching is safe.
   #[arg(long, default_value = "168")]
   cache_ttl_hours: i64,
 }
 
+/// CLI-level enum for symbol-matching strategy.
+///
+/// Controls how the loader handles multiple results from AlphaVantage's
+/// `SYMBOL_SEARCH` endpoint. Maps to [`SymbolMatchMode`] in `av_loaders`.
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum MatchMode {
-  /// Only accept exact symbol matches
+  /// Only accept the result whose `symbol` field exactly matches the query.
   Exact,
-  /// Accept all symbols returned from search
+  /// Accept every result returned by the API (broadest coverage).
   All,
-  /// Accept top N matches based on match score
+  /// Accept the top N results sorted by `match_score` (N from `--top-matches`).
   Top,
 }
 
-/// Normalize region names to abbreviated forms.
+/// Normalizes a region name from AlphaVantage to the abbreviated form used
+/// in the database `region` column.
 ///
-/// Converts common region names to their standard abbreviated forms used
-/// throughout the application. Unknown regions are returned unchanged.
-
+/// AlphaVantage's `SYMBOL_SEARCH` endpoint returns full region names (e.g.,
+/// `"United States"`, `"Toronto Venture"`, `"India/Bombay"`) which are too
+/// long for the `VARCHAR(10)` `region` column. This function maps the most
+/// common full names to short codes:
+///
+/// | Input                                  | Output  |
+/// |----------------------------------------|---------|
+/// | `"United States"`                       | `"USA"`   |
+/// | `"United Kingdom"`                      | `"UK"`    |
+/// | `"Toronto"`, `"Toronto Venture"`        | `"TOR"`   |
+/// | `"India"`, `"India/Bombay"`, `"Bombay"` | `"Bomb"`  |
+/// | `"Brazil"`, `"Sao Paolo"`, etc.        | `"SaoP"`  |
+/// | (many more...)                          |         |
+///
+/// Unknown regions are returned unchanged. Any result longer than 10
+/// characters is truncated with a warning so it fits the database column.
+///
+/// This function is also used by [`super::missing_symbols`] when resolving
+/// pending symbols via `SYMBOL_SEARCH`, so changes here affect both bootstrap
+/// and resolution paths.
 pub fn normalize_alpha_region(region: &str) -> String {
   let normalized = match region {
     "United States" => "USA",
@@ -143,7 +286,33 @@ pub fn normalize_alpha_region(region: &str) -> String {
   }
 }
 
-/// Main execute function
+/// Main entry point for `av-cli load securities`.
+///
+/// Orchestrates the bootstrap pipeline for loading equity securities from
+/// NASDAQ and NYSE CSV files:
+///
+/// 1. **Dry-run check** — If `--dry-run`, delegates to [`execute_dry_run`]
+///    and returns.
+/// 2. **Infrastructure setup** — Creates [`AlphaVantageClient`],
+///    [`DatabaseContext`], cache repository, and [`LoaderContext`] with
+///    process tracking enabled.
+/// 3. **Loader configuration** — Builds [`SecurityLoader`] with the selected
+///    [`SymbolMatchMode`] (Exact / All / TopMatches) and a
+///    [`SecurityLoaderConfig`] for caching (default TTL 168h = 1 week).
+/// 4. **NASDAQ processing** — If the NASDAQ CSV exists, calls
+///    [`SecurityLoader::load`] for `exchange = "NASDAQ"` and collects results.
+/// 5. **NYSE processing** — Same as above for `exchange = "NYSE"`.
+/// 6. **Persistence** — All collected securities are saved in a single
+///    `spawn_blocking` task that initializes a [`SidGenerator`] and calls
+///    [`save_symbols_to_db`].
+/// 7. **Process tracker completion** — Marks the run as `Success` or
+///    `CompletedWithErrors` based on whether any symbols were saved.
+///
+/// # Errors
+///
+/// Returns errors from: API client creation, database context creation,
+/// loader execution (unless `--continue-on-error`), SID generator init, or
+/// the save operation.
 pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
   info!("Starting security symbol loader");
 
@@ -296,7 +465,19 @@ pub async fn execute(args: SecuritiesArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
-/// Dry run version that doesn't need database
+/// Dry-run pipeline that fetches from the API but doesn't touch the database.
+///
+/// Differences from [`execute`]:
+///
+/// - **No database context** — Skips `DatabaseContext`, cache repository, and
+///   process tracker creation.
+/// - **Cache disabled** — `enable_cache = false` because no cache repository
+///   is attached to the loader context.
+/// - **Per-exchange counters** — Tracks `total_loaded`, `total_errors`, and
+///   `total_skipped` across both files and prints a final summary.
+///
+/// Useful for verifying CSV file paths and AlphaVantage API connectivity
+/// before running a full bootstrap.
 async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
   let client = Arc::new(
     AlphaVantageClient::new(config.api_config)
@@ -373,8 +554,39 @@ async fn execute_dry_run(args: SecuritiesArgs, config: Config) -> Result<()> {
   Ok(())
 }
 
-// Complete fix for save_symbols_to_db function in crates/av-cli/src/commands/load/securities.rs
-
+/// Persists fetched security data to the `symbols` and `equity_details` tables.
+///
+/// Iterates over each [`SecurityData`](av_loaders::SecurityData) and processes
+/// it through the following decision flow:
+///
+/// 1. **Skip empty/invalid** — Empty or `"None"` symbols are skipped immediately.
+/// 2. **In-batch deduplication** — Tracks uppercased symbols seen in this run
+///    via a [`HashMap`] and skips intra-batch duplicates.
+/// 3. **Type mapping** — Converts AlphaVantage's `stock_type` string to
+///    [`SecurityType`] via [`SecurityType::from_alpha_vantage`]. Unknown
+///    types map to `Other` with a warning.
+/// 4. **Market hours parsing** — Parses `market_open` / `market_close` as
+///    `HH:MM`, falling back to `09:30` / `16:00` if parsing fails.
+/// 5. **Timezone resolution** — Uses the API-provided timezone, or falls
+///    back to the [`Exchange`] enum's known timezone, or `US/Eastern`.
+/// 6. **Region normalization** — Calls [`normalize_alpha_region`].
+/// 7. **Existence check** — Looks up the symbol in `symbols`. Three branches:
+///    - **Same region** — `UPDATE` name/currency/m_time (counts as `updated` if
+///      Diesel reports >0 rows affected, otherwise `skipped`).
+///    - **Different region** — Logs a warning and skips (preserves existing
+///      region rather than overwriting).
+///    - **Not found** — Generates a new SID via `sid_generator.next_sid()`,
+///      truncates `name` to 255 chars, validates field lengths against
+///      `VARCHAR(20)/(10)/(10)` constraints, inserts into `symbols`, and
+///      (for non-cryptocurrency types) inserts into `equity_details` with
+///      market hours and timezone.
+/// 8. **Unique violation handling** — If the insert hits a unique constraint
+///    (concurrent insert), it's logged and counted as skipped, not failed.
+///
+/// Tracks four counters: `saved` (new inserts), `updated` (existing rows
+/// modified), `skipped` (no-op updates, duplicates, region conflicts,
+/// unique violations), and `failed` (validation errors, database errors).
+/// Returns `saved + updated` as the total successful operation count.
 fn save_symbols_to_db(
   conn: &mut PgConnection,
   securities: &[av_loaders::SecurityData],

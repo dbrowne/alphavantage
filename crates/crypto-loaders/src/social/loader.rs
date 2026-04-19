@@ -6,18 +6,36 @@
 
 //! Social data loader for cryptocurrency projects.
 //!
-//! This module provides types and loading functionality for social metrics
-//! from cryptocurrency projects (Twitter followers, Telegram members, etc.).
+//! Defines the types and [`SocialLoader`] for fetching social media metrics
+//! (Twitter, Telegram, Reddit, Discord, Facebook) and composite scores
+//! (CoinGecko, developer, community, liquidity) for cryptocurrency projects.
+//!
+//! # Implementation status
+//!
+//! The [`SocialLoader::load_data`] method is currently a **stub** that
+//! returns [`ProcessedSocialData::empty`] for each input symbol. The
+//! private `fetch_coingecko_social` method is also unimplemented (marked
+//! `#[allow(dead_code)]`).
+//!
+//! For production use, prefer
+//! [`CoinGeckoDetailsLoader`](crate::loaders::CoinGeckoDetailsLoader)
+//! which provides a complete implementation of social data fetching.
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::CryptoLoaderError;
 
-/// Result type for social loader operations.
+/// Convenience alias for `Result<T, CryptoLoaderError>`.
 pub type SocialLoaderResult<T> = Result<T, CryptoLoaderError>;
 
-/// A crypto symbol with information needed for social data fetching.
+// ─── Input types ────────────────────────────────────────────────────────────
+
+/// Identifies a cryptocurrency for social data fetching.
+///
+/// `coingecko_id` is optional because not all coins have been mapped to
+/// CoinGecko yet. When `None`, the loader cannot fetch CoinGecko-specific
+/// social data for that coin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoSymbolForSocial {
   pub sid: i64,
@@ -26,7 +44,15 @@ pub struct CryptoSymbolForSocial {
   pub coingecko_id: Option<String>,
 }
 
-/// Processed social data for a cryptocurrency.
+// ─── Output types ───────────────────────────────────────────────────────────
+
+/// Flat social data for a single cryptocurrency, ready for database insertion.
+///
+/// Covers 5 social platforms (Twitter, Telegram, Discord, Reddit, Facebook)
+/// with URL + follower/subscriber count, plus 7 composite scores using
+/// [`Decimal`] for database-compatible precision.
+///
+/// Use [`empty`](ProcessedSocialData::empty) to construct an all-`None` record.
 #[derive(Debug, Clone)]
 pub struct ProcessedSocialData {
   pub sid: i64,
@@ -53,7 +79,10 @@ pub struct ProcessedSocialData {
 }
 
 impl ProcessedSocialData {
-  /// Create an empty social data record for the given symbol ID.
+  /// Creates an all-`None` social data record for the given `sid`.
+  ///
+  /// Useful as a placeholder when social data is unavailable or when
+  /// the loader hasn't been fully implemented yet.
   pub fn empty(sid: i64) -> Self {
     Self {
       sid,
@@ -81,15 +110,36 @@ impl ProcessedSocialData {
   }
 }
 
-/// Configuration for the social data loader.
+// ─── Configuration ──────────────────────────────────────────────────────────
+
+/// Configuration for [`SocialLoader`].
+///
+/// # Defaults
+///
+/// | Field              | Default | Description                            |
+/// |--------------------|---------|----------------------------------------|
+/// | `coingecko_api_key` | `None` | CoinGecko API key (Pro or Demo)        |
+/// | `github_token`     | `None`  | GitHub personal access token           |
+/// | `skip_github`      | `false` | Skip GitHub enrichment entirely        |
+/// | `delay_ms`         | `100`   | Delay between API requests (ms)        |
+/// | `batch_size`       | `10`    | Symbols per batch                      |
+/// | `max_retries`      | `3`     | Retry attempts on transient failure    |
+/// | `timeout_seconds`  | `30`    | HTTP request timeout                   |
 #[derive(Debug, Clone)]
 pub struct CryptoSocialConfig {
+  /// CoinGecko API key (optional — free tier works without it).
   pub coingecko_api_key: Option<String>,
+  /// GitHub personal access token for enriched repo data.
   pub github_token: Option<String>,
+  /// When `true`, skips all GitHub API calls.
   pub skip_github: bool,
+  /// Delay between consecutive API requests in milliseconds.
   pub delay_ms: u64,
+  /// Number of symbols to process per batch.
   pub batch_size: usize,
+  /// Maximum retry attempts per symbol on transient errors.
   pub max_retries: u32,
+  /// HTTP request timeout in seconds.
   pub timeout_seconds: u64,
 }
 
@@ -107,17 +157,26 @@ impl Default for CryptoSocialConfig {
   }
 }
 
-/// Input for the social data loader.
+/// Input specifying which symbols to load social data for.
+///
+/// - `symbols` — the list of coins to process (`None` = error).
+/// - `update_existing` — when `true`, overwrites existing social data;
+///   when `false`, skips symbols that already have data.
 #[derive(Debug, Clone)]
 pub struct CryptoSocialInput {
   pub symbols: Option<Vec<CryptoSymbolForSocial>>,
   pub update_existing: bool,
 }
 
-/// Social data loader for cryptocurrency projects.
+// ─── Loader ─────────────────────────────────────────────────────────────────
+
+/// Social data loader for cryptocurrency projects (**stub implementation**).
 ///
-/// This loader fetches social metrics from various APIs (CoinGecko, GitHub, etc.)
-/// for cryptocurrency projects.
+/// Designed to fetch social metrics from CoinGecko and GitHub, but
+/// `load_data()` currently returns empty records. For production social
+/// data loading, use [`CoinGeckoDetailsLoader`](crate::loaders::CoinGeckoDetailsLoader).
+///
+/// Implements `Clone` (clones the HTTP client).
 #[derive(Clone)]
 pub struct SocialLoader {
   config: CryptoSocialConfig,
@@ -126,25 +185,25 @@ pub struct SocialLoader {
 }
 
 impl SocialLoader {
-  /// Create a new social loader with the given configuration.
+  /// Creates a new loader with a default `reqwest::Client`.
   pub fn new(config: CryptoSocialConfig) -> Self {
     Self { config, client: reqwest::Client::new() }
   }
 
-  /// Create a new social loader with a custom HTTP client.
+  /// Creates a loader with a caller-supplied HTTP client.
   pub fn with_client(config: CryptoSocialConfig, client: reqwest::Client) -> Self {
     Self { config, client }
   }
 
-  /// Get the loader configuration.
+  /// Returns a reference to the loader's configuration.
   pub fn config(&self) -> &CryptoSocialConfig {
     &self.config
   }
 
-  /// Load social data for the given symbols.
+  /// Loads social data for the given symbols (**stub — returns empty records**).
   ///
-  /// This method fetches social metrics from various APIs for each symbol.
-  /// Currently returns placeholder data - full implementation pending.
+  /// Returns a [`ProcessedSocialData::empty`] for each input symbol.
+  /// Returns `Err` if `input.symbols` is `None`.
   pub async fn load_data(
     &self,
     input: &CryptoSocialInput,
@@ -166,9 +225,7 @@ impl SocialLoader {
     Ok(results)
   }
 
-  /// Load social data for a single symbol from CoinGecko.
-  ///
-  /// This fetches detailed coin information including social metrics.
+  /// Fetches social data for a single coin from CoinGecko (**unimplemented stub**).
   #[allow(dead_code)]
   async fn fetch_coingecko_social(
     &self,

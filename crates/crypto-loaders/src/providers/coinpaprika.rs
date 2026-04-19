@@ -28,6 +28,18 @@
  */
 
 //! CoinPaprika cryptocurrency data provider.
+//!
+//! Fetches cryptocurrency symbols from the CoinPaprika `/v1/coins` endpoint.
+//! This is a **free API** — no API key is required.
+//!
+//! # Filtering
+//!
+//! Only coins with `is_active: true` are included in the output. Inactive
+//! coins (dead projects, abandoned tokens) are filtered out during processing.
+//!
+//! # Rate limiting
+//!
+//! Rate-limit delay: **500ms**.
 
 use crate::error::CryptoLoaderError;
 use crate::traits::{CryptoCache, CryptoDataProvider};
@@ -40,7 +52,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-/// CoinPaprika data provider.
+/// CoinPaprika data provider — free, no API key, filters to active coins only.
 pub struct CoinPaprikaProvider;
 
 #[derive(Debug, Deserialize)]

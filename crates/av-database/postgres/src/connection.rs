@@ -27,9 +27,55 @@
  * SOFTWARE.
  */
 
+//! Bare PostgreSQL connection factory.
+//!
+//! This module provides a single function, [`establish_connection`], that
+//! creates an unpooled, synchronous [`PgConnection`] from a database URL.
+//! It is the simplest way to connect to the database and is primarily
+//! intended for:
+//!
+//! - **Diesel CLI migrations** and one-off scripts.
+//! - **Tests** that need an isolated connection.
+//! - **Quick prototyping** where pool overhead is unnecessary.
+//!
+//! For production and service code, prefer
+//! [`DatabaseContext`](crate::repository::DatabaseContext), which manages
+//! an `r2d2` connection pool with configurable size, idle connections, and
+//! timeouts.
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use av_database_postgres::establish_connection;
+//!
+//! let conn = establish_connection("postgres://user:pass@localhost/alphavantage")
+//!     .expect("Failed to connect to database");
+//! ```
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 
+/// Creates a single, unpooled [`PgConnection`] to a PostgreSQL database.
+///
+/// # Arguments
+///
+/// - `database_url` — a PostgreSQL connection string in the format
+///   `postgres://user:password@host:port/database`. Supports all
+///   [`libpq` connection parameters](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING).
+///
+/// # Errors
+///
+/// Returns [`diesel::ConnectionError`] if the connection cannot be
+/// established (e.g., invalid URL, server unreachable, authentication
+/// failure).
+///
+/// # Notes
+///
+/// This function is **synchronous** and blocks the calling thread until
+/// the TCP connection and authentication handshake complete. It creates
+/// a **single connection** with no pooling — each call opens a new socket.
+/// For pooled, reusable connections use
+/// [`DatabaseContext::new`](crate::repository::DatabaseContext::new).
 pub fn establish_connection(database_url: &str) -> Result<PgConnection, diesel::ConnectionError> {
   PgConnection::establish(database_url)
 }

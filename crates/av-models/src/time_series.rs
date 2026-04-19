@@ -27,7 +27,50 @@
  * SOFTWARE.
  */
 
-//! Time series data models for stock prices and market data
+//! Time series data models for stock prices, quotes, search, and technical indicators.
+//!
+//! This module covers the largest family of Alpha Vantage endpoints — equity
+//! time-series price data in multiple granularities, plus symbol search,
+//! market status, real-time quotes, and technical indicators.
+//!
+//! # Endpoint mapping
+//!
+//! ## Price time series
+//!
+//! | Endpoint                          | Model                          | Data type              | JSON key                           |
+//! |-----------------------------------|--------------------------------|------------------------|------------------------------------|
+//! | `TIME_SERIES_INTRADAY`            | [`IntradayTimeSeries`]         | [`OhlcvData`]          | Variable (custom `Deserialize`)    |
+//! | `TIME_SERIES_DAILY`               | [`DailyTimeSeries`]            | [`OhlcvData`]          | `"Time Series (Daily)"`           |
+//! | `TIME_SERIES_DAILY_ADJUSTED`      | [`DailyAdjustedTimeSeries`]    | [`OhlcvAdjustedData`]  | `"Time Series (Daily)"`           |
+//! | `TIME_SERIES_WEEKLY`              | [`WeeklyTimeSeries`]           | [`OhlcvData`]          | `"Weekly Time Series"`            |
+//! | `TIME_SERIES_WEEKLY_ADJUSTED`     | [`WeeklyAdjustedTimeSeries`]   | [`OhlcvAdjustedData`]  | `"Weekly Adjusted Time Series"`   |
+//! | `TIME_SERIES_MONTHLY`             | [`MonthlyTimeSeries`]          | [`OhlcvData`]          | `"Monthly Time Series"`           |
+//! | `TIME_SERIES_MONTHLY_ADJUSTED`    | [`MonthlyAdjustedTimeSeries`]  | [`OhlcvAdjustedData`]  | `"Monthly Adjusted Time Series"`  |
+//!
+//! ## Other endpoints
+//!
+//! | Endpoint         | Model                | Description                              |
+//! |------------------|----------------------|------------------------------------------|
+//! | `SYMBOL_SEARCH`  | [`SymbolSearch`]     | Keyword search for tickers               |
+//! | `MARKET_STATUS`  | [`MarketStatus`]     | Global exchange open/closed status       |
+//! | `GLOBAL_QUOTE`   | [`GlobalQuote`]      | Real-time quote with change data         |
+//! | Technical APIs   | [`TechnicalIndicator`] | Generic container for SMA, RSI, MACD, etc. |
+//!
+//! # Technical indicator data points
+//!
+//! | Type                   | Indicator                                   |
+//! |------------------------|---------------------------------------------|
+//! | [`MovingAverageData`]  | SMA, EMA, WMA, DEMA, TEMA, etc.             |
+//! | [`RsiData`]            | Relative Strength Index                      |
+//! | [`MacdData`]           | MACD line, signal, histogram                 |
+//! | [`BollingerBandsData`] | Upper, middle, lower Bollinger Bands         |
+//!
+//! # Intraday deserialization
+//!
+//! [`IntradayTimeSeries`] uses a **custom `Deserialize` implementation**
+//! because the time-series JSON key varies by interval (e.g.,
+//! `"Time Series (5min)"`, `"Time Series (15min)"`). The custom impl
+//! searches for any key starting with `"Time Series"` in the response map.
 
 use crate::common::{
   MarketInfo, Metadata, OhlcvAdjustedData, OhlcvData, SymbolMatch, TimeSeriesData,
@@ -35,7 +78,17 @@ use crate::common::{
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
-/// Intraday time series response
+// ─── Price time series ──────────────────────────────────────────────────────
+
+/// Response from the `TIME_SERIES_INTRADAY` endpoint.
+///
+/// Uses a **custom `Deserialize` implementation** because the JSON key for
+/// the time-series data varies by interval (e.g., `"Time Series (5min)"`,
+/// `"Time Series (15min)"`). The deserializer searches for any top-level
+/// key starting with `"Time Series"`.
+///
+/// Uses [`IntradayMetadata`] (which includes the `interval` field) instead
+/// of the standard [`Metadata`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IntradayTimeSeries {
   pub meta_data: IntradayMetadata,
@@ -71,7 +124,8 @@ impl<'de> Deserialize<'de> for IntradayTimeSeries {
     Ok(IntradayTimeSeries { meta_data, time_series })
   }
 }
-/// Metadata for intraday time series
+/// Metadata for intraday time series — extends the standard [`Metadata`]
+/// with an `interval` field (e.g., `"5min"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IntradayMetadata {
   /// Information about the data
@@ -99,7 +153,7 @@ pub struct IntradayMetadata {
   pub time_zone: String,
 }
 
-/// Daily time series response
+/// Response from the `TIME_SERIES_DAILY` endpoint (unadjusted OHLCV).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DailyTimeSeries {
   /// Metadata about the time series
@@ -111,7 +165,10 @@ pub struct DailyTimeSeries {
   pub time_series: TimeSeriesData<OhlcvData>,
 }
 
-/// Daily adjusted time series response
+/// Response from the `TIME_SERIES_DAILY_ADJUSTED` endpoint.
+///
+/// Uses [`OhlcvAdjustedData`] which includes adjusted close, dividend
+/// amount, and split coefficient.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DailyAdjustedTimeSeries {
   /// Metadata about the time series
@@ -123,7 +180,7 @@ pub struct DailyAdjustedTimeSeries {
   pub time_series: TimeSeriesData<OhlcvAdjustedData>,
 }
 
-/// Weekly time series response
+/// Response from the `TIME_SERIES_WEEKLY` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeeklyTimeSeries {
   /// Metadata about the time series
@@ -135,7 +192,7 @@ pub struct WeeklyTimeSeries {
   pub time_series: TimeSeriesData<OhlcvData>,
 }
 
-/// Weekly adjusted time series response
+/// Response from the `TIME_SERIES_WEEKLY_ADJUSTED` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeeklyAdjustedTimeSeries {
   /// Metadata about the time series
@@ -147,7 +204,7 @@ pub struct WeeklyAdjustedTimeSeries {
   pub time_series: TimeSeriesData<OhlcvAdjustedData>,
 }
 
-/// Monthly time series response
+/// Response from the `TIME_SERIES_MONTHLY` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MonthlyTimeSeries {
   /// Metadata about the time series
@@ -159,7 +216,7 @@ pub struct MonthlyTimeSeries {
   pub time_series: TimeSeriesData<OhlcvData>,
 }
 
-/// Monthly adjusted time series response
+/// Response from the `TIME_SERIES_MONTHLY_ADJUSTED` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MonthlyAdjustedTimeSeries {
   /// Metadata about the time series
@@ -171,7 +228,9 @@ pub struct MonthlyAdjustedTimeSeries {
   pub time_series: TimeSeriesData<OhlcvAdjustedData>,
 }
 
-/// Symbol search response
+// ─── Search, status, and quote ──────────────────────────────────────────────
+
+/// Response from the `SYMBOL_SEARCH` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SymbolSearch {
   /// List of matching symbols
@@ -179,7 +238,7 @@ pub struct SymbolSearch {
   pub best_matches: Vec<SymbolMatch>,
 }
 
-/// Market status response
+/// Response from the `MARKET_STATUS` endpoint — global exchange status.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarketStatus {
   /// Endpoint information
@@ -189,7 +248,7 @@ pub struct MarketStatus {
   pub markets: Vec<MarketInfo>,
 }
 
-/// Quote endpoint response (real-time price)
+/// Response from the `GLOBAL_QUOTE` endpoint — real-time price snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalQuote {
   /// Global quote data
@@ -197,7 +256,11 @@ pub struct GlobalQuote {
   pub global_quote: QuoteData,
 }
 
-/// Quote data structure
+/// Real-time quote data with price, change, and volume.
+///
+/// Fields use zero-padded numbered prefixes in the JSON (e.g., `"01. symbol"`).
+/// `change_percent` includes a `%` suffix — use
+/// [`change_percent_as_f64`](QuoteData::change_percent_as_f64) to parse.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuoteData {
   #[serde(rename = "01. symbol")]
@@ -232,7 +295,19 @@ pub struct QuoteData {
   pub change_percent: String,
 }
 
-/// Technical indicator response (generic)
+// ─── Technical indicators ───────────────────────────────────────────────────
+
+/// Generic response for Alpha Vantage technical indicator endpoints
+/// (SMA, EMA, RSI, MACD, BBANDS, etc.).
+///
+/// The `technical_analysis` field uses `#[serde(flatten)]` because the
+/// JSON key varies by indicator (e.g., `"Technical Analysis: SMA"`).
+/// Values are nested `BTreeMap<String, String>` where the outer key is a
+/// date string and the inner map contains indicator-specific fields.
+///
+/// For type-safe access, deserialize the inner values into the appropriate
+/// data-point struct: [`MovingAverageData`], [`RsiData`], [`MacdData`],
+/// or [`BollingerBandsData`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TechnicalIndicator {
   /// Metadata
@@ -244,7 +319,10 @@ pub struct TechnicalIndicator {
   pub technical_analysis: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-/// Technical indicator metadata
+/// Metadata for technical indicator responses.
+///
+/// Note: uses colon-prefixed numbered keys (`"1: Symbol"`) rather than
+/// the dot-prefixed keys (`"1. Information"`) used by time-series metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TechnicalMetadata {
   #[serde(rename = "1: Symbol")]
@@ -266,7 +344,7 @@ pub struct TechnicalMetadata {
   pub time_zone: String,
 }
 
-/// Moving average data point
+/// A single data point for moving-average indicators (SMA, EMA, WMA, etc.).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MovingAverageData {
   /// Moving average value
@@ -274,7 +352,7 @@ pub struct MovingAverageData {
   pub ma: String,
 }
 
-/// RSI data point
+/// A single Relative Strength Index (RSI) data point.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RsiData {
   /// RSI value
@@ -282,7 +360,8 @@ pub struct RsiData {
   pub rsi: String,
 }
 
-/// MACD data point
+/// A single MACD (Moving Average Convergence Divergence) data point with
+/// three components: MACD line, signal line, and histogram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MacdData {
   /// MACD line
@@ -298,7 +377,7 @@ pub struct MacdData {
   pub macd_signal: String,
 }
 
-/// Bollinger Bands data point
+/// A single Bollinger Bands data point with upper, middle, and lower bands.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BollingerBandsData {
   #[serde(rename = "Real Upper Band")]
@@ -311,7 +390,11 @@ pub struct BollingerBandsData {
   pub lower_band: String,
 }
 
+// ─── Helper methods ─────────────────────────────────────────────────────────
+
+/// Time-series access helpers for [`IntradayTimeSeries`].
 impl IntradayTimeSeries {
+  /// Returns the first (earliest) data point from the sorted BTreeMap.
   pub fn latest(&self) -> Option<(&String, &OhlcvData)> {
     self.time_series.iter().next()
   }
@@ -325,7 +408,9 @@ impl IntradayTimeSeries {
   }
 }
 
+/// Time-series access and analysis helpers for [`DailyTimeSeries`].
 impl DailyTimeSeries {
+  /// Returns the first (earliest) data point from the sorted BTreeMap.
   pub fn latest(&self) -> Option<(&String, &OhlcvData)> {
     self.time_series.iter().next()
   }
@@ -339,7 +424,7 @@ impl DailyTimeSeries {
     self.time_series.is_empty()
   }
 
-  /// Calculate average volume over the time series
+  /// Computes the mean volume across all bars. Returns `0.0` if empty.
   pub fn average_volume(&self) -> Result<f64, std::num::ParseFloatError> {
     let volumes: Result<Vec<f64>, _> =
       self.time_series.values().map(|data| data.volume.parse::<f64>()).collect();
@@ -352,7 +437,7 @@ impl DailyTimeSeries {
     }
   }
 
-  /// Calculate average closing price
+  /// Computes the mean closing price across all bars. Returns `0.0` if empty.
   pub fn average_close(&self) -> Result<f64, std::num::ParseFloatError> {
     let closes: Result<Vec<f64>, _> =
       self.time_series.values().map(|data| data.close.parse::<f64>()).collect();
@@ -362,18 +447,19 @@ impl DailyTimeSeries {
   }
 }
 
+/// Numeric parsing helpers for [`QuoteData`].
 impl QuoteData {
-  /// Parse current price as f64
+  /// Parses the current price as `f64`.
   pub fn price_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.price.parse()
   }
 
-  /// Parse change as f64
+  /// Parses the price change as `f64`.
   pub fn change_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.change.parse()
   }
 
-  /// Parse change percent as f64 (removes % sign)
+  /// Parses the change percentage as `f64`, stripping the trailing `%` sign.
   pub fn change_percent_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.change_percent.trim_end_matches('%').parse()
   }

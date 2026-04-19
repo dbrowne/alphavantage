@@ -6,8 +6,31 @@
 
 //! Cryptocurrency mapping service.
 //!
-//! This module provides a service for managing cryptocurrency ID mappings
-//! across different data sources.
+//! Orchestrates the discovery and persistence of cross-provider cryptocurrency
+//! ID mappings. The service sits between the stateless
+//! [`discovery`](super::discovery) functions and a database-agnostic
+//! [`MappingRepository`] trait, adding:
+//!
+//! - **Cache-first lookup:** checks the repository before calling external APIs.
+//! - **Auto-persist:** newly discovered mappings are immediately stored.
+//! - **Rate limiting:** configurable delay between API calls.
+//! - **Batch discovery:** [`discover_missing_mappings`](CryptoMappingService::discover_missing_mappings)
+//!   iterates over all unmapped symbols for a given source.
+//!
+//! # Architecture
+//!
+//! ```text
+//! caller
+//!   └──► CryptoMappingService
+//!          ├── MappingRepository::get_api_id()   ← check DB first
+//!          ├── discover_coingecko_id() / discover_coinpaprika_id()  ← API fallback
+//!          └── MappingRepository::upsert_api_mapping()  ← persist result
+//! ```
+//!
+//! # Supported sources
+//!
+//! - `"CoinGecko"` — requires an API key in `config.api_keys["coingecko"]`.
+//! - `"CoinPaprika"` — no API key required (free public API).
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -19,10 +42,20 @@ use crate::CryptoLoaderError;
 
 use super::discovery::{discover_coingecko_id, discover_coinpaprika_id};
 
-/// Configuration for the mapping service.
+// ─── Configuration ──────────────────────────────────────────────────────────
+
+/// Configuration for [`CryptoMappingService`].
+///
+/// # Fields
+///
+/// - `api_keys` — map of provider name → API key (e.g., `"coingecko"` → `"CG-..."`).
+/// - `rate_limit_delay_ms` — delay in milliseconds between consecutive API calls
+///   during batch discovery (default: 1000ms).
 #[derive(Debug, Clone)]
 pub struct MappingConfig {
+  /// Provider API keys keyed by lowercase provider name.
   pub api_keys: HashMap<String, String>,
+  /// Delay between API calls in milliseconds.
   pub rate_limit_delay_ms: u64,
 }
 
@@ -32,17 +65,27 @@ impl Default for MappingConfig {
   }
 }
 
-/// Trait for mapping repository operations.
+// ─── Repository trait ───────────────────────────────────────────────────────
+
+/// Database-agnostic trait for storing and retrieving cryptocurrency ID mappings.
 ///
-/// This trait abstracts database operations for storing and retrieving
-/// cryptocurrency ID mappings, allowing the mapping service to be
-/// database-agnostic.
+/// Implement this trait on your database layer (e.g., wrapping
+/// [`CryptoRepository`](av_database_postgres::CryptoRepository)) to provide
+/// persistence to the [`CryptoMappingService`].
+///
+/// # Methods
+///
+/// - [`get_api_id`](MappingRepository::get_api_id) — look up an existing mapping.
+/// - [`upsert_api_mapping`](MappingRepository::upsert_api_mapping) — store or update a mapping.
+/// - [`get_symbols_needing_mapping`](MappingRepository::get_symbols_needing_mapping) —
+///   return `(sid, symbol, name)` tuples for coins missing a mapping.
 #[async_trait]
 pub trait MappingRepository: Send + Sync {
-  /// Get an API ID for a symbol from the specified source.
+  /// Returns the external API ID for a `(sid, source)` pair, or `None` if
+  /// no mapping exists.
   async fn get_api_id(&self, sid: i64, source: &str) -> Result<Option<String>, CryptoLoaderError>;
 
-  /// Store or update an API mapping.
+  /// Inserts or updates an API mapping for a `(sid, source)` pair.
   async fn upsert_api_mapping(
     &self,
     sid: i64,
@@ -53,41 +96,52 @@ pub trait MappingRepository: Send + Sync {
     is_active: Option<bool>,
   ) -> Result<(), CryptoLoaderError>;
 
-  /// Get symbols that need mapping for a specific source.
+  /// Returns `(sid, symbol, name)` tuples for symbols that do not yet have
+  /// a mapping for the given source.
   async fn get_symbols_needing_mapping(
     &self,
     source: &str,
   ) -> Result<Vec<(i64, String, String)>, CryptoLoaderError>;
 }
 
+// ─── Service ────────────────────────────────────────────────────────────────
+
 /// Service for discovering and managing cryptocurrency ID mappings.
+///
+/// Constructed via [`new`](Self::new), [`with_config`](Self::with_config),
+/// or [`with_client`](Self::with_client). Implements `Clone` (shares the
+/// HTTP client).
 pub struct CryptoMappingService {
   client: Client,
   config: MappingConfig,
 }
 
 impl CryptoMappingService {
-  /// Create a new mapping service with the given API keys.
+  /// Creates a mapping service with API keys and default rate-limit delay (1000ms).
   pub fn new(api_keys: HashMap<String, String>) -> Self {
     Self { client: Client::new(), config: MappingConfig { api_keys, rate_limit_delay_ms: 1000 } }
   }
 
-  /// Create a new mapping service with full configuration.
+  /// Creates a mapping service with full configuration.
   pub fn with_config(config: MappingConfig) -> Self {
     Self { client: Client::new(), config }
   }
 
-  /// Create a new mapping service with a custom HTTP client.
+  /// Creates a mapping service with a custom HTTP client and configuration.
   pub fn with_client(config: MappingConfig, client: Client) -> Self {
     Self { client, config }
   }
 
-  /// Get or discover CoinGecko ID for a symbol.
+  /// Gets or discovers a CoinGecko ID for a symbol.
   ///
-  /// First checks the repository for an existing mapping, then attempts
-  /// dynamic discovery via the CoinGecko API if not found.
+  /// **Two-phase lookup:**
+  /// 1. Checks `mapping_repo` for an existing `(sid, "CoinGecko")` mapping.
+  /// 2. If not found, calls [`discover_coingecko_id`] and persists the result.
   ///
-  /// Returns `(Option<String>, bool)` where the bool indicates if an API call was made.
+  /// # Returns
+  ///
+  /// `(Option<coingecko_id>, api_called)` — the boolean indicates whether
+  /// an external API call was made (`false` = cache hit, `true` = API called).
   pub async fn get_coingecko_id(
     &self,
     mapping_repo: &Arc<dyn MappingRepository>,
@@ -131,7 +185,16 @@ impl CryptoMappingService {
     }
   }
 
-  /// Bulk discovery for missing mappings.
+  /// Discovers mappings for all symbols that lack one for the given source.
+  ///
+  /// Queries the repository for unmapped symbols, then iterates through
+  /// them one at a time, calling the appropriate discovery function and
+  /// persisting results. Applies `config.rate_limit_delay_ms` after each
+  /// API call.
+  ///
+  /// Supports `"CoinGecko"` and `"CoinPaprika"` as source values.
+  ///
+  /// Returns the number of newly discovered mappings.
   pub async fn discover_missing_mappings(
     &self,
     mapping_repo: &Arc<dyn MappingRepository>,

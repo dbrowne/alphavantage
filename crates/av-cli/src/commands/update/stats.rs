@@ -27,6 +27,53 @@
  * SOFTWARE.
  */
 
+//! Statistics reporting commands for `av-cli update stats`.
+//!
+//! This module provides read-only analytics over the cryptocurrency data stored
+//! in the PostgreSQL database. Unlike the sibling crypto update modules (which
+//! fetch from external APIs), everything here queries local data via Diesel ORM
+//! and prints formatted reports to stdout.
+//!
+//! ## Subcommands
+//!
+//! ```text
+//! av-cli update stats
+//! ├── crypto-mapping     API symbol mapping coverage and staleness
+//! ├── crypto-markets     Market data by exchange, volume, activity status
+//! └── crypto-overview    High-level database overview with record counts
+//! ```
+//!
+//! ## Database Tables Queried
+//!
+//! | Table              | Used by                                    |
+//! |--------------------|--------------------------------------------|
+//! | `symbols`          | All three subcommands (crypto symbol index) |
+//! | `crypto_api_map`   | `crypto-mapping`, `crypto-overview`         |
+//! | `crypto_markets`   | `crypto-markets`, `crypto-overview`         |
+//!
+//! ## Configuration
+//!
+//! This module receives the full CLI [`Config`](crate::config::Config) (not the
+//! API-only [`av_core::Config`]), because it needs `database_url` to establish a
+//! PostgreSQL connection. The conversion happens in
+//! [`handle_update`](crate::handle_update) in `main.rs`.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Show mapping coverage for a specific API source
+//! av-cli update stats crypto-mapping --source CoinGecko --detailed
+//!
+//! # Show unmapped and stale symbols (older than 60 days)
+//! av-cli update stats crypto-mapping --unmapped --stale --stale-days 60
+//!
+//! # Show market data for a specific symbol, including volume
+//! av-cli update stats crypto-markets --symbol BTC --volume
+//!
+//! # Show full database overview with extended stats
+//! av-cli update stats crypto-overview --extended
+//! ```
+
 use anyhow::Result;
 use clap::Subcommand;
 use tracing::info;
@@ -38,58 +85,114 @@ use av_database_postgres::{
 };
 use diesel::prelude::*;
 
+/// Subcommands for `av-cli update stats`.
+///
+/// Three report types, each querying the PostgreSQL database directly via
+/// Diesel ORM. All reports are read-only and produce formatted text output
+/// on stdout.
 #[derive(Subcommand, Debug)]
 pub enum StatsCommands {
-  /// Show crypto API mapping statistics
+  /// Report on API symbol mapping coverage and staleness.
+  ///
+  /// Shows how many cryptocurrency symbols in the `symbols` table have
+  /// corresponding entries in `crypto_api_map`, broken down by API source.
+  /// Optionally lists unmapped symbols and mappings that have not been
+  /// verified within the `--stale-days` threshold.
   CryptoMapping {
-    /// API source to analyze (e.g., "CoinGecko", "SosoValue")
+    /// Filter results to a specific API source (e.g., `"CoinGecko"`, `"SosoValue"`).
+    ///
+    /// When omitted, statistics are shown across all sources.
     #[arg(short, long)]
     source: Option<String>,
 
-    /// Show detailed mapping information
+    /// Show a detailed table of the top 20 mappings ranked by `rank` (descending).
+    ///
+    /// Columns: Symbol, Source, API ID, Rank.
     #[arg(short, long)]
     detailed: bool,
 
-    /// Show unmapped symbols
+    /// List symbols that have no active mapping in `crypto_api_map`.
+    ///
+    /// When `--source` is set, uses [`CryptoApiMap::get_symbols_needing_mapping`]
+    /// to find symbols missing a mapping for that specific source. Otherwise,
+    /// performs a `LEFT JOIN` to find symbols with no mapping at all.
+    /// Output is capped at 10 entries.
     #[arg(short, long)]
     unmapped: bool,
 
-    /// Show symbols needing verification
+    /// Show mappings whose `last_verified` date exceeds the `--stale-days` threshold.
+    ///
+    /// Requires `--source` to be set (stale detection is per-source). Uses
+    /// [`CryptoApiMap::get_stale_mappings`]. Output is capped at 10 entries.
     #[arg(long)]
     stale: bool,
 
-    /// Days threshold for stale mappings
+    /// Number of days after which a mapping is considered stale.
+    ///
+    /// Used with `--stale`. Defaults to 30 days.
     #[arg(long, default_value = "30")]
     stale_days: i32,
   },
 
-  /// Show crypto market statistics
+  /// Report on cryptocurrency market data by exchange, symbol, and volume.
+  ///
+  /// Queries the `crypto_markets` table, optionally joined with `symbols`
+  /// when filtering by symbol. By default, only active markets are shown;
+  /// use `--inactive` to include inactive ones.
   CryptoMarkets {
-    /// Symbol to analyze (show all exchanges/markets for this symbol)
+    /// Filter to a specific cryptocurrency symbol (e.g., `BTC`).
+    ///
+    /// Joins `symbols` with `crypto_markets` on `sid` to resolve the symbol name.
     #[arg(short, long)]
     symbol: Option<String>,
 
-    /// Exchange to analyze
+    /// Filter to a specific exchange (e.g., `Binance`).
     #[arg(short, long)]
     exchange: Option<String>,
 
-    /// Show volume statistics
+    /// Show aggregate 24-hour volume statistics.
+    ///
+    /// Computes `SUM(volume_24h)` across matching markets using
+    /// [`bigdecimal::BigDecimal`] for precision.
     #[arg(long)]
     volume: bool,
 
-    /// Show inactive markets
+    /// Include inactive markets in the results and show an active/inactive breakdown.
+    ///
+    /// When omitted, markets where `is_active != true` are excluded from all queries.
     #[arg(long)]
     inactive: bool,
   },
 
-  /// Show overall crypto database statistics
+  /// High-level overview of all cryptocurrency data in the database.
+  ///
+  /// Shows total counts for symbols, API mappings, and markets, plus API
+  /// mapping coverage percentage, source breakdown, and the top 5 exchanges
+  /// by market count.
   CryptoOverview {
-    /// Include extended statistics
+    /// Include extended statistics: top 10 symbols by market count and
+    /// market type distribution.
     #[arg(short, long)]
     extended: bool,
   },
 }
 
+/// Dispatches `av-cli update stats` subcommands to their report generators.
+///
+/// Establishes a PostgreSQL connection using `config.database_url` and routes
+/// to one of three private async functions based on the [`StatsCommands`]
+/// variant.
+///
+/// # Arguments
+///
+/// * `cmd` — The parsed [`StatsCommands`] variant with its associated arguments.
+/// * `config` — The full CLI [`Config`](crate::config::Config) containing `database_url`.
+///
+/// # Errors
+///
+/// Returns errors from:
+/// - Database connection failure (invalid or unreachable `database_url`)
+/// - Any Diesel query error within the individual report generators
 pub async fn handle_stats(cmd: StatsCommands, config: Config) -> Result<()> {
   use diesel::pg::PgConnection;
 
@@ -109,6 +212,20 @@ pub async fn handle_stats(cmd: StatsCommands, config: Config) -> Result<()> {
   }
 }
 
+/// Generates the `crypto-mapping` report.
+///
+/// Produces up to four output sections depending on the flags:
+///
+/// 1. **Summary** (always) — Total crypto symbols, active mappings, and coverage
+///    percentage. When `source_filter` is `None`, includes a per-source breakdown.
+/// 2. **Unmapped symbols** (`show_unmapped`) — Lists symbols with no active mapping.
+///    Per-source filtering uses [`CryptoApiMap::get_symbols_needing_mapping`];
+///    all-source mode uses a `LEFT JOIN` on `crypto_api_map`. Capped at 10 entries.
+/// 3. **Stale mappings** (`show_stale`) — Lists mappings whose `last_verified` date
+///    exceeds `stale_days`. Requires `source_filter` to be set. Uses
+///    [`CryptoApiMap::get_stale_mappings`]. Capped at 10 entries.
+/// 4. **Detailed table** (`detailed`) — Top 20 mappings by `rank` (descending,
+///    nulls last) showing Symbol, Source, API ID, and Rank.
 async fn execute_crypto_mapping_stats(
   conn: &mut PgConnection,
   source_filter: Option<String>,
@@ -270,6 +387,20 @@ async fn execute_crypto_mapping_stats(
   Ok(())
 }
 
+/// Generates the `crypto-markets` report.
+///
+/// Produces up to four output sections depending on the flags:
+///
+/// 1. **Total markets** (always) — Count of matching markets. When both
+///    `symbol_filter` and `exchange_filter` are `None`, counts all active markets.
+/// 2. **Exchange breakdown** (always) — Top 10 exchanges by market count for the
+///    current filter set.
+/// 3. **Volume statistics** (`show_volume`) — Aggregate `SUM(volume_24h)` across
+///    matching markets. Uses [`bigdecimal::BigDecimal`] for precision and converts
+///    to `f64` for display formatting.
+/// 4. **Active/inactive breakdown** (`show_inactive`) — When enabled, inactive
+///    markets are included in all queries and an active vs. inactive count is
+///    printed. When disabled (default), all queries filter to `is_active = true`.
 async fn execute_crypto_market_stats(
   conn: &mut PgConnection,
   symbol_filter: Option<String>,
@@ -419,6 +550,19 @@ async fn execute_crypto_market_stats(
   Ok(())
 }
 
+/// Generates the `crypto-overview` report.
+///
+/// Produces a high-level summary of all cryptocurrency data in the database:
+///
+/// 1. **Basic counts** (always) — Total crypto symbols (from `symbols` where
+///    `sec_type = "Cryptocurrency"`), active API mappings, active markets, and
+///    mapping coverage percentage.
+/// 2. **API source breakdown** (always) — Active mappings grouped by `api_source`,
+///    sorted by count descending.
+/// 3. **Top 5 exchanges** (always) — Exchanges with the most active markets.
+/// 4. **Extended statistics** (`extended`) — Top 10 symbols by market count and
+///    market type distribution (from `crypto_markets.market_type`). Null market
+///    types are displayed as `"Unknown"`.
 async fn execute_crypto_overview_stats(conn: &mut PgConnection, extended: bool) -> Result<()> {
   info!("Generating crypto overview statistics...");
 

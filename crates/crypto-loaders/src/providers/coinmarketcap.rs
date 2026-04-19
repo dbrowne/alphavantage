@@ -28,6 +28,22 @@
  */
 
 //! CoinMarketCap cryptocurrency data provider.
+//!
+//! Fetches cryptocurrency listings from the CoinMarketCap
+//! `/v1/cryptocurrency/listings/latest` endpoint. Requires an API key
+//! passed via `X-CMC_PRO_API_KEY` header.
+//!
+//! # Response data
+//!
+//! Each coin includes rank, supply metrics, platform/token info, tags,
+//! and USD quotes (price, volume, market cap, percent changes). Tags,
+//! `num_market_pairs`, `date_added`, and platform data are stored in
+//! `additional_data` on the resulting [`CryptoSymbol`].
+//!
+//! # Rate limiting
+//!
+//! Rate-limit delay: **300ms**. Fetches up to 5000 coins in a single request
+//! (adjustable based on subscription tier).
 
 use crate::error::CryptoLoaderError;
 use crate::traits::{CryptoCache, CryptoDataProvider};
@@ -40,7 +56,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-/// CoinMarketCap data provider.
+/// CoinMarketCap data provider — requires API key (`X-CMC_PRO_API_KEY`).
 pub struct CoinMarketCapProvider {
   pub api_key: String,
 }
