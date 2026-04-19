@@ -28,6 +28,19 @@
  */
 
 //! CoinCap cryptocurrency data provider.
+//!
+//! Fetches cryptocurrency symbols from the CoinCap `/v2/assets` endpoint.
+//! This is a **free API** — no API key is required.
+//!
+//! # Pagination
+//!
+//! CoinCap limits responses to 2000 assets per request. The provider
+//! automatically paginates using `limit` + `offset` parameters until
+//! a page returns fewer results than the limit.
+//!
+//! # Rate limiting
+//!
+//! Rate-limit delay: **200ms** between paginated requests.
 
 use crate::error::CryptoLoaderError;
 use crate::traits::{CryptoCache, CryptoDataProvider};
@@ -40,7 +53,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-/// CoinCap data provider.
+/// CoinCap data provider — free, no API key, paginated asset retrieval.
 pub struct CoinCapProvider;
 
 #[derive(Debug, Deserialize)]

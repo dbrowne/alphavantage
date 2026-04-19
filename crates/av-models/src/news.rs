@@ -27,11 +27,55 @@
  * SOFTWARE.
  */
 
-//! News sentiment analysis data models
+//! News sentiment analysis data models.
+//!
+//! This module provides structs for the Alpha Vantage `NEWS_SENTIMENT`
+//! endpoint response and companion types for aggregated sentiment analysis.
+//!
+//! # Type categories
+//!
+//! ## API response types (direct deserialization)
+//!
+//! | Type               | JSON path / purpose                                    |
+//! |--------------------|--------------------------------------------------------|
+//! | [`NewsSentiment`]  | Top-level response: items count, definitions, feed     |
+//! | [`NewsArticle`]    | `.feed[]` — article with title, URL, sentiment, topics |
+//! | [`TopicInfo`]      | `.feed[].topics[]` — topic name + relevance score      |
+//! | [`TickerSentiment`]| `.feed[].ticker_sentiment[]` — per-ticker scores       |
+//!
+//! ## Aggregation / analytics types (client-side)
+//!
+//! | Type                      | Purpose                                         |
+//! |---------------------------|-------------------------------------------------|
+//! | [`MarketSentiment`]       | Aggregated sentiment for a time period           |
+//! | [`SentimentDistribution`] | Bullish/neutral/bearish counts and percentages   |
+//! | [`TickerMention`]         | Per-ticker aggregated mention stats              |
+//! | [`TopicMention`]          | Per-topic aggregated mention stats               |
+//! | [`NewsSource`]            | Source metadata with reliability/bias info        |
+//! | [`SentimentTrend`]        | Time-series of sentiment data points             |
+//! | [`SentimentDataPoint`]    | Single point in a sentiment trend                |
+//! | [`CustomSentimentAnalysis`] | Analysis result with query parameters          |
+//! | [`SentimentQuery`]        | Query parameters for custom analysis             |
+//!
+//! # Helper methods
+//!
+//! Rich helper methods are provided on [`NewsArticle`], [`TickerSentiment`],
+//! [`TopicInfo`], and [`NewsSentiment`] for sentiment classification,
+//! ticker lookup, and aggregate computation.
 
 use serde::{Deserialize, Serialize};
 
-/// News sentiment analysis response
+// ─── API response types ─────────────────────────────────────────────────────
+
+/// Top-level response from the `NEWS_SENTIMENT` endpoint.
+///
+/// Contains metadata definitions and a `feed` array of [`NewsArticle`] entries.
+///
+/// # Helper methods
+///
+/// - [`average_sentiment`](NewsSentiment::average_sentiment) — mean overall sentiment across all articles.
+/// - [`sentiment_distribution`](NewsSentiment::sentiment_distribution) — bullish/neutral/bearish breakdown.
+/// - [`top_tickers`](NewsSentiment::top_tickers) — most-mentioned tickers ranked by frequency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewsSentiment {
   /// Number of articles
@@ -47,7 +91,18 @@ pub struct NewsSentiment {
   pub feed: Vec<NewsArticle>,
 }
 
-/// Individual news article with sentiment analysis
+/// A single news article with content, metadata, and sentiment analysis.
+///
+/// The `overall_sentiment_score` is a numeric value in `[-1.0, 1.0]` and
+/// `overall_sentiment_label` is `"Bullish"`, `"Bearish"`, `"Neutral"`, or
+/// a more granular label like `"Somewhat-Bullish"`.
+///
+/// # Helper methods
+///
+/// - [`is_bullish`](NewsArticle::is_bullish) / [`is_bearish`](NewsArticle::is_bearish) / [`is_neutral`](NewsArticle::is_neutral) — label checks.
+/// - [`sentiment_for_ticker`](NewsArticle::sentiment_for_ticker) — find a specific ticker's sentiment.
+/// - [`mentioned_tickers`](NewsArticle::mentioned_tickers) — list all ticker symbols mentioned.
+/// - [`topic_relevance`](NewsArticle::topic_relevance) — get a topic's relevance score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewsArticle {
   pub title: String,
@@ -77,7 +132,10 @@ pub struct NewsArticle {
   pub ticker_sentiment: Vec<TickerSentiment>,
 }
 
-/// Topic information in news articles
+/// A topic tag associated with a news article, with a relevance score.
+///
+/// `relevance_score` is a string in `["0.0", "1.0"]` — use
+/// [`relevance_as_f64`](TopicInfo::relevance_as_f64) to parse.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TopicInfo {
   pub topic: String,
@@ -85,7 +143,15 @@ pub struct TopicInfo {
   pub relevance_score: String,
 }
 
-/// Sentiment analysis for a specific ticker mentioned in the article
+/// Per-ticker sentiment scores within a news article.
+///
+/// Each article may mention multiple tickers; this struct captures the
+/// relevance and sentiment for one ticker mention.
+///
+/// # Helper methods
+///
+/// - [`sentiment_as_f64`](TickerSentiment::sentiment_as_f64) / [`relevance_as_f64`](TickerSentiment::relevance_as_f64) — parse string scores.
+/// - [`is_bullish`](TickerSentiment::is_bullish) / [`is_bearish`](TickerSentiment::is_bearish) / [`is_neutral`](TickerSentiment::is_neutral) — label checks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TickerSentiment {
   pub ticker: String,
@@ -97,7 +163,12 @@ pub struct TickerSentiment {
   pub ticker_sentiment_label: String,
 }
 
-/// Market sentiment aggregation
+// ─── Aggregation / analytics types ──────────────────────────────────────────
+
+/// Aggregated market sentiment over a time period.
+///
+/// Client-side type that combines overall score, sentiment distribution,
+/// top tickers, and top topics into a single analytics snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarketSentiment {
   pub time_period: String,
@@ -115,7 +186,9 @@ pub struct MarketSentiment {
   pub top_topics: Vec<TopicMention>,
 }
 
-/// Distribution of sentiment across articles
+/// Breakdown of article sentiment labels into counts and percentages.
+///
+/// Computed by [`NewsSentiment::sentiment_distribution`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SentimentDistribution {
   pub bullish_count: u32,
@@ -131,7 +204,10 @@ pub struct SentimentDistribution {
   pub bearish_percentage: f64,
 }
 
-/// Ticker mention statistics
+/// Aggregated mention and sentiment statistics for a single ticker.
+///
+/// Computed by [`NewsSentiment::top_tickers`]. `dominant_sentiment` is
+/// `"Bullish"` if avg > 0.1, `"Bearish"` if avg < -0.1, else `"Neutral"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TickerMention {
   pub ticker: String,
@@ -145,7 +221,7 @@ pub struct TickerMention {
   pub dominant_sentiment: String,
 }
 
-/// Topic mention statistics
+/// Aggregated mention and sentiment statistics for a single topic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TopicMention {
   pub topic: String,
@@ -157,7 +233,7 @@ pub struct TopicMention {
   pub associated_sentiment: f64,
 }
 
-/// News source information
+/// Metadata about a news source, including optional reliability and bias ratings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewsSource {
   pub name: String,
@@ -171,7 +247,7 @@ pub struct NewsSource {
   pub article_count: u32,
 }
 
-/// Sentiment trend over time
+/// A time-series of sentiment measurements over a named period.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SentimentTrend {
   pub time_period: String,
@@ -179,7 +255,7 @@ pub struct SentimentTrend {
   pub data_points: Vec<SentimentDataPoint>,
 }
 
-/// Individual sentiment data point
+/// A single data point in a [`SentimentTrend`], with a confidence score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SentimentDataPoint {
   pub timestamp: String,
@@ -191,7 +267,8 @@ pub struct SentimentDataPoint {
   pub confidence: f64,
 }
 
-/// Custom sentiment analysis result
+/// A saved custom sentiment analysis result, bundling query parameters
+/// with computed [`MarketSentiment`] results and a creation timestamp.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomSentimentAnalysis {
   pub analysis_id: String,
@@ -203,7 +280,9 @@ pub struct CustomSentimentAnalysis {
   pub created_at: String,
 }
 
-/// Query parameters for sentiment analysis
+/// Query parameters for a custom sentiment analysis request.
+///
+/// All fields are optional — omitted fields apply no filter for that dimension.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SentimentQuery {
   pub topics: Option<Vec<String>>,
@@ -219,32 +298,44 @@ pub struct SentimentQuery {
   pub limit: Option<u32>,
 }
 
+// ─── Helper methods ─────────────────────────────────────────────────────────
+
+/// Sentiment classification and ticker/topic lookup helpers for [`NewsArticle`].
 impl NewsArticle {
-  /// Parse overall sentiment score as f64
+  /// Returns the overall sentiment score (already `f64`, wrapped in `Ok`
+  /// for API consistency with string-based parsing methods).
   pub fn overall_sentiment_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     Ok(self.overall_sentiment_score)
   }
 
+  /// Returns `true` if the overall sentiment label is `"Bullish"` (case-insensitive).
   pub fn is_bullish(&self) -> bool {
     self.overall_sentiment_label.to_lowercase() == "bullish"
   }
 
+  /// Returns `true` if the overall sentiment label is `"Bearish"` (case-insensitive).
   pub fn is_bearish(&self) -> bool {
     self.overall_sentiment_label.to_lowercase() == "bearish"
   }
 
+  /// Returns `true` if the overall sentiment label is `"Neutral"` (case-insensitive).
   pub fn is_neutral(&self) -> bool {
     self.overall_sentiment_label.to_lowercase() == "neutral"
   }
 
+  /// Finds the [`TickerSentiment`] entry for a specific ticker (case-insensitive).
+  /// Returns `None` if the ticker is not mentioned in this article.
   pub fn sentiment_for_ticker(&self, ticker: &str) -> Option<&TickerSentiment> {
     self.ticker_sentiment.iter().find(|ts| ts.ticker.eq_ignore_ascii_case(ticker))
   }
 
+  /// Returns the list of all ticker symbols mentioned in this article.
   pub fn mentioned_tickers(&self) -> Vec<&str> {
     self.ticker_sentiment.iter().map(|ts| ts.ticker.as_str()).collect()
   }
 
+  /// Returns the relevance score for a specific topic (case-insensitive),
+  /// or `None` if the topic is not associated with this article.
   pub fn topic_relevance(&self, topic: &str) -> Option<f64> {
     self
       .topics
@@ -254,35 +345,47 @@ impl NewsArticle {
   }
 }
 
+/// Parsing and classification helpers for [`TickerSentiment`].
 impl TickerSentiment {
+  /// Parses the ticker sentiment score string as `f64`.
   pub fn sentiment_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.ticker_sentiment_score.parse()
   }
 
+  /// Parses the relevance score string as `f64`.
   pub fn relevance_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.relevance_score.parse()
   }
 
+  /// Returns `true` if the ticker sentiment label is `"Bullish"`.
   pub fn is_bullish(&self) -> bool {
     self.ticker_sentiment_label.to_lowercase() == "bullish"
   }
 
+  /// Returns `true` if the ticker sentiment label is `"Bearish"`.
   pub fn is_bearish(&self) -> bool {
     self.ticker_sentiment_label.to_lowercase() == "bearish"
   }
 
+  /// Returns `true` if the ticker sentiment label is `"Neutral"`.
   pub fn is_neutral(&self) -> bool {
     self.ticker_sentiment_label.to_lowercase() == "neutral"
   }
 }
 
+/// Parsing helper for [`TopicInfo`].
 impl TopicInfo {
+  /// Parses the topic relevance score string as `f64`.
   pub fn relevance_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.relevance_score.parse()
   }
 }
 
+/// Aggregate analysis methods for [`NewsSentiment`].
 impl NewsSentiment {
+  /// Computes the mean `overall_sentiment_score` across all articles in the feed.
+  ///
+  /// Returns `0.0` if the feed is empty.
   pub fn average_sentiment(&self) -> Result<f64, std::num::ParseFloatError> {
     let sentiments: Result<Vec<f64>, _> =
       self.feed.iter().map(|article| article.overall_sentiment_as_f64()).collect();
@@ -295,6 +398,8 @@ impl NewsSentiment {
     }
   }
 
+  /// Computes a [`SentimentDistribution`] by counting bullish/neutral/bearish
+  /// labels across all articles and converting to percentages.
   pub fn sentiment_distribution(&self) -> SentimentDistribution {
     let mut bullish_count = 0;
     let mut neutral_count = 0;
@@ -321,7 +426,12 @@ impl NewsSentiment {
     }
   }
 
-  /// Get top mentioned tickers with their sentiment
+  /// Returns the `limit` most-mentioned tickers across all articles,
+  /// ranked by mention count descending.
+  ///
+  /// For each ticker, computes `average_sentiment` from all its mentions
+  /// and assigns `dominant_sentiment` based on the ±0.1 threshold.
+  /// Note: `average_relevance` is currently set to `0.0` (not computed).
   pub fn top_tickers(&self, limit: usize) -> Vec<TickerMention> {
     use std::collections::HashMap;
 

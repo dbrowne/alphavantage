@@ -28,6 +28,27 @@
  */
 
 //! CoinGecko cryptocurrency data provider.
+//!
+//! Fetches the complete cryptocurrency universe from CoinGecko using a
+//! two-step process:
+//!
+//! 1. **`/coins/list`** — retrieves all known coins (ID, symbol, name).
+//!    Cached via [`CryptoCache`] for 24 hours to avoid redundant fetches.
+//! 2. **`/coins/markets`** — retrieves market-cap rankings in batches of
+//!    250, up to 20 pages (top 5000 coins).
+//!
+//! The two results are merged: every coin gets a `CryptoSymbol`, and
+//! coins that appear in the rankings map receive a `market_cap_rank`.
+//!
+//! # API tier detection
+//!
+//! - Keys starting with `"CG-"` → Pro endpoint (`pro-api.coingecko.com`).
+//! - All other keys → Demo endpoint (`api.coingecko.com`).
+//!
+//! # Rate limiting
+//!
+//! Rate-limit delay: **2000ms** (applied between `/coins/markets` pages).
+//! An additional 1-second delay is hardcoded between market-page fetches.
 
 use crate::error::CryptoLoaderError;
 use crate::traits::{CryptoCache, CryptoDataProvider};
@@ -40,7 +61,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-/// CoinGecko data provider.
+/// CoinGecko data provider — requires API key (Pro or Demo).
+///
+/// Uses a two-step fetch: `/coins/list` for the full universe, then
+/// `/coins/markets` for market-cap rankings of the top 5000 coins.
 pub struct CoinGeckoProvider {
   pub api_key: Option<String>,
 }
@@ -50,7 +74,11 @@ impl CoinGeckoProvider {
     Self { api_key }
   }
 
-  /// Fetch all coins from /coins/list (complete universe) with HTTP-level caching
+  /// Fetches the complete coin list from `/coins/list` with HTTP-level caching.
+  ///
+  /// On cache hit (key: `coingecko_http_coins_list`, 24h TTL), deserializes
+  /// and returns without an API call. On miss, fetches from the API and
+  /// caches the raw JSON response.
   async fn fetch_all_coins_list(
     &self,
     client: &Client,
@@ -118,7 +146,10 @@ impl CoinGeckoProvider {
     Ok(coins)
   }
 
-  /// Fetch market cap rankings in batches from /coins/markets
+  /// Fetches one page (250 coins) of market-cap rankings from `/coins/markets`.
+  ///
+  /// Returns an empty `Vec` on HTTP error (non-fatal — pagination continues).
+  /// Applies a 1-second delay after each request to respect rate limits.
   async fn fetch_rankings_batch(
     &self,
     client: &Client,
@@ -164,7 +195,8 @@ impl CoinGeckoProvider {
     Ok(coins)
   }
 
-  /// Build ranking map from multiple pages
+  /// Builds a `HashMap<coingecko_id, rank>` by paginating through up to
+  /// 20 pages of `/coins/markets` (top 5000 coins).
   async fn build_rankings_map(
     &self,
     client: &Client,

@@ -27,10 +27,68 @@
  * SOFTWARE.
  */
 
-//! Database repository abstraction layer
+//! Database repository abstraction layer.
 //!
-//! Provides a clean abstraction over database operations for use in loaders.
-//! Supports connection pooling, caching, transactions, and common CRUD operations.
+//! This is the largest module in the `av-database-postgres` crate. It defines
+//! the connection pool, error types, caching infrastructure, and all
+//! domain-specific repository traits with their implementations.
+//!
+//! # Module contents
+//!
+//! ## Infrastructure
+//!
+//! | Item                    | Kind       | Description                                         |
+//! |-------------------------|------------|-----------------------------------------------------|
+//! | [`DbPool`]              | Type alias | `r2d2::Pool<ConnectionManager<PgConnection>>`       |
+//! | [`DbConnection`]        | Type alias | Pooled connection (leased from `DbPool`)            |
+//! | [`RepositoryError`]     | Enum       | Unified error type with `From` impls for Diesel, r2d2, serde |
+//! | [`RepositoryResult<T>`] | Type alias | `Result<T, RepositoryError>`                        |
+//! | [`DatabaseContext`]     | Struct     | Central entry point — owns the pool, vends repositories |
+//!
+//! ## Traits
+//!
+//! | Trait                  | Description                                              |
+//! |------------------------|----------------------------------------------------------|
+//! | [`Repository<T>`]      | Generic async CRUD trait (find, insert, update, delete)  |
+//! | [`Transactional`]      | Synchronous transaction support                          |
+//! | [`CacheRepository`]    | Object-safe async cache (JSONB-based, TTL-aware)         |
+//! | [`CacheRepositoryExt`] | Generic (type-safe) extension over `CacheRepository`     |
+//! | [`OverviewRepository`] | Company overview CRUD + ingestion queue                  |
+//! | [`NewsRepository`]     | Symbol lookups and missing-symbol tracking for news      |
+//! | [`CryptoRepository`]   | API mappings, metadata, social/technical data, markets   |
+//!
+//! ## DTOs
+//!
+//! | Type                    | Description                                            |
+//! |-------------------------|--------------------------------------------------------|
+//! | [`CachedResponse<T>`]   | Wrapper with `cached_at` / `expires_at` metadata       |
+//! | [`SymbolInfo`]          | Lightweight `(sid, symbol)` pair for overview loading  |
+//! | [`OverviewSymbolFilter`]| Multi-criteria filter for selecting symbols to ingest  |
+//!
+//! # Async strategy
+//!
+//! All repository methods are `async` but internally use
+//! [`tokio::task::spawn_blocking`] because the underlying `r2d2` pool and
+//! Diesel queries are synchronous. Each method:
+//! 1. Clones `Arc<DbPool>` and owned copies of string arguments.
+//! 2. Moves them into a `spawn_blocking` closure.
+//! 3. Acquires a connection from the pool and runs the Diesel query.
+//! 4. Maps `JoinError` to [`RepositoryError::QueryError`].
+//!
+//! # Obtaining repositories
+//!
+//! All repositories are obtained from [`DatabaseContext`]:
+//!
+//! ```rust,no_run
+//! use av_database_postgres::DatabaseContext;
+//!
+//! let db = DatabaseContext::new("postgres://localhost/alphavantage").unwrap();
+//!
+//! let overview_repo = db.overview_repository();
+//! let news_repo = db.news_repository();
+//! let crypto_repo = db.crypto_repository();
+//! let cache_repo = db.cache_repository();
+//! ```
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -46,15 +104,38 @@ use thiserror::Error;
 
 use crate::models::crypto::CryptoSummary;
 
+// ─── Pool type aliases ──────────────────────────────────────────────────────
+
+/// An `r2d2` connection pool of synchronous PostgreSQL connections.
+///
+/// Shared across repositories via `Arc<DbPool>`.
 pub type DbPool = Pool<ConnectionManager<PgConnection>>;
+
+/// A single connection leased from the [`DbPool`].
+///
+/// Returned to the pool when dropped.
 pub type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 
+// ─── Pool defaults ──────────────────────────────────────────────────────────
+
+/// Maximum number of connections in the pool.
 const MAX_POOL_SIZE: u32 = 50;
+/// Minimum number of idle connections kept open.
 const MIN_POOL_IDLE: u32 = 10;
-/// Connection timeout in seconds - pool will fail instead of retrying forever
+/// Connection acquisition timeout in seconds — the pool returns an error
+/// instead of blocking indefinitely.
 const CONNECTION_TIMEOUT_SECS: u64 = 30;
 
-/// Database repository errors
+// ─── Error types ────────────────────────────────────────────────────────────
+
+/// Unified error type for all repository operations.
+///
+/// Provides automatic `From` conversions for:
+/// - [`DieselError`] — maps `NotFound` to [`NotFound`](RepositoryError::NotFound),
+///   unique/FK violations to [`ConstraintViolation`](RepositoryError::ConstraintViolation),
+///   and everything else to [`QueryError`](RepositoryError::QueryError).
+/// - [`r2d2::PoolError`](diesel::r2d2::PoolError) → [`PoolError`](RepositoryError::PoolError).
+/// - [`serde_json::Error`] → [`SerializationError`](RepositoryError::SerializationError).
 #[derive(Error, Debug)]
 pub enum RepositoryError {
   #[error("Connection pool error: {0}")]
@@ -109,9 +190,16 @@ impl From<serde_json::Error> for RepositoryError {
   }
 }
 
+/// Convenience alias: `Result<T, RepositoryError>`.
 pub type RepositoryResult<T> = Result<T, RepositoryError>;
 
-/// Cached response metadata
+// ─── Caching ────────────────────────────────────────────────────────────────
+
+/// Wrapper that pairs cached data with TTL metadata.
+///
+/// Used by the generic [`CacheRepositoryExt::get`] / [`CacheRepositoryExt::set`]
+/// methods. `expires_at` determines when the entry is considered stale and
+/// eligible for cleanup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedResponse<T> {
   pub data: T,
@@ -119,8 +207,13 @@ pub struct CachedResponse<T> {
   pub expires_at: DateTime<Utc>,
 }
 
-/// Cache repository trait for API response caching
-/// This trait is object-safe by using serde_json::Value instead of generics
+/// Object-safe async trait for API response caching.
+///
+/// All values are stored as [`serde_json::Value`] (JSONB in PostgreSQL) to
+/// keep the trait object-safe. For type-safe get/set with automatic
+/// serde conversion, use the [`CacheRepositoryExt`] extension trait.
+///
+/// Backed by the `api_response_cache` table.
 #[async_trait]
 pub trait CacheRepository: Send + Sync {
   /// Get a cached response by key, returns JSON value
@@ -150,9 +243,12 @@ pub trait CacheRepository: Send + Sync {
   async fn exists(&self, cache_key: &str) -> RepositoryResult<bool>;
 }
 
-/// Extension trait for type-safe cache operations
-/// This provides the generic interface using the object-safe trait
-#[allow(async_fn_in_trait)] // Generic methods are not object-safe, so Send bound is irrelevant
+/// Type-safe extension trait for [`CacheRepository`].
+///
+/// Adds generic `get<T>` / `set<T>` methods that automatically serialize
+/// and deserialize via `serde_json`. Blanket-implemented for all
+/// `CacheRepository` implementors — no manual implementation needed.
+#[allow(async_fn_in_trait)]
 pub trait CacheRepositoryExt: CacheRepository {
   /// Get a cached response with automatic deserialization
   async fn get<T>(&self, cache_key: &str, api_source: &str) -> RepositoryResult<Option<T>>
@@ -188,7 +284,14 @@ pub trait CacheRepositoryExt: CacheRepository {
 // Automatically implement CacheRepositoryExt for all types implementing CacheRepository
 impl<T: CacheRepository + ?Sized> CacheRepositoryExt for T {}
 
-/// Generic repository trait for CRUD operations
+// ─── Generic CRUD trait ─────────────────────────────────────────────────────
+
+/// Generic async CRUD repository trait.
+///
+/// Defines the standard operations (`find_by_id`, `find_all`, `insert`,
+/// `insert_batch`, `update`, `delete`, `count`) for any entity type `T`.
+/// Not currently implemented by any concrete type in this module — included
+/// as a contract for future domain repositories.
 #[async_trait]
 pub trait Repository<T>: Send + Sync
 where
@@ -216,7 +319,11 @@ where
   async fn count(&self) -> RepositoryResult<i64>;
 }
 
-/// Transaction support
+/// Synchronous transaction support trait.
+///
+/// Provides a `with_transaction` method that runs a closure within a
+/// database transaction. For the `DatabaseContext` equivalent, use
+/// [`DatabaseContext::transaction`].
 pub trait Transactional {
   /// Execute operations within a transaction
   fn with_transaction<F, R>(&self, f: F) -> RepositoryResult<R>
@@ -224,17 +331,47 @@ pub trait Transactional {
     F: FnOnce(&mut DbConnection) -> RepositoryResult<R>;
 }
 
-/// Database context that provides access to repositories and connection pool
+// ─── DatabaseContext ────────────────────────────────────────────────────────
+
+/// Central entry point for all database operations.
+///
+/// Owns an `Arc<DbPool>` and provides factory methods to obtain
+/// domain-specific repositories:
+///
+/// | Method                  | Returns                    |
+/// |-------------------------|----------------------------|
+/// | [`overview_repository`] | `impl OverviewRepository`  |
+/// | [`news_repository`]     | `impl NewsRepository`      |
+/// | [`crypto_repository`]   | `impl CryptoRepository`    |
+/// | [`cache_repository`]    | `impl CacheRepository`     |
+///
+/// Also provides direct pool access ([`get_connection`], [`pool`]),
+/// transaction support ([`transaction`]), and an async helper ([`run`]).
+///
+/// `DatabaseContext` is `Clone` (cheap — only clones the `Arc`).
+///
+/// [`overview_repository`]: DatabaseContext::overview_repository
+/// [`news_repository`]: DatabaseContext::news_repository
+/// [`crypto_repository`]: DatabaseContext::crypto_repository
+/// [`cache_repository`]: DatabaseContext::cache_repository
+/// [`get_connection`]: DatabaseContext::get_connection
+/// [`pool`]: DatabaseContext::pool
+/// [`transaction`]: DatabaseContext::transaction
+/// [`run`]: DatabaseContext::run
 #[derive(Clone)]
 pub struct DatabaseContext {
   pool: Arc<DbPool>,
 }
 
 impl DatabaseContext {
-  /// Create a new database context with connection pooling
+  /// Creates a new database context with an `r2d2` connection pool.
   ///
-  /// Fails fast if the database is unavailable by testing the connection at startup.
-  /// This prevents the r2d2 pool from spawning background threads that retry forever.
+  /// **Fails fast:** tests the connection *before* building the pool.
+  /// If the database is unreachable, returns an error immediately rather
+  /// than letting `r2d2` spawn background retry threads.
+  ///
+  /// Uses default pool settings: max size = 50, min idle = 10,
+  /// timeout = 30s. For custom settings, use [`with_pool_config`](Self::with_pool_config).
   pub fn new(database_url: &str) -> RepositoryResult<Self> {
     // Test connection BEFORE creating the pool to fail fast without background retry noise
     PgConnection::establish(database_url)
@@ -251,9 +388,9 @@ impl DatabaseContext {
     Ok(Self { pool: Arc::new(pool) })
   }
 
-  /// Create with custom pool configuration
+  /// Creates a context with custom pool size, using the default timeout.
   ///
-  /// Fails fast if the database is unavailable by testing the connection at startup.
+  /// Fails fast (see [`new`](Self::new)).
   pub fn with_pool_config(
     database_url: &str,
     max_size: u32,
@@ -262,10 +399,15 @@ impl DatabaseContext {
     Self::with_pool_config_and_timeout(database_url, max_size, min_idle, CONNECTION_TIMEOUT_SECS)
   }
 
-  /// Create with custom pool configuration and connection timeout
+  /// Creates a context with fully custom pool configuration.
   ///
-  /// Fails fast if the database is unavailable by testing the connection at startup.
-  /// This prevents the r2d2 pool from spawning background threads that retry forever.
+  /// Fails fast (see [`new`](Self::new)).
+  ///
+  /// # Arguments
+  ///
+  /// - `max_size` — maximum connections in the pool.
+  /// - `min_idle` — minimum idle connections kept open.
+  /// - `timeout_secs` — connection acquisition timeout.
   pub fn with_pool_config_and_timeout(
     database_url: &str,
     max_size: u32,
@@ -287,22 +429,31 @@ impl DatabaseContext {
     Ok(Self { pool: Arc::new(pool) })
   }
 
-  /// Get a connection from the pool
+  /// Leases a connection from the pool.
+  ///
+  /// Blocks up to the configured timeout. Returns
+  /// [`RepositoryError::PoolError`] if the pool is exhausted.
   pub fn get_connection(&self) -> RepositoryResult<DbConnection> {
     self.pool.get().map_err(|e| RepositoryError::PoolError(e.to_string()))
   }
 
-  /// Get the underlying pool
+  /// Returns a reference to the underlying `r2d2` pool.
+  ///
+  /// Useful for passing to [`SymbolRepository::new`](crate::SymbolRepository::new)
+  /// or other consumers that need `Arc<DbPool>`.
   pub fn pool(&self) -> &DbPool {
     &self.pool
   }
 
-  /// Create a cache repository instance
+  /// Returns a [`CacheRepository`] backed by the `api_response_cache` table.
   pub fn cache_repository(&self) -> impl CacheRepository {
     CacheRepositoryImpl { pool: Arc::clone(&self.pool) }
   }
 
-  /// Execute operations within a transaction
+  /// Executes a closure within a database transaction.
+  ///
+  /// Acquires a connection, begins a transaction, calls `f`, and commits
+  /// on `Ok` or rolls back on `Err`.
   pub fn transaction<F, R>(&self, f: F) -> RepositoryResult<R>
   where
     F: FnOnce(&mut DbConnection) -> RepositoryResult<R>,
@@ -311,7 +462,10 @@ impl DatabaseContext {
     conn.transaction(|conn| f(conn)).map_err(|e| RepositoryError::TransactionError(e.to_string()))
   }
 
-  /// Execute a blocking database operation asynchronously
+  /// Runs a synchronous database closure on a blocking thread.
+  ///
+  /// This is the building block used by all repository methods. The closure
+  /// receives a `&mut DbConnection` and can run arbitrary Diesel queries.
   pub async fn run<F, R>(&self, f: F) -> RepositoryResult<R>
   where
     F: FnOnce(&mut DbConnection) -> RepositoryResult<R> + Send + 'static,
@@ -327,7 +481,9 @@ impl DatabaseContext {
   }
 }
 
-/// Implementation of cache repository
+/// Private implementation of [`CacheRepository`] backed by
+/// the `api_response_cache` table. Uses raw SQL queries via
+/// `diesel::sql_query` for JSONB operations.
 struct CacheRepositoryImpl {
   pool: Arc<DbPool>,
 }
@@ -487,25 +643,45 @@ impl CacheRepository for CacheRepositoryImpl {
   }
 }
 
-/// Symbol information for overview loading
+// ─── DTOs ───────────────────────────────────────────────────────────────────
+
+/// Lightweight symbol reference returned by [`OverviewRepository::get_symbols_to_load`].
+///
+/// Contains only the `sid` and `symbol` string — sufficient for the
+/// overview ingestion pipeline to identify what to fetch.
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
   pub sid: i64,
   pub symbol: String,
 }
 
-/// Filter criteria for selecting symbols that need overviews
+/// Multi-criteria filter for selecting which symbols need overview ingestion.
+///
+/// Used by [`OverviewRepository::get_symbols_to_load`]. All criteria are
+/// combined with `AND`. The [`Default`] implementation targets U.S. equities
+/// without existing overviews.
+///
+/// # Fields
+///
+/// | Field                    | Type                  | Default                | Description                      |
+/// |--------------------------|-----------------------|------------------------|----------------------------------|
+/// | `symbols`                | `Option<Vec<String>>` | `None`                 | Restrict to specific tickers     |
+/// | `sec_type`               | `Option<String>`      | `Some("Equity")`       | Security type filter             |
+/// | `region`                 | `Option<String>`      | `Some("USA")`          | Region filter                    |
+/// | `missing_overviews_only` | `bool`                | `true`                 | Only symbols with `overview = false` |
+/// | `limit`                  | `Option<usize>`       | `None`                 | Max results                      |
 #[derive(Debug, Clone)]
 pub struct OverviewSymbolFilter {
-  /// Specific symbols to filter by (if None, uses other criteria)
+  /// Restrict to specific ticker strings. If `None`, all symbols matching
+  /// other criteria are returned.
   pub symbols: Option<Vec<String>>,
-  /// Security type filter (e.g., "Equity")
+  /// Filter by security type (e.g., `"Equity"`, `"ETF"`).
   pub sec_type: Option<String>,
-  /// Region filter (e.g., "USA")
+  /// Filter by geographic region (e.g., `"USA"`).
   pub region: Option<String>,
-  /// Only symbols without existing overviews
+  /// When `true`, only return symbols where `overview = false`.
   pub missing_overviews_only: bool,
-  /// Maximum number of symbols to return
+  /// Cap the number of results returned.
   pub limit: Option<usize>,
 }
 
@@ -521,7 +697,14 @@ impl Default for OverviewSymbolFilter {
   }
 }
 
-/// Repository trait for company overview operations
+// ─── Overview repository ────────────────────────────────────────────────────
+
+/// Async trait for company overview ingestion and queries.
+///
+/// Obtained via [`DatabaseContext::overview_repository`]. Handles the
+/// full overview lifecycle: selecting symbols to ingest, saving overview
+/// + extended overview pairs (with upsert), and tracking which symbols
+/// have been processed.
 #[async_trait]
 pub trait OverviewRepository: Send + Sync {
   /// Get symbols that need overviews based on filter criteria
@@ -555,7 +738,7 @@ pub trait OverviewRepository: Send + Sync {
   async fn mark_symbol_has_overview(&self, sid: i64) -> RepositoryResult<bool>;
 }
 
-/// Implementation of overview repository
+/// Private implementation of [`OverviewRepository`].
 struct OverviewRepositoryImpl {
   pool: Arc<DbPool>,
 }
@@ -803,18 +986,24 @@ impl OverviewRepository for OverviewRepositoryImpl {
 }
 
 impl DatabaseContext {
-  /// Create an overview repository instance
+  /// Returns an [`OverviewRepository`] for company overview operations.
   pub fn overview_repository(&self) -> impl OverviewRepository {
     OverviewRepositoryImpl { pool: Arc::clone(&self.pool) }
   }
 
-  /// Create a news repository instance
+  /// Returns a [`NewsRepository`] for news-related symbol lookups.
   pub fn news_repository(&self) -> impl NewsRepository {
     NewsRepositoryImpl { pool: Arc::clone(&self.pool) }
   }
 }
 
-/// Repository trait for news operations
+// ─── News repository ────────────────────────────────────────────────────────
+
+/// Async trait for news-related symbol lookups and missing-symbol tracking.
+///
+/// Obtained via [`DatabaseContext::news_repository`]. Provides the symbol
+/// mapping that the news ingestion pipeline needs to resolve ticker
+/// mentions to internal `sid` values.
 #[async_trait]
 pub trait NewsRepository: Send + Sync {
   /// Get all symbols as a mapping from symbol string to SID
@@ -837,7 +1026,7 @@ pub trait NewsRepository: Send + Sync {
   ) -> RepositoryResult<Vec<(String, String, i32, chrono::NaiveDateTime, chrono::NaiveDateTime)>>;
 }
 
-/// Implementation of news repository
+/// Private implementation of [`NewsRepository`].
 struct NewsRepositoryImpl {
   pool: Arc<DbPool>,
 }
@@ -929,11 +1118,24 @@ impl NewsRepository for NewsRepositoryImpl {
   }
 }
 
-// ============================================================================
-// CryptoRepository - Repository for cryptocurrency data operations
-// ============================================================================
+// ─── Crypto repository ──────────────────────────────────────────────────────
 
-/// Repository trait for cryptocurrency-specific operations
+/// Async trait for cryptocurrency-specific database operations.
+///
+/// Obtained via [`DatabaseContext::crypto_repository`]. Covers API mappings,
+/// metadata, social/technical data upserts, market data, and summary
+/// statistics.
+///
+/// # Operation groups
+///
+/// - **API mapping:** `get_api_id`, `get_symbols_needing_mapping`,
+///   `upsert_api_mapping`, `get_crypto_symbols_with_mappings`.
+/// - **Metadata:** `has_metadata`, `upsert_metadata`,
+///   `get_symbols_without_metadata`.
+/// - **Social / technical:** `upsert_social_data_full`, `has_social_data`,
+///   `batch_upsert_social`, `batch_upsert_technical`.
+/// - **Market data:** `upsert_market_data`.
+/// - **Analytics:** `get_crypto_summary`, `get_cryptos_with_coingecko_ids`.
 #[async_trait]
 pub trait CryptoRepository: Send + Sync {
   // API Mapping operations
@@ -1049,7 +1251,10 @@ pub trait CryptoRepository: Send + Sync {
   ) -> RepositoryResult<Vec<(i64, String, String)>>; // (sid, symbol, coingecko_id)
 }
 
-/// Implementation of CryptoRepository using PostgreSQL
+/// PostgreSQL implementation of [`CryptoRepository`].
+///
+/// Public (unlike the other `*Impl` structs) so it can be constructed
+/// directly by consumers that don't use [`DatabaseContext`].
 pub struct CryptoRepositoryImpl {
   pool: Arc<DbPool>,
 }
@@ -1632,8 +1837,8 @@ impl CryptoRepository for CryptoRepositoryImpl {
   }
 }
 
-// Add convenience method to DatabaseContext for creating crypto repository
 impl DatabaseContext {
+  /// Returns a [`CryptoRepository`] for cryptocurrency operations.
   pub fn crypto_repository(&self) -> impl CryptoRepository {
     CryptoRepositoryImpl::new(Arc::clone(&self.pool))
   }

@@ -29,83 +29,265 @@
 
 //! # av-core
 //!
-//! Core types, configuration, and error handling for the AlphaVantage Rust client.
+//! Core types, configuration, and error handling for the Alpha Vantage Rust client.
 //!
-//! This crate provides the foundational components shared across all AlphaVantage crates:
+//! `av-core` is the foundational crate in the `alphavantage` workspace. It owns the
+//! types and infrastructure that every other crate in the workspace depends on,
+//! but contains **no HTTP or networking logic** itself — that lives in sibling crates
+//! that consume `av-core`.
 //!
-//! - [`Config`] - API configuration (key, rate limits, timeouts)
-//! - [`Error`] and [`Result`] - Unified error handling
-//! - [`FuncType`] - Type-safe API function identifiers
+//! ## Crate contents
+//!
+//! | Export                            | Description                                                            |
+//! |-----------------------------------|------------------------------------------------------------------------|
+//! | [`Config`]                        | API configuration: key, rate limits, timeouts, base URL. Loadable from environment variables or constructed directly. |
+//! | [`Error`] / [`Result`]            | Unified error enum covering env-var, config, serde, date-parse, rate-limit, and API response errors. |
+//! | [`FuncType`]                      | Type-safe enum of all supported Alpha Vantage API function names (time series, fundamentals, news, forex, crypto, search). |
+//! | [`types`]                         | Shared domain types: exchanges, security types, intervals, currencies, sentiment labels, and more. |
+//! | [`ALPHA_VANTAGE_BASE_URL`]        | The canonical API endpoint (`https://www.alphavantage.co/query`).      |
+//! | [`DEFAULT_RATE_LIMIT`] / [`PREMIUM_RATE_LIMIT`] | Request-per-minute caps for free (75) and premium (600) API tiers. |
+//!
+//! ## Feature flags
+//!
+//! | Flag          | Effect                                                            |
+//! |---------------|-------------------------------------------------------------------|
+//! | `test-utils`  | Enables the [`test_utils`] module with shared test helpers.       |
 //!
 //! ## Example
 //!
-//! ```
+//! ```rust
 //! use av_core::{Config, FuncType};
 //!
 //! let config = Config::default_with_key("your_api_key".to_string());
 //! let function = FuncType::TimeSeriesDaily;
+//!
+//! // The Display impl produces the API query-string value
+//! assert_eq!(function.to_string(), "TIME_SERIES_DAILY");
+//! ```
+//!
+//! ## Module layout
+//!
+//! ```text
+//! av-core/src/
+//! ├── lib.rs          ← this file: FuncType, constants, re-exports
+//! ├── config.rs       → Config (API key, rate limit, timeout, retries, base URL)
+//! ├── error.rs        → Error enum, Result type alias
+//! ├── types/
+//! │   ├── mod.rs      → re-export façade
+//! │   ├── common.rs   → DataType, Interval, OutputSize, SortOrder, TimeHorizon,
+//! │   │                  ListingState, SentimentLabel, CurrencyCode, CryptoSymbol
+//! │   └── market/
+//! │       ├── mod.rs            → re-export façade
+//! │       ├── exchange.rs       → Exchange (25 global exchanges)
+//! │       ├── security_type.rs  → SecurityType, SecurityIdentifier (bitmap encoding)
+//! │       └── classifications.rs → TopType, Sector, MarketCap
+//! └── test_utils.rs   → shared test helpers (feature-gated)
 //! ```
 
+/// API client configuration: key management, rate limits, timeouts, and retries.
+///
+/// See [`Config`] for the primary export.
 pub mod config;
+
+/// Unified error types for the crate.
+///
+/// See [`Error`] for the error enum and [`Result`] for the convenience alias.
 pub mod error;
+
+/// Shared domain types for exchanges, securities, intervals, currencies, and more.
+///
+/// The [`types`] module re-exports the most common types at its top level for
+/// convenience. See [`types::common`] and [`types::market`] for the full inventory.
 pub mod types;
+
+// ─── Convenience re-exports ─────────────────────────────────────────────────
+//
+// These bring the three most-used items to the crate root so callers can write
+// `use av_core::{Config, Error, Result}` without navigating sub-modules.
+
+/// Re-exported from [`config`].
 pub use config::Config;
+
+/// Re-exported from [`error`].
 pub use error::{Error, Result};
 
-/// The current supported AlphaVantage API functions.
+/// Type-safe identifiers for all supported Alpha Vantage API functions.
+///
+/// Each variant maps to a specific `function=` query-string value accepted by the
+/// Alpha Vantage REST API. The [`Display`](std::fmt::Display) implementation
+/// produces that exact string, so you can interpolate a `FuncType` directly into
+/// a URL query.
+///
+/// # Variant groups
+///
+/// ## Time series (OHLCV price data)
+///
+/// | Variant                     | API function string                 | Description                              |
+/// |-----------------------------|-------------------------------------|------------------------------------------|
+/// | `TimeSeriesIntraday`        | `TIME_SERIES_INTRADAY`              | Intraday bars (requires [`Interval`](types::Interval)) |
+/// | `TimeSeriesDaily`           | `TIME_SERIES_DAILY`                 | Daily unadjusted OHLCV                   |
+/// | `TimeSeriesDailyAdjusted`   | `TIME_SERIES_DAILY_ADJUSTED`        | Daily split/dividend-adjusted data       |
+/// | `TimeSeriesWeekly`          | `TIME_SERIES_WEEKLY`                | Weekly aggregated bars                   |
+/// | `TimeSeriesWeeklyAdjusted`  | `TIME_SERIES_WEEKLY_ADJUSTED`       | Weekly adjusted bars                     |
+/// | `TimeSeriesMonthly`         | `TIME_SERIES_MONTHLY`               | Monthly aggregated bars                  |
+/// | `TimeSeriesMonthlyAdjusted` | `TIME_SERIES_MONTHLY_ADJUSTED`      | Monthly adjusted bars                    |
+///
+/// ## Fundamentals (company data & calendars)
+///
+/// | Variant              | API function string      | Description                              |
+/// |----------------------|--------------------------|------------------------------------------|
+/// | `Overview`           | `OVERVIEW`               | Company profile, key metrics, description|
+/// | `IncomeStatement`    | `INCOME_STATEMENT`       | Annual & quarterly income statements     |
+/// | `BalanceSheet`       | `BALANCE_SHEET`          | Annual & quarterly balance sheets        |
+/// | `CashFlow`           | `CASH_FLOW`              | Annual & quarterly cash flow statements  |
+/// | `Earnings`           | `EARNINGS`               | Annual & quarterly earnings (EPS)        |
+/// | `TopGainersLosers`   | `TOP_GAINERS_LOSERS`     | Top movers by percent change             |
+/// | `ListingStatus`      | `LISTING_STATUS`         | Active/delisted securities listing       |
+/// | `EarningsCalendar`   | `EARNINGS_CALENDAR`      | Upcoming earnings dates                  |
+/// | `IpoCalendar`        | `IPO_CALENDAR`           | Upcoming IPO dates                       |
+///
+/// ## News
+///
+/// | Variant         | API function string | Description                              |
+/// |-----------------|---------------------|------------------------------------------|
+/// | `NewsSentiment`  | `NEWS_SENTIMENT`   | News articles with sentiment scores      |
+///
+/// ## Forex
+///
+/// | Variant                | API function string        | Description                           |
+/// |------------------------|----------------------------|---------------------------------------|
+/// | `CurrencyExchangeRate` | `CURRENCY_EXCHANGE_RATE`   | Real-time currency pair exchange rate |
+/// | `FxIntraday`           | `FX_INTRADAY`              | Intraday forex bars                   |
+/// | `FxDaily`              | `FX_DAILY`                 | Daily forex bars                      |
+/// | `FxWeekly`             | `FX_WEEKLY`                | Weekly forex bars                     |
+/// | `FxMonthly`            | `FX_MONTHLY`               | Monthly forex bars                    |
+///
+/// ## Cryptocurrency
+///
+/// | Variant              | API function string          | Description                          |
+/// |----------------------|------------------------------|--------------------------------------|
+/// | `CryptoExchangeRate` | `CURRENCY_EXCHANGE_RATE`     | Real-time crypto exchange rate (shares endpoint with forex) |
+/// | `CryptoIntraday`     | `CRYPTO_INTRADAY`            | Intraday crypto bars                 |
+/// | `CryptoDaily`        | `DIGITAL_CURRENCY_DAILY`     | Daily crypto OHLCV                   |
+/// | `CryptoWeekly`       | `DIGITAL_CURRENCY_WEEKLY`    | Weekly crypto OHLCV                  |
+/// | `CryptoMonthly`      | `DIGITAL_CURRENCY_MONTHLY`   | Monthly crypto OHLCV                 |
+///
+/// ## Market status & search
+///
+/// | Variant        | API function string | Description                              |
+/// |----------------|---------------------|------------------------------------------|
+/// | `MarketStatus` | `MARKET_STATUS`     | Current open/closed state of global exchanges |
+/// | `SymbolSearch`  | `SYMBOL_SEARCH`    | Search for securities by keyword         |
+///
+/// ## Legacy aliases
+///
+/// The following variants exist for backward compatibility with earlier versions of
+/// the crate. They produce the same `Display` output as their modern equivalents
+/// and should be avoided in new code:
+///
+/// | Legacy variant   | Equivalent to         |
+/// |------------------|-----------------------|
+/// | `TsIntra`        | `TimeSeriesIntraday`  |
+/// | `TsDaily`        | `TimeSeriesDaily`     |
+/// | `SymSearch`      | `SymbolSearch`        |
+/// | `TopQuery`       | `TopGainersLosers`    |
+/// | `NewsQuery`      | `NewsSentiment`       |
+/// | `CryptoIntraDay` | `CryptoIntraday`      |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FuncType {
-  // Time Series functions
+  // ── Time Series ───────────────────────────────────────────────────────
+  /// Intraday OHLCV bars at a configurable [`Interval`](types::Interval).
   TimeSeriesIntraday,
+  /// Daily unadjusted OHLCV.
   TimeSeriesDaily,
+  /// Daily OHLCV adjusted for splits and dividends.
   TimeSeriesDailyAdjusted,
+  /// Weekly aggregated OHLCV.
   TimeSeriesWeekly,
+  /// Weekly OHLCV adjusted for splits and dividends.
   TimeSeriesWeeklyAdjusted,
+  /// Monthly aggregated OHLCV.
   TimeSeriesMonthly,
+  /// Monthly OHLCV adjusted for splits and dividends.
   TimeSeriesMonthlyAdjusted,
 
-  // Fundamentals functions
+  // ── Fundamentals ──────────────────────────────────────────────────────
+  /// Company overview: profile, key metrics, and description.
   Overview,
+  /// Annual and quarterly income statements.
   IncomeStatement,
+  /// Annual and quarterly balance sheets.
   BalanceSheet,
+  /// Annual and quarterly cash flow statements.
   CashFlow,
+  /// Annual and quarterly EPS (earnings per share).
   Earnings,
+  /// Top gainers, losers, and most actively traded tickers.
   TopGainersLosers,
+  /// Active and delisted securities listing.
   ListingStatus,
+  /// Upcoming earnings announcement dates.
   EarningsCalendar,
+  /// Upcoming IPO dates.
   IpoCalendar,
 
-  // News functions
+  // ── News ──────────────────────────────────────────────────────────────
+  /// News articles with ticker-level and topic-level sentiment scores.
   NewsSentiment,
 
-  // Forex functions
+  // ── Forex ─────────────────────────────────────────────────────────────
+  /// Real-time exchange rate for a fiat currency pair.
   CurrencyExchangeRate,
+  /// Intraday forex OHLCV bars.
   FxIntraday,
+  /// Daily forex OHLCV bars.
   FxDaily,
+  /// Weekly forex OHLCV bars.
   FxWeekly,
+  /// Monthly forex OHLCV bars.
   FxMonthly,
 
-  // Crypto functions
+  // ── Cryptocurrency ────────────────────────────────────────────────────
+  /// Real-time exchange rate for a cryptocurrency pair.
+  /// Shares the `CURRENCY_EXCHANGE_RATE` API endpoint with [`CurrencyExchangeRate`](FuncType::CurrencyExchangeRate).
   CryptoExchangeRate,
-  CryptoIntraday, // Note: this was CryptoIntraDay in the original, fixing the typo
+  /// Intraday cryptocurrency OHLCV bars.
+  CryptoIntraday,
+  /// Daily cryptocurrency OHLCV (uses `DIGITAL_CURRENCY_DAILY` endpoint).
   CryptoDaily,
+  /// Weekly cryptocurrency OHLCV (uses `DIGITAL_CURRENCY_WEEKLY` endpoint).
   CryptoWeekly,
+  /// Monthly cryptocurrency OHLCV (uses `DIGITAL_CURRENCY_MONTHLY` endpoint).
   CryptoMonthly,
 
-  // Market status and search
+  // ── Market status & search ────────────────────────────────────────────
+  /// Current open/closed state of global exchanges.
   MarketStatus,
+  /// Keyword search for securities (returns matching tickers, names, regions).
   SymbolSearch,
 
-  // Legacy support
+  // ── Legacy aliases (backward compatibility) ───────────────────────────
+  /// **Deprecated** — use [`TimeSeriesIntraday`](FuncType::TimeSeriesIntraday).
   TsIntra,
+  /// **Deprecated** — use [`TimeSeriesDaily`](FuncType::TimeSeriesDaily).
   TsDaily,
+  /// **Deprecated** — use [`SymbolSearch`](FuncType::SymbolSearch).
   SymSearch,
+  /// **Deprecated** — use [`TopGainersLosers`](FuncType::TopGainersLosers).
   TopQuery,
+  /// **Deprecated** — use [`NewsSentiment`](FuncType::NewsSentiment).
   NewsQuery,
-  CryptoIntraDay, // Keep for backward compatibility
+  /// **Deprecated** — use [`CryptoIntraday`](FuncType::CryptoIntraday).
+  /// Retained for backward compatibility with the original `CryptoIntraDay` casing.
+  CryptoIntraDay,
 }
 
-// Implement Display trait for FuncType
+/// Produces the Alpha Vantage `function=` query-string value for each variant.
+///
+/// Legacy aliases emit the same string as their modern counterparts:
+/// - `TsIntra` → `"TIME_SERIES_INTRADAY"` (same as `TimeSeriesIntraday`)
+/// - `CryptoIntraDay` → `"CRYPTO_INTRADAY"` (same as `CryptoIntraday`)
+/// - `CryptoExchangeRate` → `"CURRENCY_EXCHANGE_RATE"` (same as `CurrencyExchangeRate`)
 impl std::fmt::Display for FuncType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
@@ -163,13 +345,28 @@ impl std::fmt::Display for FuncType {
   }
 }
 
-/// Base URL for AlphaVantage API
+/// The canonical Alpha Vantage REST API endpoint.
+///
+/// All API requests are sent as `GET` requests to this URL with function-specific
+/// query parameters appended. The [`Config`] struct stores this as `base_url` and
+/// defaults to this constant.
 pub const ALPHA_VANTAGE_BASE_URL: &str = "https://www.alphavantage.co/query";
 
-/// API rate limits
-pub const DEFAULT_RATE_LIMIT: u32 = 75; // requests per minute
-pub const PREMIUM_RATE_LIMIT: u32 = 600; // requests per minute
+/// Maximum requests per minute for the **free** Alpha Vantage API tier (75 RPM).
+///
+/// Free-tier keys are limited to 25 requests per day in addition to this per-minute cap.
+/// See [`Config::rate_limit`] for runtime configuration.
+pub const DEFAULT_RATE_LIMIT: u32 = 75;
 
+/// Maximum requests per minute for **premium** Alpha Vantage API plans (600 RPM).
+///
+/// Premium plans remove the daily request cap and raise the per-minute limit.
+pub const PREMIUM_RATE_LIMIT: u32 = 600;
+
+/// Shared test helpers (available only when the `test-utils` feature is enabled).
+///
+/// Contains mock data, fixture builders, and assertion helpers used by tests
+/// across the workspace.
 #[cfg(feature = "test-utils")]
 pub mod test_utils;
 

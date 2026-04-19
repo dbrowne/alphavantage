@@ -27,11 +27,73 @@
  * SOFTWARE.
  */
 
-//! Fundamental analysis data models for company financials
+//! Fundamental analysis data models for company financials.
+//!
+//! This module provides serde-deserializable structs for the Alpha Vantage
+//! fundamental-data endpoints. All monetary/ratio values are returned as
+//! `String` by the API and preserved as-is for lossless round-tripping.
+//!
+//! # Endpoint mapping
+//!
+//! | Endpoint              | Model                                       | Notes                              |
+//! |-----------------------|---------------------------------------------|------------------------------------|
+//! | `OVERVIEW`            | [`CompanyOverview`]                          | ~45 fields, flat JSON              |
+//! | `INCOME_STATEMENT`    | [`IncomeStatement`] → [`IncomeStatementReport`] | Annual + quarterly arrays      |
+//! | `BALANCE_SHEET`       | [`BalanceSheet`] → [`BalanceSheetReport`]    | Annual + quarterly arrays          |
+//! | `CASH_FLOW`           | [`CashFlow`] → [`CashFlowReport`]           | Annual + quarterly arrays          |
+//! | `EARNINGS`            | [`Earnings`] → [`AnnualEarnings`] / [`QuarterlyEarnings`] | EPS + surprise data  |
+//! | `TOP_GAINERS_LOSERS`  | [`TopGainersLosers`] → [`StockMover`]       | Three lists: gainers, losers, most active |
+//! | `LISTING_STATUS`      | [`ListingStatus`] → [`SecurityListing`]     | CSV-based (parsed externally)      |
+//! | `EARNINGS_CALENDAR`   | [`EarningsCalendar`] → [`EarningsEvent`]    | CSV-based (parsed externally)      |
+//! | `IPO_CALENDAR`        | [`IpoCalendar`] → [`IpoEvent`]              | CSV-based (parsed externally)      |
+//!
+//! # Financial statement pattern
+//!
+//! The three financial-statement endpoints (`INCOME_STATEMENT`, `BALANCE_SHEET`,
+//! `CASH_FLOW`) share the same JSON shape:
+//!
+//! ```json
+//! {
+//!   "symbol": "AAPL",
+//!   "annualReports": [ { ... }, { ... } ],
+//!   "quarterlyReports": [ { ... }, { ... } ]
+//! }
+//! ```
+//!
+//! Each report is a flat object with `fiscalDateEnding`, `reportedCurrency`,
+//! and ~20–30 line-item fields specific to that statement type.
 
 use serde::{Deserialize, Serialize};
 
-/// Company overview with key financial metrics
+// ─── Company Overview ───────────────────────────────────────────────────────
+
+/// Comprehensive company profile and financial metrics from the `OVERVIEW` endpoint.
+///
+/// This is the richest single-call response in the Alpha Vantage API, returning
+/// ~45 fields covering identity, classification, valuation ratios, profitability
+/// margins, growth rates, technical levels, and dividend information.
+///
+/// # Field groups
+///
+/// - **Identity:** `symbol`, `asset_type`, `name`, `description`, `cik`,
+///   `exchange`, `currency`, `country`, `address`.
+/// - **Classification:** `sector`, `industry`, `fiscal_year_end`.
+/// - **Valuation:** `market_capitalization`, `ebitda`, `pe_ratio`, `peg_ratio`,
+///   `book_value`, `trailing_pe`, `forward_pe`, `price_to_sales_ratio_ttm`,
+///   `price_to_book_ratio`, `ev_to_revenue`, `ev_to_ebitda`.
+/// - **Profitability:** `eps`, `diluted_eps_ttm`, `revenue_per_share_ttm`,
+///   `profit_margin`, `operating_margin_ttm`, `return_on_assets_ttm`,
+///   `return_on_equity_ttm`.
+/// - **Growth:** `quarterly_earnings_growth_yoy`, `quarterly_revenue_growth_yoy`.
+/// - **Revenue:** `revenue_ttm`, `gross_profit_ttm`.
+/// - **Technical:** `beta`, `week_52_high`, `week_52_low`,
+///   `day_50_moving_average`, `day_200_moving_average`.
+/// - **Dividends:** `dividend_per_share`, `dividend_yield`, `dividend_date`,
+///   `ex_dividend_date`.
+/// - **Shares:** `shares_outstanding`.
+/// - **Analyst:** `analyst_target_price`, `latest_quarter`.
+///
+/// All values are `String` — the API returns `"None"` for unavailable fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompanyOverview {
   #[serde(rename = "Symbol")]
@@ -180,6 +242,13 @@ pub struct CompanyOverview {
   pub ex_dividend_date: String,
 }
 
+// ─── Income Statement ───────────────────────────────────────────────────────
+
+/// Response from the `INCOME_STATEMENT` endpoint.
+///
+/// Contains annual and quarterly income statement reports for a symbol.
+/// Each [`IncomeStatementReport`] has ~25 line items covering revenue,
+/// expenses, operating income, interest, taxes, and net income.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncomeStatement {
   /// Stock symbol
@@ -194,7 +263,11 @@ pub struct IncomeStatement {
   pub quarterly_reports: Vec<IncomeStatementReport>,
 }
 
-/// Individual income statement report
+/// A single annual or quarterly income statement report.
+///
+/// Line items span from `total_revenue` through operating expenses,
+/// interest, taxes, to `net_income`. Includes EBIT and EBITDA.
+/// All amounts are strings (typically in the `reported_currency`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncomeStatementReport {
   /// Fiscal date ending
@@ -277,6 +350,14 @@ pub struct IncomeStatementReport {
   pub net_income: String,
 }
 
+// ─── Balance Sheet ──────────────────────────────────────────────────────────
+
+/// Response from the `BALANCE_SHEET` endpoint.
+///
+/// Contains annual and quarterly balance sheet reports. Each
+/// [`BalanceSheetReport`] has ~35 line items covering assets (current,
+/// non-current, intangible), liabilities (current, non-current, debt),
+/// and shareholder equity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceSheet {
   pub symbol: String,
@@ -288,6 +369,10 @@ pub struct BalanceSheet {
   pub quarterly_reports: Vec<BalanceSheetReport>,
 }
 
+/// A single annual or quarterly balance sheet report.
+///
+/// Organized into assets (current + non-current), liabilities (current +
+/// non-current + debt breakdown), and equity sections. All amounts are strings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceSheetReport {
   #[serde(rename = "fiscalDateEnding")]
@@ -405,7 +490,12 @@ pub struct BalanceSheetReport {
   pub common_stock_shares_outstanding: String,
 }
 
-/// Cash flow statement data
+// ─── Cash Flow ──────────────────────────────────────────────────────────────
+
+/// Response from the `CASH_FLOW` endpoint.
+///
+/// Contains annual and quarterly cash flow reports. Each [`CashFlowReport`]
+/// has ~27 line items covering operating, investing, and financing activities.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CashFlow {
   pub symbol: String,
@@ -417,7 +507,16 @@ pub struct CashFlow {
   pub quarterly_reports: Vec<CashFlowReport>,
 }
 
-/// Individual cash flow report
+/// A single annual or quarterly cash flow report.
+///
+/// Covers three activity categories:
+/// - **Operating:** `operating_cashflow`, changes in assets/liabilities,
+///   depreciation, receivables, inventory.
+/// - **Investing:** `cashflow_from_investment`, `capital_expenditures`.
+/// - **Financing:** `cashflow_from_financing`, debt repayments, stock
+///   repurchases/issuances, dividend payouts.
+///
+/// All amounts are strings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CashFlowReport {
   #[serde(rename = "fiscalDateEnding")]
@@ -508,7 +607,12 @@ pub struct CashFlowReport {
   pub net_income: String,
 }
 
-/// Earnings data
+// ─── Earnings ───────────────────────────────────────────────────────────────
+
+/// Response from the `EARNINGS` endpoint.
+///
+/// Contains annual EPS history ([`AnnualEarnings`]) and quarterly earnings
+/// with analyst estimates and surprise data ([`QuarterlyEarnings`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Earnings {
   /// Stock symbol
@@ -523,7 +627,7 @@ pub struct Earnings {
   pub quarterly_earnings: Vec<QuarterlyEarnings>,
 }
 
-/// Annual earnings report
+/// A single annual earnings record: fiscal year end and reported EPS.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnnualEarnings {
   /// Fiscal date ending
@@ -535,7 +639,10 @@ pub struct AnnualEarnings {
   pub reported_eps: String,
 }
 
-/// Quarterly earnings report
+/// A single quarterly earnings record with analyst estimates and surprise data.
+///
+/// `surprise` is the absolute difference between reported and estimated EPS;
+/// `surprise_percentage` is that difference as a percentage of the estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuarterlyEarnings {
   /// Fiscal date ending
@@ -563,7 +670,13 @@ pub struct QuarterlyEarnings {
   pub surprise_percentage: String,
 }
 
-/// Top gainers, losers, and most active stocks
+// ─── Top Movers ─────────────────────────────────────────────────────────────
+
+/// Response from the `TOP_GAINERS_LOSERS` endpoint.
+///
+/// Contains three ranked lists of [`StockMover`] entries: top gainers,
+/// top losers, and most actively traded securities for the current
+/// trading day.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TopGainersLosers {
   /// Metadata
@@ -582,7 +695,9 @@ pub struct TopGainersLosers {
   pub most_actively_traded: Vec<StockMover>,
 }
 
-/// Individual stock mover (gainer/loser/active)
+/// A single entry in a top-movers list (gainer, loser, or most active).
+///
+/// `change_percentage` is a string like `"5.23%"` — includes the `%` suffix.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StockMover {
   /// Stock ticker
@@ -601,14 +716,23 @@ pub struct StockMover {
   pub volume: String,
 }
 
-/// Listing status response
+// ─── Listing & Calendar endpoints ────────────────────────────────────────────
+
+/// Parsed response from the `LISTING_STATUS` endpoint.
+///
+/// The raw API returns CSV; this struct represents the parsed result.
+/// Contains a list of [`SecurityListing`] records for active or delisted
+/// securities.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListingStatus {
   /// List of securities
   pub data: Vec<SecurityListing>,
 }
 
-/// Individual security listing
+/// A single security from the listing status response.
+///
+/// `delisting_date` is `None` for active securities. `status` is
+/// `"Active"` or `"Delisted"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecurityListing {
   /// Symbol
@@ -633,14 +757,14 @@ pub struct SecurityListing {
   pub status: String,
 }
 
-/// Earnings calendar
+/// Parsed response from the `EARNINGS_CALENDAR` endpoint (CSV-based).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EarningsCalendar {
   /// Earnings events
   pub data: Vec<EarningsEvent>,
 }
 
-/// Individual earnings event
+/// A single upcoming earnings announcement from the earnings calendar.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EarningsEvent {
   /// Symbol
@@ -662,14 +786,17 @@ pub struct EarningsEvent {
   pub currency: String,
 }
 
-/// IPO calendar
+/// Parsed response from the `IPO_CALENDAR` endpoint (CSV-based).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpoCalendar {
   /// IPO events
   pub data: Vec<IpoEvent>,
 }
 
-/// Individual IPO event
+/// A single upcoming IPO from the IPO calendar.
+///
+/// Includes the expected price range (`price_range_low` / `price_range_high`)
+/// and the listing exchange.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpoEvent {
   /// Symbol

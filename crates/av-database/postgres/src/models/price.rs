@@ -27,6 +27,46 @@
  * SOFTWARE.
  */
 
+//! Diesel models for OHLCV price data, top movers, and market analytics.
+//!
+//! This module covers three TimescaleDB hypertables and their associated
+//! analytics queries:
+//!
+//! | Table            | Model              | Description                              |
+//! |------------------|--------------------|------------------------------------------|
+//! | `intradayprices` | [`IntradayPrice`]  | Intraday OHLCV bars (1min–60min)         |
+//! | `summaryprices`  | [`SummaryPrice`]   | Daily/weekly/monthly summary bars        |
+//! | `topstats`       | [`TopStat`]        | Top gainers, losers, and most-active     |
+//!
+//! # TimescaleDB integration
+//!
+//! All three tables are TimescaleDB hypertables partitioned by timestamp.
+//! The module leverages TimescaleDB-specific functions:
+//!
+//! - `time_bucket()` — for aggregating intraday bars into larger intervals
+//!   (see [`IntradayPrice::time_bucket_ohlc`]).
+//! - `first()` / `last()` — for extracting opening/closing prices within
+//!   a time bucket.
+//! - Window functions (`AVG(...) OVER (...)`) — for computing moving averages
+//!   (see [`SummaryPrice::get_with_moving_average`]).
+//!
+//! # Analytics query-result types
+//!
+//! | Type                   | Purpose                                              |
+//! |------------------------|------------------------------------------------------|
+//! | [`OhlcBucket`]         | Time-bucketed OHLCV aggregation                      |
+//! | [`PriceWithMA`]        | Daily close with moving average and volume MA         |
+//! | [`HistoricalTopMover`] | Time-bucketed top-mover summary with best performer   |
+//! | [`SectorPerformance`]  | Per-sector gainer/loser counts and average changes    |
+//!
+//! # Common patterns
+//!
+//! - All query methods are **async** (`&mut AsyncPgConnection`).
+//! - Bulk inserts use chunking (1000 for prices, 500 for top stats) to avoid
+//!   exceeding PostgreSQL parameter limits.
+//! - Each entity has borrowed (`New*<'a>`) and owned (`New*Owned`) insertable
+//!   variants; owned variants provide `as_ref()` to borrow into the `<'a>` form.
+
 use chrono::NaiveDate;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -34,7 +74,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::{intradayprices, summaryprices, topstats};
 
-// Corrected to match schema: Primary key is (tstamp, sid, eventid)
+// ─── IntradayPrice ──────────────────────────────────────────────────────────
+
+/// An intraday OHLCV price bar for a security.
+///
+/// Maps to the `intradayprices` TimescaleDB hypertable with composite PK
+/// `(tstamp, sid, eventid)`. Each row represents one bar at the interval
+/// configured during ingestion (e.g., 1min, 5min).
+///
+/// # Key fields
+///
+/// | Field             | Type                  | Description                          |
+/// |-------------------|-----------------------|--------------------------------------|
+/// | `tstamp`          | `DateTime<Utc>`       | Bar timestamp (start of interval)    |
+/// | `sid`             | `i64`                 | Security ID (FK to `symbols`)        |
+/// | `eventid`         | `i64`                 | Sequence/event identifier            |
+/// | `symbol`          | `String`              | Ticker symbol (denormalized)         |
+/// | `open` / `high` / `low` / `close` | `f32` | OHLC prices                   |
+/// | `volume`          | `i64`                 | Bar volume                           |
+/// | `price_source_id` | `i32`                 | Identifies the data source           |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = intradayprices)]
 #[diesel(primary_key(tstamp, sid, eventid))]
@@ -51,6 +109,10 @@ pub struct IntradayPrice {
   pub price_source_id: i32,
 }
 
+/// Insertable (borrowed) form of [`IntradayPrice`].
+///
+/// All fields are borrowed references for zero-copy bulk inserts via
+/// [`bulk_insert`](NewIntradayPrice::bulk_insert).
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = intradayprices)]
 pub struct NewIntradayPrice<'a> {
@@ -67,7 +129,8 @@ pub struct NewIntradayPrice<'a> {
 }
 
 impl<'a> NewIntradayPrice<'a> {
-  // Batch insert for TimescaleDB optimization
+  /// Inserts intraday prices in chunks of 1000 for TimescaleDB optimization.
+  /// Returns the total number of rows inserted.
   pub async fn bulk_insert(
     conn: &mut diesel_async::AsyncPgConnection,
     records: Vec<Self>,
@@ -86,7 +149,14 @@ impl<'a> NewIntradayPrice<'a> {
   }
 }
 
-// Query result structures
+// ─── Analytics query-result types ────────────────────────────────────────────
+
+/// Time-bucketed OHLCV aggregation from [`IntradayPrice::time_bucket_ohlc`].
+///
+/// Uses TimescaleDB's `time_bucket()` with `first()` / `last()` for open/close
+/// and standard `MAX` / `MIN` / `SUM` for high/low/volume.
+///
+/// Not backed by a database table.
 #[derive(QueryableByName, Debug, Serialize)]
 pub struct OhlcBucket {
   #[diesel(sql_type = diesel::sql_types::Timestamptz)]
@@ -106,7 +176,17 @@ pub struct OhlcBucket {
 }
 
 impl IntradayPrice {
-  /// Get OHLC data aggregated by time bucket
+  /// Aggregates intraday bars into larger time buckets using TimescaleDB.
+  ///
+  /// # Arguments
+  ///
+  /// - `symbol` — ticker symbol to query.
+  /// - `bucket_size` — TimescaleDB interval (e.g., `"5 minutes"`, `"1 hour"`).
+  /// - `start` / `end` — time range (inclusive).
+  ///
+  /// Returns [`OhlcBucket`] rows ordered by bucket descending (most recent first).
+  /// Uses `first(open, tstamp)` and `last(close, tstamp)` to correctly capture
+  /// the opening and closing prices within each bucket.
   pub async fn time_bucket_ohlc(
     conn: &mut diesel_async::AsyncPgConnection,
     symbol: &str,
@@ -144,7 +224,16 @@ impl IntradayPrice {
   }
 }
 
-// Corrected to match schema: Primary key is (tstamp, sid, eventid)
+// ─── SummaryPrice ───────────────────────────────────────────────────────────
+
+/// A daily (or weekly/monthly) summary OHLCV bar.
+///
+/// Maps to the `summaryprices` TimescaleDB hypertable with composite PK
+/// `(tstamp, sid, eventid)`. Contains both a `tstamp` (timezone-aware
+/// timestamp for TimescaleDB partitioning) and a `date` (`NaiveDate` for
+/// date-range queries).
+///
+/// Fields mirror [`IntradayPrice`] with the addition of `date`.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = summaryprices)]
 #[diesel(primary_key(tstamp, sid, eventid))]
@@ -162,6 +251,7 @@ pub struct SummaryPrice {
   pub price_source_id: i32,
 }
 
+/// Insertable (borrowed) form of [`SummaryPrice`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = summaryprices)]
 pub struct NewSummaryPrice<'a> {
@@ -178,7 +268,8 @@ pub struct NewSummaryPrice<'a> {
   pub price_source_id: &'a i32,
 }
 
-// Add owned variant for API responses
+/// Insertable (owned) form of [`SummaryPrice`].
+/// Provides [`as_ref`](NewSummaryPriceOwned::as_ref) to convert to borrowed form.
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = summaryprices)]
 pub struct NewSummaryPriceOwned {
@@ -195,6 +286,14 @@ pub struct NewSummaryPriceOwned {
   pub price_source_id: i32,
 }
 
+/// A daily close price augmented with simple moving averages.
+///
+/// Returned by [`SummaryPrice::get_with_moving_average`]. Not backed by a table.
+///
+/// - `date` — trading date.
+/// - `close` — closing price.
+/// - `ma` — simple moving average of `close` over the configured period.
+/// - `volume_ma` — simple moving average of volume over the same period.
 #[derive(QueryableByName, Debug, Serialize)]
 pub struct PriceWithMA {
   #[diesel(sql_type = diesel::sql_types::Date)]
@@ -208,6 +307,7 @@ pub struct PriceWithMA {
 }
 
 impl<'a> NewSummaryPrice<'a> {
+  /// Inserts summary prices in chunks of 1000. Returns total rows inserted.
   pub async fn bulk_insert_refs(
     conn: &mut diesel_async::AsyncPgConnection,
     records: &[NewSummaryPrice<'a>],
@@ -227,6 +327,7 @@ impl<'a> NewSummaryPrice<'a> {
 }
 
 impl NewSummaryPriceOwned {
+  /// Converts to a borrowed [`NewSummaryPrice`] for use with bulk-insert APIs.
   pub fn as_ref(&self) -> NewSummaryPrice<'_> {
     NewSummaryPrice {
       eventid: &self.eventid,
@@ -243,6 +344,7 @@ impl NewSummaryPriceOwned {
     }
   }
 
+  /// Inserts owned summary prices in chunks of 1000. Returns total rows inserted.
   pub async fn bulk_insert(
     conn: &mut diesel_async::AsyncPgConnection,
     records: Vec<Self>,
@@ -261,8 +363,9 @@ impl NewSummaryPriceOwned {
   }
 }
 
+/// Async query methods for [`SummaryPrice`].
 impl SummaryPrice {
-  /// Get latest price for a symbol
+  /// Returns the most recent summary price row for a symbol.
   pub async fn get_latest(
     conn: &mut diesel_async::AsyncPgConnection,
     symbol: &str,
@@ -274,7 +377,8 @@ impl SummaryPrice {
       .await
   }
 
-  /// Get price history for a symbol within date range
+  /// Returns summary prices for a symbol within a date range (inclusive),
+  /// ordered by date descending.
   pub async fn get_history(
     conn: &mut diesel_async::AsyncPgConnection,
     symbol: &str,
@@ -290,7 +394,16 @@ impl SummaryPrice {
       .await
   }
 
-  /// Get moving average using TimescaleDB window functions
+  /// Returns daily close prices with simple moving averages computed via
+  /// SQL window functions.
+  ///
+  /// # Arguments
+  ///
+  /// - `symbol` — ticker to query.
+  /// - `days` — look-back period from today.
+  /// - `ma_period` — number of days for the moving average window.
+  ///
+  /// Returns [`PriceWithMA`] rows ordered by date descending.
   pub async fn get_with_moving_average(
     conn: &mut diesel_async::AsyncPgConnection,
     symbol: &str,
@@ -327,7 +440,26 @@ impl SummaryPrice {
   }
 }
 
-// Corrected to match schema: Primary key is (date, event_type, sid)
+// ─── TopStat ────────────────────────────────────────────────────────────────
+
+/// A top-mover snapshot: gainer, loser, or most-active security.
+///
+/// Maps to the `topstats` TimescaleDB hypertable with composite PK
+/// `(date, event_type, sid)`. Populated from Alpha Vantage's
+/// `TOP_GAINERS_LOSERS` endpoint.
+///
+/// # Key fields
+///
+/// | Field         | Type                | Description                              |
+/// |---------------|---------------------|------------------------------------------|
+/// | `date`        | `DateTime<Utc>`     | Snapshot timestamp                       |
+/// | `event_type`  | `String`            | `"gainers"`, `"losers"`, or `"most_active"` |
+/// | `sid`         | `i64`               | Security ID                              |
+/// | `symbol`      | `String`            | Ticker (denormalized)                    |
+/// | `price`       | `f32`               | Current price                            |
+/// | `change_val`  | `f32`               | Absolute price change                    |
+/// | `change_pct`  | `f32`               | Percentage price change                  |
+/// | `volume`      | `i64`               | Trading volume                           |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = topstats)]
 #[diesel(primary_key(date, event_type, sid))]
@@ -342,6 +474,7 @@ pub struct TopStat {
   pub volume: i64,
 }
 
+/// Insertable (borrowed) form of [`TopStat`].
 #[derive(Insertable, Debug)]
 #[diesel(table_name = topstats)]
 pub struct NewTopStat<'a> {
@@ -355,7 +488,8 @@ pub struct NewTopStat<'a> {
   pub volume: &'a i64,
 }
 
-// Add owned variant for API responses
+/// Insertable (owned) form of [`TopStat`].
+/// Provides [`as_ref`](NewTopStatOwned::as_ref) to convert to borrowed form.
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = topstats)]
 pub struct NewTopStatOwned {
@@ -369,6 +503,11 @@ pub struct NewTopStatOwned {
   pub volume: i64,
 }
 
+/// Time-bucketed top-mover summary from [`TopStat::get_historical_top_movers`].
+///
+/// Each row represents one time bucket and includes the count of movers,
+/// average and max change percentages, and the symbol of the top performer.
+/// Not backed by a database table.
 #[derive(QueryableByName, Debug, Serialize)]
 pub struct HistoricalTopMover {
   #[diesel(sql_type = diesel::sql_types::Timestamptz)]
@@ -385,6 +524,13 @@ pub struct HistoricalTopMover {
   pub top_symbol: String,
 }
 
+/// Per-sector aggregation of top-mover data from [`TopStat::get_sector_performance`].
+///
+/// Joins `topstats` with `overviews` on `sid` to group movers by sector.
+/// Not backed by a database table.
+///
+/// - `gainer_count` / `loser_count` — number of top movers in each category.
+/// - `avg_gain` / `avg_loss` — mean `change_pct` for gainers and losers.
 #[derive(QueryableByName, Debug, Serialize)]
 pub struct SectorPerformance {
   #[diesel(sql_type = diesel::sql_types::Text)]
@@ -400,6 +546,7 @@ pub struct SectorPerformance {
 }
 
 impl<'a> NewTopStat<'a> {
+  /// Inserts top stats in chunks of 500. Returns total rows inserted.
   pub async fn bulk_insert_refs(
     conn: &mut diesel_async::AsyncPgConnection,
     records: &[NewTopStat<'a>],
@@ -419,6 +566,7 @@ impl<'a> NewTopStat<'a> {
 }
 
 impl NewTopStatOwned {
+  /// Converts to a borrowed [`NewTopStat`] for use with bulk-insert APIs.
   pub fn as_ref(&self) -> NewTopStat<'_> {
     NewTopStat {
       date: &self.date,
@@ -432,6 +580,7 @@ impl NewTopStatOwned {
     }
   }
 
+  /// Inserts owned top stats in chunks of 500. Returns total rows inserted.
   pub async fn bulk_insert(
     conn: &mut diesel_async::AsyncPgConnection,
     records: Vec<Self>,
@@ -450,8 +599,12 @@ impl NewTopStatOwned {
   }
 }
 
+/// Async query methods for [`TopStat`].
 impl TopStat {
-  /// Get top movers by type (gainers/losers)
+  /// Returns the top movers of a given type from the last 24 hours,
+  /// ordered by `change_pct` descending, limited to `limit` rows.
+  ///
+  /// `event_type` should be `"gainers"`, `"losers"`, or `"most_active"`.
   pub async fn get_by_type(
     conn: &mut diesel_async::AsyncPgConnection,
     event_type: &str,
@@ -466,7 +619,11 @@ impl TopStat {
       .await
   }
 
-  /// Get latest movers with pagination
+  /// Returns the latest movers with cursor-based pagination.
+  ///
+  /// Returns a tuple `(results, total_count)` where `total_count` is the
+  /// total number of matching rows (for building pagination UI).
+  /// `page` is 1-indexed.
   pub async fn get_latest_paginated(
     conn: &mut diesel_async::AsyncPgConnection,
     event_type: &str,
@@ -496,7 +653,17 @@ impl TopStat {
     Ok((results, total))
   }
 
-  /// Get historical top movers with TimescaleDB time_bucket
+  /// Aggregates historical top-mover data into time buckets.
+  ///
+  /// Uses TimescaleDB's `time_bucket()` with a CTE and `ROW_NUMBER()` window
+  /// to identify the single best performer per bucket. Returns
+  /// [`HistoricalTopMover`] rows ordered by bucket descending.
+  ///
+  /// # Arguments
+  ///
+  /// - `event_type` — `"gainers"`, `"losers"`, or `"most_active"`.
+  /// - `bucket_size` — TimescaleDB interval (e.g., `"1 day"`, `"1 week"`).
+  /// - `days_back` — how many days of history to include.
   pub async fn get_historical_top_movers(
     conn: &mut diesel_async::AsyncPgConnection,
     event_type: &str,
@@ -541,7 +708,12 @@ impl TopStat {
     .await
   }
 
-  /// Get sector performance from top movers
+  /// Computes per-sector performance by joining top movers with company
+  /// overviews at a specific date.
+  ///
+  /// Returns [`SectorPerformance`] rows ordered by `gainer_count` descending.
+  /// Requires the `overviews` table to have sector data for the securities
+  /// in `topstats`.
   pub async fn get_sector_performance(
     conn: &mut diesel_async::AsyncPgConnection,
     date: chrono::DateTime<chrono::Utc>,

@@ -5,6 +5,55 @@
  */
 
 //! CoinGecko detailed coin data loader.
+//!
+//! This module fetches social, developer, and classification data for
+//! cryptocurrency coins from the CoinGecko `/coins/{id}` API endpoint,
+//! then normalizes it into flat [`CryptoSocialData`] and
+//! [`CryptoTechnicalData`] structs ready for database insertion.
+//!
+//! # Data flow
+//!
+//! ```text
+//! CoinInfo (sid, symbol, coingecko_id)
+//!   └──► CoinGeckoDetailsLoader::load()
+//!          ├── check CryptoCache (7-day TTL)
+//!          ├── or HTTP GET /coins/{id} (with semaphore + rate-limit delay)
+//!          ├── parse → CoinGeckoDetailedCoin
+//!          ├── convert → CryptoDetailedData { social, technical }
+//!          └── collect → CoinGeckoDetailsOutput
+//! ```
+//!
+//! # Concurrency and rate limiting
+//!
+//! - A [`Semaphore`] limits concurrent API requests to
+//!   [`DetailsLoaderConfig::max_concurrent`] (default: 5).
+//! - After each **API call** (not cache hit), a delay of
+//!   [`retry_delay_ms`](DetailsLoaderConfig::retry_delay_ms) milliseconds
+//!   is applied to respect CoinGecko rate limits.
+//! - Responses are cached via [`CryptoCache`] with a 7-day TTL.
+//!
+//! # API key detection
+//!
+//! The loader auto-detects the API tier from the key prefix:
+//! - Keys starting with `"CG-"` → CoinGecko Pro API (`pro-api.coingecko.com`).
+//! - All other keys → CoinGecko Demo API (`api.coingecko.com`).
+//!
+//! # Type inventory
+//!
+//! | Type                       | Role                                            |
+//! |----------------------------|-------------------------------------------------|
+//! | [`CoinGeckoDetailsLoader`] | The loader itself — configured, then call `load()` |
+//! | [`DetailsLoaderConfig`]    | Concurrency, delay, and progress-bar settings    |
+//! | [`CoinInfo`]               | Input: which coins to load (sid + coingecko_id)  |
+//! | [`CoinGeckoDetailsOutput`] | Output: loaded data + error/cache/API counters   |
+//! | [`CoinGeckoDetailedCoin`]  | Raw deserialized CoinGecko JSON response         |
+//! | [`CoinGeckoLinks`]         | Nested links block (homepage, social, repos)     |
+//! | [`CommunityData`]          | Nested follower/subscriber counts                |
+//! | [`DeveloperData`]          | Nested GitHub activity metrics                   |
+//! | [`PublicInterestStats`]    | Nested web visibility metrics                    |
+//! | [`CryptoDetailedData`]     | Normalized output pairing social + technical     |
+//! | [`CryptoSocialData`]       | Flat social data ready for `crypto_social` table |
+//! | [`CryptoTechnicalData`]    | Flat technical data ready for `crypto_technical` table |
 
 use crate::error::CryptoLoaderError;
 use crate::traits::CryptoCache;
@@ -18,7 +67,18 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info};
 
-/// CoinGecko detailed coin response
+// ─── CoinGecko API response types ──────────────────────────────────────────
+
+/// Raw response from the CoinGecko `/coins/{id}` endpoint.
+///
+/// All fields use `#[serde(default)]` so that missing keys in the JSON
+/// produce `None` or empty collections rather than deserialization errors.
+/// This makes the loader resilient to partial API responses.
+///
+/// Fields include identity (`id`, `symbol`, `name`), nested sub-objects
+/// ([`CoinGeckoLinks`], [`CommunityData`], [`DeveloperData`],
+/// [`PublicInterestStats`]), composite scores, platform/token information,
+/// genesis date, and CoinGecko categories.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CoinGeckoDetailedCoin {
   #[serde(default)]
@@ -73,6 +133,11 @@ pub struct CoinGeckoDetailedCoin {
   pub categories: Vec<String>,
 }
 
+/// Social media URLs, project homepage, whitepaper, blockchain explorers,
+/// and repository links from the CoinGecko response.
+///
+/// `repos_url` is a `HashMap<String, Vec<String>>` where the key is
+/// the platform name (e.g., `"github"`) and the value is a list of URLs.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct CoinGeckoLinks {
   #[serde(default)]
@@ -109,6 +174,7 @@ pub struct CoinGeckoLinks {
   pub telegram_channel_identifier: Option<String>,
 }
 
+/// Community / social media follower and subscriber counts.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct CommunityData {
   #[serde(default)]
@@ -127,6 +193,7 @@ pub struct CommunityData {
   pub facebook_likes: Option<i32>,
 }
 
+/// GitHub development activity metrics from CoinGecko.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct DeveloperData {
   #[serde(default)]
@@ -154,6 +221,7 @@ pub struct DeveloperData {
   pub commit_count_4_weeks: Option<i32>,
 }
 
+/// Web visibility metrics: Alexa rank and Bing search matches.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct PublicInterestStats {
   #[serde(default)]
@@ -163,7 +231,10 @@ pub struct PublicInterestStats {
   pub bing_matches: Option<i32>,
 }
 
-/// Output data combining social and technical info
+// ─── Normalized output types ────────────────────────────────────────────────
+
+/// Combined social and technical data for a single coin, ready for
+/// database insertion into the `crypto_social` and `crypto_technical` tables.
 #[derive(Debug)]
 pub struct CryptoDetailedData {
   pub sid: i64,
@@ -172,6 +243,14 @@ pub struct CryptoDetailedData {
   pub technical: CryptoTechnicalData,
 }
 
+/// Flat social/community data extracted from [`CoinGeckoDetailedCoin`].
+///
+/// URLs are derived from nested [`CoinGeckoLinks`] fields — e.g.,
+/// `telegram_url` is constructed as `https://t.me/{identifier}` from the
+/// `telegram_channel_identifier` link field.
+///
+/// `blockchain_sites` is stored as a `serde_json::Value` array of explorer
+/// URLs for flexible downstream consumption.
 #[derive(Debug)]
 pub struct CryptoSocialData {
   pub website_url: Option<String>,
@@ -197,6 +276,20 @@ pub struct CryptoSocialData {
   pub blockchain_sites: Option<serde_json::Value>,
 }
 
+/// Flat blockchain and developer data extracted from [`CoinGeckoDetailedCoin`].
+///
+/// # Category flags
+///
+/// The `is_*` boolean flags are derived from the CoinGecko `categories`
+/// array using keyword matching (e.g., `"defi"` → `is_defi`). `is_wrapped`
+/// is derived from the coin name containing `"wrapped"`.
+///
+/// # Platform detection
+///
+/// `blockchain_platform` and `token_standard` are extracted from the
+/// `platforms` map. Known platform-to-standard mappings include:
+/// `ethereum` → `ERC-20`, `binance-smart-chain` → `BEP-20`,
+/// `solana` → `SPL`, `polygon-pos` → `Polygon`, `avalanche` → `Avalanche C-Chain`.
 #[derive(Debug)]
 pub struct CryptoTechnicalData {
   pub blockchain_platform: Option<String>,
@@ -221,14 +314,20 @@ pub struct CryptoTechnicalData {
   pub genesis_date: Option<NaiveDate>,
 }
 
-/// Result from fetching coin details, tracking cache vs API
+/// Internal result from a single coin fetch, tracking whether the data
+/// came from the cache (no rate-limit delay needed) or from the live API.
 #[derive(Debug)]
 struct FetchResult {
   coin: CoinGeckoDetailedCoin,
   from_cache: bool,
 }
 
-/// Input for coin details loading
+// ─── Input / output / config ────────────────────────────────────────────────
+
+/// Input specifying which coin to load details for.
+///
+/// `sid` is the internal security ID, `coingecko_id` is the CoinGecko
+/// slug (e.g., `"bitcoin"`), and `symbol` is the ticker (e.g., `"BTC"`).
 #[derive(Debug, Clone)]
 pub struct CoinInfo {
   pub sid: i64,
@@ -236,7 +335,10 @@ pub struct CoinInfo {
   pub coingecko_id: String,
 }
 
-/// Output from loading coin details
+/// Aggregated result from a [`CoinGeckoDetailsLoader::load`] call.
+///
+/// Reports total coins attempted, how many succeeded, error count,
+/// cache hit vs. API call breakdown, and the actual loaded data.
 #[derive(Debug)]
 pub struct CoinGeckoDetailsOutput {
   pub total_coins: usize,
@@ -247,11 +349,22 @@ pub struct CoinGeckoDetailsOutput {
   pub data: Vec<CryptoDetailedData>,
 }
 
-/// Configuration for the details loader
+/// Configuration for [`CoinGeckoDetailsLoader`].
+///
+/// # Defaults
+///
+/// | Field            | Default | Description                                |
+/// |------------------|---------|--------------------------------------------|
+/// | `max_concurrent` | `5`     | Max simultaneous API requests (semaphore)  |
+/// | `retry_delay_ms` | `200`   | Delay after each API call (ms)             |
+/// | `show_progress`  | `true`  | Show an `indicatif` progress bar           |
 #[derive(Debug, Clone)]
 pub struct DetailsLoaderConfig {
+  /// Maximum number of concurrent API requests.
   pub max_concurrent: usize,
+  /// Delay in milliseconds between API calls (rate-limit protection).
   pub retry_delay_ms: u64,
+  /// Whether to display a terminal progress bar during loading.
   pub show_progress: bool,
 }
 
@@ -261,7 +374,15 @@ impl Default for DetailsLoaderConfig {
   }
 }
 
-/// Loader for CoinGecko detailed coin data
+// ─── Loader ─────────────────────────────────────────────────────────────────
+
+/// Async loader that fetches detailed coin data from the CoinGecko API.
+///
+/// Constructed with [`new`](Self::new), optionally configured with
+/// [`with_cache`](Self::with_cache), then invoked via [`load`](Self::load).
+///
+/// Implements `Clone` (shares the semaphore and cache via `Arc`) so it
+/// can be moved into concurrent tasks.
 pub struct CoinGeckoDetailsLoader {
   api_key: String,
   semaphore: Arc<Semaphore>,
@@ -270,6 +391,9 @@ pub struct CoinGeckoDetailsLoader {
 }
 
 impl CoinGeckoDetailsLoader {
+  /// Creates a new loader with the given CoinGecko API key and config.
+  ///
+  /// The semaphore is sized to `config.max_concurrent`.
   pub fn new(api_key: String, config: DetailsLoaderConfig) -> Self {
     Self {
       api_key,
@@ -279,12 +403,23 @@ impl CoinGeckoDetailsLoader {
     }
   }
 
+  /// Enables HTTP response caching. Builder pattern — returns `self`.
+  ///
+  /// Cached responses use a 7-day TTL and are keyed by
+  /// `coingecko_http_details_{coingecko_id}`.
   pub fn with_cache(mut self, cache: Arc<dyn CryptoCache>) -> Self {
     self.cache = Some(cache);
     self
   }
 
-  /// Load details for multiple coins
+  /// Loads detailed data for a batch of coins concurrently.
+  ///
+  /// For each [`CoinInfo`], checks the cache first, then falls back to
+  /// an API call (with semaphore-limited concurrency and post-call delay).
+  /// Results are collected into a [`CoinGeckoDetailsOutput`] with counters
+  /// for loaded/errors/cache-hits/API-calls.
+  ///
+  /// A progress bar is shown when `config.show_progress` is `true`.
   pub async fn load(
     &self,
     coins: Vec<CoinInfo>,
@@ -405,7 +540,10 @@ impl CoinGeckoDetailsLoader {
     })
   }
 
-  /// Fetch detailed coin data with HTTP-level caching
+  /// Fetches a single coin's detailed data, using the cache when available.
+  ///
+  /// Cache key format: `coingecko_http_details_{coingecko_id}` with 7-day TTL.
+  /// Auto-detects Pro vs. Demo API tier from the API key prefix.
   async fn fetch_coin_details(
     &self,
     client: &Client,
@@ -474,7 +612,11 @@ impl CoinGeckoDetailsLoader {
     Ok(FetchResult { coin, from_cache: false })
   }
 
-  /// Convert CoinGecko response to our data models
+  /// Converts a raw [`CoinGeckoDetailedCoin`] into a normalized
+  /// [`CryptoDetailedData`] with separate social and technical sections.
+  ///
+  /// Performs URL construction (Telegram, Facebook), platform/token-standard
+  /// detection, genesis date parsing, and category-to-boolean flag mapping.
   fn convert_to_crypto_data(
     sid: i64,
     coingecko_id: String,
@@ -562,6 +704,8 @@ impl CoinGeckoDetailsLoader {
     CryptoDetailedData { sid, coingecko_id, social, technical }
   }
 
+  /// Extracts the primary blockchain platform and its token standard from
+  /// the CoinGecko `platforms` map. Returns `(None, None)` for native coins.
   fn extract_platform_info(
     platforms: &HashMap<String, Option<String>>,
   ) -> (Option<String>, Option<String>) {
@@ -589,6 +733,7 @@ impl CoinGeckoDetailsLoader {
     (platform_name, token_standard)
   }
 
+  /// Returns `true` if any category string contains any of the keywords.
   fn has_category(categories: &[String], keywords: &[&str]) -> bool {
     categories.iter().any(|cat| keywords.iter().any(|keyword| cat.contains(keyword)))
   }

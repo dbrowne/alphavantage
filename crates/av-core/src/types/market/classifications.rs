@@ -28,11 +28,75 @@
  */
 
 //! Market classification types: sectors, market cap, and top movers.
+//!
+//! This module defines three independent enum types used throughout `av_core`
+//! for classifying market data:
+//!
+//! 1. [`TopType`] — Categorizes "top mover" queries (gainers, losers,
+//!    most active by volume). Used as a query parameter when fetching
+//!    market movers from the AlphaVantage API.
+//!
+//! 2. [`Sector`] — Represents the GICS-style market sector for an equity
+//!    (Technology, Healthcare, etc.). Used for portfolio analysis,
+//!    sector-based filtering, and computing analytical metrics like
+//!    typical P/E ranges.
+//!
+//! 3. [`MarketCap`] — Classifies a company by market capitalization tier
+//!    (NanoCap through MegaCap). Used for portfolio segmentation and
+//!    risk analysis.
+//!
+//! All three types implement the standard derive set
+//! (`Debug`/`Clone`/`Copy`/`PartialEq`/`Eq`/`Hash`/`Serialize`/`Deserialize`)
+//! for use as map keys and JSON-serializable values, plus `Display` and
+//! `FromStr` for human-readable round-tripping.
+//!
+//! ## String Parsing Strategy
+//!
+//! `TopType::from_str` and `Sector::from_str` both **normalize input** by
+//! lowercasing/uppercasing and stripping spaces, dashes, and underscores
+//! before matching. This makes parsing tolerant of variations like
+//! `"Top Gainers"`, `"top-gainers"`, `"TOP_GAINERS"`, all of which parse
+//! to `TopType::Gainers`.
+//!
+//! - `TopType::from_str` returns `Err(String)` for unrecognized input
+//! - `Sector::from_str` returns `Ok(Sector::Other)` for unrecognized input
+//!   (graceful degradation rather than failure)
+//!
+//! `MarketCap` does not implement `FromStr` — instead it provides
+//! [`MarketCap::from_value`] for classification from a numeric USD value.
 
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-/// Top movers type (gainers, losers, most active)
+/// Top movers query category, used to fetch lists of best/worst-performing
+/// or most-traded securities from the AlphaVantage API.
+///
+/// # Variants
+///
+/// - [`Gainers`](TopType::Gainers) — Stocks with the largest positive price
+///   change in the trading session.
+/// - [`Losers`](TopType::Losers) — Stocks with the largest negative price
+///   change in the trading session.
+/// - [`MostActive`](TopType::MostActive) — Stocks with the highest trading
+///   volume in the session.
+///
+/// # `Display` Format
+///
+/// Outputs the AlphaVantage API parameter form (lowercase with underscores):
+/// `"gainers"`, `"losers"`, `"most_active"`.
+///
+/// # `FromStr` Aliases
+///
+/// Input is normalized (lowercased, whitespace/dashes/underscores stripped)
+/// before matching. Accepted aliases:
+///
+/// | Variant      | Aliases                                  |
+/// |--------------|------------------------------------------|
+/// | `Gainers`    | `gainers`, `topgainers`, `winners`       |
+/// | `Losers`     | `losers`, `toplosers`, `decliners`       |
+/// | `MostActive` | `mostactive`, `active`, `volume`         |
+///
+/// Returns `Err(String)` for unrecognized input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TopType {
   Gainers,
@@ -63,7 +127,62 @@ impl FromStr for TopType {
   }
 }
 
-/// Market sector classification
+/// GICS-style market sector classification.
+///
+/// Represents the 11 standard Global Industry Classification Standard (GICS)
+/// sectors plus an `Other` catch-all for unrecognized or non-standard
+/// classifications.
+///
+/// # Variants
+///
+/// - `Technology` — Software, hardware, semiconductors, IT services
+/// - `Healthcare` — Pharmaceuticals, biotech, medical devices, providers
+/// - `FinancialServices` — Banks, insurance, capital markets, fintech
+/// - `ConsumerDiscretionary` — Retail, automotive, leisure, apparel
+/// - `ConsumerStaples` — Food, beverages, household products
+/// - `Industrials` — Aerospace, machinery, transportation, construction
+/// - `Energy` — Oil & gas, equipment, services
+/// - `Materials` — Chemicals, mining, metals, paper
+/// - `RealEstate` — REITs, real estate management
+/// - `Utilities` — Electric, gas, water utilities
+/// - `CommunicationServices` — Telecom, media, entertainment
+/// - `Other` — Catch-all for unrecognized or non-standard sectors
+///
+/// # Cyclical vs. Defensive
+///
+/// Sectors are categorized for analytical purposes:
+/// - **Cyclical** (sensitive to economic cycles): Technology,
+///   ConsumerDiscretionary, Industrials, Energy, Materials, FinancialServices
+/// - **Defensive** (relatively stable across cycles): Healthcare,
+///   ConsumerStaples, Utilities
+///
+/// See [`Sector::is_cyclical`] and [`Sector::is_defensive`].
+///
+/// # `Display` Format
+///
+/// Outputs the human-readable form with spaces:
+/// `"Technology"`, `"Financial Services"`, `"Consumer Discretionary"`, etc.
+///
+/// # `FromStr` Aliases
+///
+/// Input is normalized (uppercased, whitespace/dashes/underscores stripped).
+/// Accepts both abbreviations and common alternative names. Examples:
+///
+/// | Variant                | Accepted Aliases                                            |
+/// |------------------------|-------------------------------------------------------------|
+/// | `Technology`           | `TECHNOLOGY`, `TECH`, `IT`, `INFORMATIONTECHNOLOGY`         |
+/// | `Healthcare`           | `HEALTHCARE`, `HEALTH`, `MEDICAL`, `PHARMA`, `PHARMACEUTICAL` |
+/// | `FinancialServices`    | `FINANCIALSERVICES`, `FINANCIAL`, `FINANCE`, `BANKING`, `FINTECH` |
+/// | `ConsumerDiscretionary`| `CONSUMERDISCRETIONARY`, `CONSUMER`, `RETAIL`, `DISCRETIONARY` |
+/// | `ConsumerStaples`      | `CONSUMERSTAPLES`, `STAPLES`, `DEFENSIVE`                   |
+/// | `Industrials`          | `INDUSTRIALS`, `INDUSTRIAL`, `MANUFACTURING`                |
+/// | `Energy`               | `ENERGY`, `OIL`, `GAS`, `PETROLEUM`                         |
+/// | `Materials`            | `MATERIALS`, `BASIC`, `BASICMATERIALS`, `MINING`            |
+/// | `RealEstate`           | `REALESTATE`, `PROPERTY`, `REIT`                            |
+/// | `Utilities`            | `UTILITIES`, `UTILITY`, `POWER`, `ELECTRIC`                 |
+/// | `CommunicationServices`| `COMMUNICATIONSERVICES`, `COMMUNICATION`, `TELECOM`, `MEDIA`|
+///
+/// Unrecognized inputs return `Ok(Sector::Other)` (never an error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Sector {
   Technology,
@@ -127,7 +246,18 @@ impl FromStr for Sector {
 }
 
 impl Sector {
-  /// Check if this is a cyclical sector
+  /// Returns `true` if this sector is **cyclical** — meaning its performance
+  /// is sensitive to broader economic cycles (expansions and recessions).
+  ///
+  /// Cyclical sectors typically outperform during economic expansion and
+  /// underperform during contractions. They are: `Technology`,
+  /// `ConsumerDiscretionary`, `Industrials`, `Energy`, `Materials`,
+  /// and `FinancialServices`.
+  ///
+  /// Note: A sector is either cyclical or defensive, but `Other`,
+  /// `RealEstate`, and `CommunicationServices` belong to neither category
+  /// in this classification (they return `false` from both
+  /// `is_cyclical` and `is_defensive`).
   pub fn is_cyclical(&self) -> bool {
     matches!(
       self,
@@ -140,12 +270,39 @@ impl Sector {
     )
   }
 
-  /// Check if this is a defensive sector
+  /// Returns `true` if this sector is **defensive** — meaning its performance
+  /// is relatively stable across economic cycles.
+  ///
+  /// Defensive sectors provide essential goods and services that consumers
+  /// continue to purchase during recessions. They are: `Healthcare`,
+  /// `ConsumerStaples`, and `Utilities`.
   pub fn is_defensive(&self) -> bool {
     matches!(self, Sector::Healthcare | Sector::ConsumerStaples | Sector::Utilities)
   }
 
-  /// Get typical P/E ratio range for the sector
+  /// Returns the **typical (min, max) P/E ratio range** for this sector,
+  /// useful for relative valuation analysis.
+  ///
+  /// These ranges represent rule-of-thumb historical norms — actual P/E
+  /// ratios vary significantly based on growth rate, interest rates, and
+  /// market sentiment. They are intended as a quick reference for whether
+  /// a stock's P/E is unusually high or low for its sector, not as
+  /// strict valuation bounds.
+  ///
+  /// | Sector                  | Min P/E | Max P/E |
+  /// |-------------------------|---------|---------|
+  /// | `Technology`            | 15.0    | 35.0    |
+  /// | `Healthcare`            | 12.0    | 25.0    |
+  /// | `FinancialServices`     | 8.0     | 15.0    |
+  /// | `ConsumerDiscretionary` | 12.0    | 25.0    |
+  /// | `ConsumerStaples`       | 15.0    | 25.0    |
+  /// | `Industrials`           | 12.0    | 20.0    |
+  /// | `Energy`                | 8.0     | 15.0    |
+  /// | `Materials`             | 10.0    | 18.0    |
+  /// | `RealEstate`            | 15.0    | 30.0    |
+  /// | `Utilities`             | 12.0    | 20.0    |
+  /// | `CommunicationServices` | 10.0    | 25.0    |
+  /// | `Other`                 | 10.0    | 25.0    |
   pub fn typical_pe_range(&self) -> (f64, f64) {
     match self {
       Sector::Technology => (15.0, 35.0),
@@ -164,7 +321,38 @@ impl Sector {
   }
 }
 
-/// Market cap classification
+/// Market capitalization tier classification.
+///
+/// Categorizes a company by its market cap into one of six tiers ranging
+/// from `NanoCap` (under $50M) to `MegaCap` (over $200B). Used for
+/// portfolio segmentation, risk analysis, and screening.
+///
+/// # Tier Boundaries (USD)
+///
+/// | Variant     | Range                              |
+/// |-------------|------------------------------------|
+/// | `NanoCap`   | `< $50M`                           |
+/// | `MicroCap`  | `$50M – $300M`                     |
+/// | `SmallCap`  | `$300M – $2B`                      |
+/// | `MidCap`    | `$2B – $10B`                       |
+/// | `LargeCap`  | `$10B – $200B`                     |
+/// | `MegaCap`   | `> $200B`                          |
+///
+/// All boundaries are **half-open**: a value of exactly `$50M` is `MicroCap`,
+/// not `NanoCap`. See [`MarketCap::from_value`] for the classification logic
+/// and [`MarketCap::range`] for tier boundary access.
+///
+/// # No `FromStr`
+///
+/// Unlike [`TopType`] and [`Sector`], `MarketCap` does not implement `FromStr`.
+/// Classification is done numerically via [`from_value`](MarketCap::from_value)
+/// from a USD value, since string representations of market cap tiers are
+/// rarely standardized in financial data feeds.
+///
+/// # `Display` Format
+///
+/// Outputs the human-readable form with a space:
+/// `"Nano Cap"`, `"Micro Cap"`, `"Small Cap"`, `"Mid Cap"`, `"Large Cap"`, `"Mega Cap"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MarketCap {
   /// Nano cap (< $50M)
@@ -195,7 +383,36 @@ impl std::fmt::Display for MarketCap {
 }
 
 impl MarketCap {
-  /// Classify market cap from value in USD
+  /// Classifies a market capitalization value (in USD) into the appropriate tier.
+  ///
+  /// Uses **half-open intervals** — a value equal to a tier boundary belongs
+  /// to the higher tier (e.g., exactly `$50_000_000.0` is `MicroCap`, not `NanoCap`).
+  ///
+  /// # Arguments
+  ///
+  /// * `market_cap_usd` — Market capitalization in US dollars (not millions or billions).
+  ///
+  /// # Returns
+  ///
+  /// The matching [`MarketCap`] tier:
+  ///
+  /// | Range                                  | Tier        |
+  /// |----------------------------------------|-------------|
+  /// | `< 50_000_000`                         | `NanoCap`   |
+  /// | `< 300_000_000`                        | `MicroCap`  |
+  /// | `< 2_000_000_000`                      | `SmallCap`  |
+  /// | `< 10_000_000_000`                     | `MidCap`    |
+  /// | `< 200_000_000_000`                    | `LargeCap`  |
+  /// | `>= 200_000_000_000`                   | `MegaCap`   |
+  ///
+  /// # Example
+  ///
+  /// ```
+  /// use av_core::types::market::MarketCap;
+  /// assert_eq!(MarketCap::from_value(100_000_000.0), MarketCap::MicroCap);
+  /// assert_eq!(MarketCap::from_value(50_000_000.0),  MarketCap::MicroCap); // boundary
+  /// assert_eq!(MarketCap::from_value(2_500_000_000_000.0), MarketCap::MegaCap);
+  /// ```
   pub fn from_value(market_cap_usd: f64) -> Self {
     if market_cap_usd < 50_000_000.0 {
       MarketCap::NanoCap
@@ -212,7 +429,25 @@ impl MarketCap {
     }
   }
 
-  /// Get the range for this market cap category
+  /// Returns the `(min, max)` USD range for this market cap tier.
+  ///
+  /// The first element is the inclusive lower bound; the second is the
+  /// exclusive upper bound. The upper bound is `None` for the unbounded
+  /// `MegaCap` tier.
+  ///
+  /// # Returns
+  ///
+  /// | Tier        | `min`             | `max`                       |
+  /// |-------------|-------------------|-----------------------------|
+  /// | `NanoCap`   | `0.0`             | `Some(50_000_000.0)`        |
+  /// | `MicroCap`  | `50_000_000.0`    | `Some(300_000_000.0)`       |
+  /// | `SmallCap`  | `300_000_000.0`   | `Some(2_000_000_000.0)`     |
+  /// | `MidCap`    | `2_000_000_000.0` | `Some(10_000_000_000.0)`    |
+  /// | `LargeCap`  | `10_000_000_000.0`| `Some(200_000_000_000.0)`   |
+  /// | `MegaCap`   | `200_000_000_000.0` | `None` (unbounded)        |
+  ///
+  /// This is the inverse of [`from_value`](MarketCap::from_value): for any
+  /// value in `[min, max)`, `from_value(v)` returns this tier.
   pub fn range(&self) -> (f64, Option<f64>) {
     match self {
       MarketCap::NanoCap => (0.0, Some(50_000_000.0)),
@@ -224,12 +459,24 @@ impl MarketCap {
     }
   }
 
-  /// Check if this is considered a large company
+  /// Returns `true` if this tier represents a **large company** —
+  /// either [`LargeCap`](MarketCap::LargeCap) or [`MegaCap`](MarketCap::MegaCap).
+  ///
+  /// Corresponds to market caps of `$10B` or more. `MidCap` is **not**
+  /// considered large by this classification.
   pub fn is_large(&self) -> bool {
     matches!(self, MarketCap::LargeCap | MarketCap::MegaCap)
   }
 
-  /// Check if this is considered a small company
+  /// Returns `true` if this tier represents a **small company** —
+  /// [`NanoCap`](MarketCap::NanoCap), [`MicroCap`](MarketCap::MicroCap),
+  /// or [`SmallCap`](MarketCap::SmallCap).
+  ///
+  /// Corresponds to market caps under `$2B`. `MidCap` is **not** considered
+  /// small by this classification.
+  ///
+  /// Note: `is_large()` and `is_small()` are **not exhaustive** — `MidCap`
+  /// returns `false` from both, representing a neutral middle tier.
   pub fn is_small(&self) -> bool {
     matches!(self, MarketCap::NanoCap | MarketCap::MicroCap | MarketCap::SmallCap)
   }

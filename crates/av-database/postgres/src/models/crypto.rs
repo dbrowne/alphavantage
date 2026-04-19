@@ -27,6 +27,47 @@
  * SOFTWARE.
  */
 
+//! Diesel models for cryptocurrency fundamental data.
+//!
+//! This module contains database models for storing and querying cryptocurrency
+//! information across five normalized tables:
+//!
+//! | Table                    | Model                    | Purpose                                        |
+//! |--------------------------|--------------------------|------------------------------------------------|
+//! | `crypto_overview_basic`  | [`CryptoOverviewBasic`]  | Core identity and market data (price, cap, supply) |
+//! | `crypto_overview_metrics`| [`CryptoOverviewMetrics`]| Price change percentages, ATH/ATL, ROI           |
+//! | `crypto_technical`       | [`CryptoTechnical`]      | Blockchain parameters and GitHub activity        |
+//! | `crypto_social`          | [`CryptoSocial`]         | Community links, follower counts, scores         |
+//! | `crypto_api_map`         | [`CryptoApiMap`]         | External API identifier mapping (CoinGecko, CoinPaprika) |
+//!
+//! # Architecture
+//!
+//! The data is split across multiple tables to separate concerns and allow
+//! independent update cadences — e.g., social metrics may be refreshed less
+//! frequently than price data. All tables share the same `sid` (security ID)
+//! primary key, which references the `symbols` table.
+//!
+//! # Struct conventions
+//!
+//! - **Query types** (e.g., `CryptoOverviewBasic`) derive `Queryable`, `Selectable`,
+//!   `Identifiable`, `Serialize`, `Deserialize` for ORM reads and JSON serialization.
+//! - **Insertable types** come in two flavors:
+//!   - *Borrowed* (e.g., `NewCryptoOverviewBasic<'a>`) — borrows fields by reference
+//!     for efficient batch inserts.
+//!   - *Owned* (e.g., `NewCryptoTechnical`) — owns all data for use when the struct
+//!     must outlive the source.
+//! - [`CryptoOverviewFull`] is a convenience wrapper that pairs `Basic` + `Metrics`
+//!   for presentation without a database table of its own.
+//!
+//! # Helper functions
+//!
+//! Two async helper functions are provided for external API discovery:
+//! - [`discover_coingecko_id`] — resolves a ticker symbol to a CoinGecko coin ID.
+//! - [`discover_coinpaprika_id`] — resolves a ticker symbol to a CoinPaprika coin ID.
+//!
+//! These are used by the data ingestion pipeline to populate the `crypto_api_map`
+//! table.
+
 use crate::schema::{
   crypto_api_map, crypto_overview_basic, crypto_overview_metrics, crypto_social, crypto_technical,
 };
@@ -35,6 +76,30 @@ use chrono::{DateTime, NaiveDate, Utc};
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
+// ─── Crypto Overview (Basic) ────────────────────────────────────────────────
+
+/// Core cryptocurrency overview data: identity, market capitalization, price,
+/// and supply information.
+///
+/// Maps to the `crypto_overview_basic` table. Primary key is `sid` (security ID),
+/// linking back to the `symbols` table.
+///
+/// # Key fields
+///
+/// | Field                    | Type                 | Description                                    |
+/// |--------------------------|----------------------|------------------------------------------------|
+/// | `sid`                    | `i64`                | Security ID (FK to `symbols`)                  |
+/// | `symbol` / `name`        | `String`             | Ticker symbol and full project name            |
+/// | `slug`                   | `Option<String>`     | URL-friendly identifier (e.g., `"bitcoin"`)    |
+/// | `market_cap_rank`        | `Option<i32>`        | Global ranking by market capitalization         |
+/// | `market_cap`             | `Option<i64>`        | Total market cap in USD                        |
+/// | `fully_diluted_valuation`| `Option<i64>`        | Market cap assuming max supply is circulating  |
+/// | `current_price`          | `Option<BigDecimal>` | Latest price in USD                            |
+/// | `circulating_supply`     | `Option<BigDecimal>` | Coins currently in circulation                 |
+/// | `total_supply`           | `Option<BigDecimal>` | Total coins that exist (incl. locked/reserved) |
+/// | `max_supply`             | `Option<BigDecimal>` | Hard cap on total coins (e.g., 21M for BTC)    |
+/// | `volume_24h`             | `Option<i64>`        | 24-hour trading volume in USD                  |
+/// | `c_time` / `m_time`      | `DateTime<Utc>`      | Row creation and last-modification timestamps  |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = crypto_overview_basic)]
 #[diesel(primary_key(sid))]
@@ -58,6 +123,25 @@ pub struct CryptoOverviewBasic {
   pub m_time: DateTime<Utc>,
 }
 
+// ─── Crypto Overview (Metrics) ──────────────────────────────────────────────
+
+/// Price-change performance metrics, all-time highs/lows, and ROI data.
+///
+/// Maps to the `crypto_overview_metrics` table. Keyed by `sid` and typically
+/// joined with [`CryptoOverviewBasic`] via [`CryptoOverviewFull`].
+///
+/// # Key fields
+///
+/// | Field                    | Type                 | Description                                     |
+/// |--------------------------|----------------------|-------------------------------------------------|
+/// | `price_change_24h`       | `Option<BigDecimal>` | Absolute price change in the last 24 hours      |
+/// | `price_change_pct_*`     | `Option<BigDecimal>` | Percentage change over 24h, 7d, 14d, 30d, 60d, 200d, 1y |
+/// | `ath` / `ath_date`       | `Option<BigDecimal>` / `Option<DateTime<Utc>>` | All-time high price and when it occurred |
+/// | `ath_change_percentage`  | `Option<BigDecimal>` | Percentage change from ATH to current price     |
+/// | `atl` / `atl_date`       | `Option<BigDecimal>` / `Option<DateTime<Utc>>` | All-time low price and when it occurred  |
+/// | `atl_change_percentage`  | `Option<BigDecimal>` | Percentage change from ATL to current price     |
+/// | `roi_times` / `roi_percentage` | `Option<BigDecimal>` | Return on investment (multiple and percent) |
+/// | `roi_currency`           | `Option<String>`     | Currency the ROI is denominated in              |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = crypto_overview_metrics)]
 #[diesel(primary_key(sid))]
@@ -84,14 +168,27 @@ pub struct CryptoOverviewMetrics {
   pub m_time: DateTime<Utc>,
 }
 
-// Combined view for convenience
+/// Combined view joining [`CryptoOverviewBasic`] and [`CryptoOverviewMetrics`].
+///
+/// This is a **presentation-only struct** — it does not map to a database table.
+/// Construct it by querying both tables separately and pairing the results.
+/// `metrics` is `Option` because a basic record may exist before metrics are
+/// first ingested.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoOverviewFull {
+  /// Core identity and market data.
   pub basic: CryptoOverviewBasic,
+  /// Performance metrics (may be absent for newly-added coins).
   pub metrics: Option<CryptoOverviewMetrics>,
 }
 
-// Insertable structs
+// ─── Insertable structs for Overview tables ─────────────────────────────────
+
+/// Insertable (borrowed) form of [`CryptoOverviewBasic`].
+///
+/// All string and `BigDecimal` fields are borrowed references (`&'a`) for
+/// zero-copy batch inserts. Timestamps (`c_time`, `m_time`) are omitted and
+/// defaulted by the database.
 #[derive(Insertable, Debug)]
 #[diesel(table_name = crypto_overview_basic)]
 pub struct NewCryptoOverviewBasic<'a> {
@@ -112,6 +209,9 @@ pub struct NewCryptoOverviewBasic<'a> {
   pub last_updated: Option<&'a DateTime<Utc>>,
 }
 
+/// Insertable (borrowed) form of [`CryptoOverviewMetrics`].
+///
+/// Timestamps are omitted; the database defaults them on insert.
 #[derive(Insertable, Debug)]
 #[diesel(table_name = crypto_overview_metrics)]
 pub struct NewCryptoOverviewMetrics<'a> {
@@ -135,7 +235,27 @@ pub struct NewCryptoOverviewMetrics<'a> {
   pub roi_percentage: Option<&'a BigDecimal>,
 }
 
-// ===== CryptoTechnical =====
+// ─── Crypto Technical ───────────────────────────────────────────────────────
+
+/// Blockchain technical parameters, GitHub development activity, and
+/// categorical classification flags.
+///
+/// Maps to the `crypto_technical` table. This data changes infrequently
+/// (primarily GitHub stats and block height) and is typically refreshed on
+/// a daily or weekly cadence.
+///
+/// # Field groups
+///
+/// - **Blockchain parameters:** `blockchain_platform`, `token_standard`,
+///   `consensus_mechanism`, `hashing_algorithm`, `block_time_minutes`,
+///   `block_reward`, `block_height`, `hash_rate`, `difficulty`.
+/// - **GitHub activity:** `github_forks`, `github_stars`, `github_subscribers`,
+///   `github_total_issues`, `github_closed_issues`, `github_pull_requests`,
+///   `github_contributors`, `github_commits_4_weeks`.
+/// - **Category flags:** `is_defi`, `is_stablecoin`, `is_nft_platform`,
+///   `is_exchange_token`, `is_gaming`, `is_metaverse`, `is_privacy_coin`,
+///   `is_layer2`, `is_wrapped`.
+/// - **ICO / genesis info:** `genesis_date`, `ico_price`, `ico_date`.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = crypto_technical)]
 #[diesel(primary_key(sid))]
@@ -174,6 +294,12 @@ pub struct CryptoTechnical {
   pub m_time: DateTime<Utc>,
 }
 
+/// Insertable (owned) form of [`CryptoTechnical`].
+///
+/// Unlike the borrowed `NewCrypto*<'a>` structs, this variant owns all data
+/// and includes explicit `c_time` / `m_time` fields for caller-controlled
+/// timestamps. The `is_*` category flags are non-optional `bool` (defaulting
+/// to `false` on insert).
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = crypto_technical)]
 pub struct NewCryptoTechnical {
@@ -211,7 +337,22 @@ pub struct NewCryptoTechnical {
   pub m_time: DateTime<Utc>,
 }
 
-// ===== CryptoSocial =====
+// ─── Crypto Social ──────────────────────────────────────────────────────────
+
+/// Community presence, social media metrics, and composite scoring data.
+///
+/// Maps to the `crypto_social` table. Captures links to official project
+/// channels and follower/subscriber counts from major platforms.
+///
+/// # Field groups
+///
+/// - **URLs:** `website_url`, `whitepaper_url`, `github_url`, `twitter_handle`,
+///   `telegram_url`, `discord_url`, `reddit_url`, `facebook_url`.
+/// - **Follower counts:** `twitter_followers`, `telegram_members`,
+///   `discord_members`, `reddit_subscribers`, `facebook_likes`.
+/// - **Composite scores:** `coingecko_score`, `developer_score`,
+///   `community_score`, `liquidity_score`, `public_interest_score`.
+/// - **Sentiment:** `sentiment_votes_up_pct`, `sentiment_votes_down_pct`.
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = crypto_social)]
 #[diesel(primary_key(sid))]
@@ -241,6 +382,9 @@ pub struct CryptoSocial {
   pub m_time: DateTime<Utc>,
 }
 
+/// Insertable (owned) form of [`CryptoSocial`].
+///
+/// Includes caller-controlled `c_time` / `m_time` timestamps.
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = crypto_social)]
 pub struct NewCryptoSocial {
@@ -269,7 +413,29 @@ pub struct NewCryptoSocial {
   pub m_time: DateTime<Utc>,
 }
 
-// ===== CryptoApiMap =====
+// ─── Crypto API Mapping ─────────────────────────────────────────────────────
+
+/// Maps an internal security ID (`sid`) to an external API's identifier.
+///
+/// Maps to the `crypto_api_map` table with a **composite primary key**
+/// `(sid, api_source)`, allowing one mapping per external API per coin.
+///
+/// Currently supported API sources:
+/// - `"CoinGecko"` — uses the CoinGecko coin list API.
+/// - `"CoinPaprika"` — uses the CoinPaprika coins API.
+///
+/// # Key fields
+///
+/// | Field           | Type                 | Description                                |
+/// |-----------------|----------------------|--------------------------------------------|
+/// | `sid`           | `i64`                | Internal security ID (FK to `symbols`)     |
+/// | `api_source`    | `String`             | External API name (e.g., `"CoinGecko"`)    |
+/// | `api_id`        | `String`             | The ID used by the external API            |
+/// | `api_slug`      | `Option<String>`     | URL slug on the external platform          |
+/// | `api_symbol`    | `Option<String>`     | Symbol as represented by the external API  |
+/// | `rank`          | `Option<i32>`        | Market-cap rank from the external API      |
+/// | `is_active`     | `Option<bool>`       | Whether this mapping is currently valid    |
+/// | `last_verified` | `Option<DateTime<Utc>>` | When the mapping was last confirmed     |
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone, Serialize, Deserialize)]
 #[diesel(table_name = crypto_api_map)]
 #[diesel(primary_key(sid, api_source))]
@@ -286,6 +452,9 @@ pub struct CryptoApiMap {
   pub m_time: DateTime<Utc>,
 }
 
+/// Insertable (owned) form of [`CryptoApiMap`].
+///
+/// Includes caller-controlled `c_time` / `m_time` and `last_verified` fields.
 #[derive(Insertable, Debug)]
 #[diesel(table_name = crypto_api_map)]
 pub struct NewCryptoApiMap {
@@ -301,8 +470,16 @@ pub struct NewCryptoApiMap {
   pub m_time: DateTime<Utc>,
 }
 
+/// Synchronous query methods for [`CryptoApiMap`].
+///
+/// All methods take a `&mut PgConnection` and execute synchronously. These are
+/// intended for CLI tools and migration scripts; for async service code, use
+/// the corresponding `diesel-async` repository layer instead.
 impl CryptoApiMap {
-  /// Get API ID for a specific source and symbol (SYNC version)
+  /// Returns the external API ID for a given security and API source.
+  ///
+  /// Filters to active mappings only (`is_active = true`). Returns `None`
+  /// if no active mapping exists for the `(sid, api_source)` pair.
   pub fn get_api_id(
     conn: &mut PgConnection,
     sid_param: i64,
@@ -319,7 +496,10 @@ impl CryptoApiMap {
       .optional()
   }
 
-  /// Get all API mappings for a symbol (SYNC version)
+  /// Returns all active `(api_source, api_id)` pairs for a given security.
+  ///
+  /// Useful for iterating over all external APIs that have a mapping for
+  /// a particular coin.
   pub fn get_all_mappings(
     conn: &mut PgConnection,
     sid_param: i64,
@@ -333,7 +513,11 @@ impl CryptoApiMap {
       .load::<(String, String)>(conn)
   }
 
-  /// Update or insert API mapping (SYNC version)
+  /// Inserts a new API mapping or updates an existing one (upsert).
+  ///
+  /// Uses Diesel's `on_conflict(...).do_update()` on the `(sid, api_source)`
+  /// composite key. On conflict, all fields except `sid`, `api_source`, and
+  /// `c_time` are updated, and `m_time` is set to `Utc::now()`.
   pub fn upsert_mapping(
     conn: &mut PgConnection,
     sid_param: i64,
@@ -377,8 +561,15 @@ impl CryptoApiMap {
     Ok(())
   }
 
-  /// Get cryptocurrencies that need API mapping for a specific source
-  /// Uses crypto_markets to determine if symbol is actively traded
+  /// Returns actively-traded crypto symbols that lack an API mapping for
+  /// the given source.
+  ///
+  /// Performs a three-table join: `symbols` → `crypto_markets` (inner, to
+  /// confirm the coin is actively traded) → `crypto_api_map` (left, to
+  /// find gaps). Only rows where the left join produces `NULL` (i.e., no
+  /// mapping exists) are returned.
+  ///
+  /// Returns `Vec<(sid, symbol, name)>`.
   pub fn get_symbols_needing_mapping(
     conn: &mut PgConnection,
     api_source_param: &str,
@@ -407,7 +598,11 @@ impl CryptoApiMap {
       .load::<(i64, String, String)>(conn)
   }
 
-  /// Find mapping by symbol and source
+  /// Looks up an active mapping by ticker symbol string and API source.
+  ///
+  /// Joins `crypto_api_map` → `symbols` to resolve the ticker to an `sid`,
+  /// then filters by `api_source` and `is_active`. Returns `None` if no
+  /// active mapping is found.
   pub fn find_by_symbol_and_source(
     conn: &mut PgConnection,
     symbol_param: &str,
@@ -425,7 +620,11 @@ impl CryptoApiMap {
       .optional()
   }
 
-  /// Get stale mappings that need verification
+  /// Returns active mappings whose `last_verified` timestamp is older than
+  /// `days_threshold` days ago (or is `NULL`).
+  ///
+  /// Use this to build a re-verification queue that keeps external API
+  /// mappings fresh.
   pub fn get_stale_mappings(
     conn: &mut PgConnection,
     api_source_param: &str,
@@ -442,7 +641,11 @@ impl CryptoApiMap {
       .load::<Self>(conn)
   }
 
-  /// Get active crypto symbols with their API mappings
+  /// Returns all actively-traded crypto symbols alongside their API mapping
+  /// (if one exists) for a given source.
+  ///
+  /// Returns `Vec<(sid, symbol, name, Option<api_id>)>`. Rows where the
+  /// `Option<api_id>` is `None` represent coins that still need mapping.
   pub fn get_active_cryptos_with_mappings(
     conn: &mut PgConnection,
     api_source_param: &str,
@@ -466,7 +669,11 @@ impl CryptoApiMap {
       .load::<(i64, String, String, Option<String>)>(conn)
   }
 
-  /// Get cryptocurrency summary with market activity
+  /// Builds an aggregate [`CryptoSummary`] with counts of total crypto symbols,
+  /// actively-traded coins, and mappings per external API source.
+  ///
+  /// Executes four `COUNT` queries against `symbols`, `crypto_markets`, and
+  /// `crypto_api_map`.
   pub fn get_crypto_summary(
     conn: &mut PgConnection,
   ) -> Result<CryptoSummary, diesel::result::Error> {
@@ -498,16 +705,50 @@ impl CryptoApiMap {
   }
 }
 
-/// Summary statistics for crypto mappings
+// ─── Summary ────────────────────────────────────────────────────────────────
+
+/// Aggregate statistics for the crypto API mapping pipeline.
+///
+/// Returned by [`CryptoApiMap::get_crypto_summary`]. This is a
+/// presentation-only struct — it does not map to a database table.
+///
+/// # Fields
+///
+/// - `total_cryptos` — number of symbols with `sec_type = "Cryptocurrency"`.
+/// - `active_cryptos` — subset of `total_cryptos` that have at least one
+///   active market in the `crypto_markets` table.
+/// - `mapped_coingecko` — active CoinGecko mappings in `crypto_api_map`.
+/// - `mapped_coinpaprika` — active CoinPaprika mappings in `crypto_api_map`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CryptoSummary {
+  /// Total cryptocurrency symbols in the `symbols` table.
   pub total_cryptos: i64,
+  /// Cryptocurrencies with at least one active market.
   pub active_cryptos: i64,
+  /// Active CoinGecko API mappings.
   pub mapped_coingecko: i64,
+  /// Active CoinPaprika API mappings.
   pub mapped_coinpaprika: i64,
 }
 
-// Helper function to discover CoinGecko ID using their API
+// ─── External API discovery helpers ──────────────────────────────────────────
+
+/// Resolves a cryptocurrency ticker symbol to its CoinGecko coin ID.
+///
+/// Fetches the full CoinGecko coin list (`/api/v3/coins/list`) and performs
+/// a case-insensitive exact match on the `symbol` field. Returns the
+/// CoinGecko `id` string (e.g., `"bitcoin"` for `BTC`).
+///
+/// # Arguments
+///
+/// - `client` — a reusable `reqwest::Client` (connection pooling recommended).
+/// - `symbol` — the ticker to search for (e.g., `"BTC"`). Compared lowercase.
+/// - `api_key` — optional CoinGecko Pro API key. If `None`, the free
+///   (rate-limited) endpoint is used.
+///
+/// # Errors
+///
+/// Returns `Err` on HTTP 429 (rate limit) or any non-success status code.
 pub async fn discover_coingecko_id(
   client: &reqwest::Client,
   symbol: &str,
@@ -542,7 +783,19 @@ pub async fn discover_coingecko_id(
   Ok(None)
 }
 
-// Helper function to discover CoinPaprika ID using their API
+/// Resolves a cryptocurrency ticker symbol to its CoinPaprika coin ID.
+///
+/// Fetches the full CoinPaprika coin list (`/v1/coins`) and performs a
+/// case-insensitive exact match on the `symbol` field. Returns the
+/// CoinPaprika `id` string (e.g., `"btc-bitcoin"` for `BTC`).
+///
+/// CoinPaprika's public API does **not** require an API key but is
+/// rate-limited. Returns `Err` on HTTP 429.
+///
+/// # Arguments
+///
+/// - `client` — a reusable `reqwest::Client`.
+/// - `symbol` — the ticker to search for (e.g., `"BTC"`). Compared uppercase.
 pub async fn discover_coinpaprika_id(
   client: &reqwest::Client,
   symbol: &str,

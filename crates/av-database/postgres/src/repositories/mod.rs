@@ -27,8 +27,53 @@
  * SOFTWARE.
  */
 
-//! Concrete repository implementations for domain entities
+//! Concrete repository implementations for domain entities.
+//!
+//! This module provides domain-specific repository structs that encapsulate
+//! all database access for a particular entity type. Repositories sit between
+//! the application/service layer and the raw Diesel model layer, offering a
+//! clean async API with connection-pool management handled internally.
+//!
+//! # Architecture
+//!
+//! ```text
+//! Application / Service layer
+//!   └──► repositories (this module)
+//!          └──► models     (Diesel structs & raw queries)
+//!                └──► schema   (Diesel table! macros)
+//!                      └──► PostgreSQL / TimescaleDB
+//! ```
+//!
+//! Each repository:
+//! - Holds an `Arc<DbPool>` for thread-safe pool sharing.
+//! - Exposes **async** methods that internally use
+//!   [`tokio::task::spawn_blocking`] to run synchronous Diesel queries.
+//! - Returns [`RepositoryResult<T>`](crate::repository::RepositoryResult)
+//!   (aliased to `Result<T, RepositoryError>`).
+//!
+//! # Relationship to `repository.rs`
+//!
+//! The sibling [`repository`](crate::repository) module defines the shared
+//! infrastructure: [`DbPool`](crate::repository::DbPool),
+//! [`RepositoryError`](crate::repository::RepositoryError),
+//! [`RepositoryResult`](crate::repository::RepositoryResult), and pool
+//! construction helpers. This `repositories` module contains the
+//! entity-specific implementations that use those types.
+//!
+//! # Available repositories
+//!
+//! | Repository            | Entity    | Description                                |
+//! |-----------------------|-----------|--------------------------------------------|
+//! | [`SymbolRepository`]  | `Symbol`  | CRUD, batch insert, existence checks, ingestion queue queries |
+//!
+//! Additional repositories (e.g., for overviews, prices, news) can be added
+//! here following the same pattern established by [`SymbolRepository`].
 
+/// Async repository for [`Symbol`](crate::models::security::Symbol) CRUD
+/// operations: lookup, insert, batch insert, update, existence checks, and
+/// ingestion queue management.
 pub mod symbol_repository;
 
+/// Re-exported for convenience so callers can write
+/// `use repositories::SymbolRepository` instead of the full sub-module path.
 pub use symbol_repository::SymbolRepository;

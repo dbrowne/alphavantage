@@ -28,6 +28,23 @@
  */
 
 //! SosoValue cryptocurrency data provider.
+//!
+//! Fetches cryptocurrency symbols from the SosoValue
+//! `/openapi/v1/data/default/coin/list` endpoint. Requires an API key
+//! passed via the `x-soso-api-key` header.
+//!
+//! # API peculiarities
+//!
+//! - Uses a **POST** request with an empty JSON body (`{}`).
+//! - The response wraps data in a `{ code, msg, data }` envelope where
+//!   `code == 0` indicates success.
+//! - The `currencyName` field contains the **ticker symbol** (e.g., `"BTC"`),
+//!   while `fullName` contains the human-readable name (e.g., `"Bitcoin"`).
+//! - Market-cap rank is **not provided** by this API.
+//!
+//! # Rate limiting
+//!
+//! Rate-limit delay: **500ms**.
 
 use crate::error::CryptoLoaderError;
 use crate::traits::{CryptoCache, CryptoDataProvider};
@@ -40,7 +57,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// SosoValue data provider.
+/// SosoValue data provider — requires API key (`x-soso-api-key`), POST-based.
 pub struct SosoValueProvider {
   pub api_key: Option<String>,
 }

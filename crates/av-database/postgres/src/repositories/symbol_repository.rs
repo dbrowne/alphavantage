@@ -27,7 +27,57 @@
  * SOFTWARE.
  */
 
-//! Repository for symbol operations
+//! Async repository for [`Symbol`] CRUD operations.
+//!
+//! This module wraps synchronous Diesel queries in [`tokio::task::spawn_blocking`]
+//! to provide an async API over a synchronous [`r2d2`] connection pool ([`DbPool`]).
+//! This approach is used instead of `diesel-async` because the repository layer
+//! predates the project's migration to async Diesel.
+//!
+//! # Architecture
+//!
+//! ```text
+//!  caller (async)
+//!    └──► SymbolRepository::method()
+//!           ├── clone Arc<DbPool>
+//!           ├── clone/own string args (to satisfy 'static for spawn_blocking)
+//!           └── spawn_blocking(move || { pool.get()? → diesel query })
+//! ```
+//!
+//! Every method follows this pattern:
+//! 1. `Arc::clone` the pool and convert borrowed args to owned `String`s.
+//! 2. Move everything into a `spawn_blocking` closure.
+//! 3. Acquire a connection from the pool, execute the Diesel query.
+//! 4. Map the `JoinError` from `spawn_blocking` to [`RepositoryError::QueryError`].
+//!
+//! # Available operations
+//!
+//! | Method                     | Description                                      |
+//! |----------------------------|--------------------------------------------------|
+//! | [`find_by_symbol`]         | Look up by ticker string                         |
+//! | [`find_by_sid`]            | Look up by security ID                           |
+//! | [`find_by_type`]           | Filter by `sec_type` with optional limit         |
+//! | [`find_by_region`]         | Filter by `region` with optional limit            |
+//! | [`insert`]                 | Insert a single symbol                            |
+//! | [`insert_batch`]           | Bulk insert with `ON CONFLICT DO NOTHING`         |
+//! | [`update`]                 | Update name and currency for a given `sid`         |
+//! | [`exists`]                 | Check if a ticker exists                           |
+//! | [`find_without_overviews`] | Symbols where `overview = false` (ingestion queue) |
+//! | [`mark_overview_loaded`]   | Set `overview = true` after ingestion              |
+//! | [`count`]                  | Total symbol count                                 |
+//!
+//! [`find_by_symbol`]: SymbolRepository::find_by_symbol
+//! [`find_by_sid`]: SymbolRepository::find_by_sid
+//! [`find_by_type`]: SymbolRepository::find_by_type
+//! [`find_by_region`]: SymbolRepository::find_by_region
+//! [`insert`]: SymbolRepository::insert
+//! [`insert_batch`]: SymbolRepository::insert_batch
+//! [`update`]: SymbolRepository::update
+//! [`exists`]: SymbolRepository::exists
+//! [`find_without_overviews`]: SymbolRepository::find_without_overviews
+//! [`mark_overview_loaded`]: SymbolRepository::mark_overview_loaded
+//! [`count`]: SymbolRepository::count
+//! [`DbPool`]: crate::repository::DbPool
 
 use crate::models::security::{NewSymbol, Symbol};
 use crate::repository::{RepositoryError, RepositoryResult};
@@ -35,17 +85,34 @@ use crate::schema::symbols;
 use diesel::prelude::*;
 use std::sync::Arc;
 
-/// Repository for symbol CRUD operations
+/// Async repository for [`Symbol`] CRUD operations.
+///
+/// Wraps a shared [`DbPool`](crate::repository::DbPool) connection pool
+/// and exposes async methods that internally use `spawn_blocking` to run
+/// synchronous Diesel queries on a dedicated thread.
+///
+/// # Construction
+///
+/// ```rust,no_run
+/// use std::sync::Arc;
+/// use av_database_postgres::repositories::symbol_repository::SymbolRepository;
+///
+/// let pool = Arc::new(/* DbPool */);
+/// let repo = SymbolRepository::new(pool);
+/// ```
 pub struct SymbolRepository {
   pool: Arc<crate::repository::DbPool>,
 }
 
 impl SymbolRepository {
+  /// Creates a new repository backed by the given connection pool.
   pub fn new(pool: Arc<crate::repository::DbPool>) -> Self {
     Self { pool }
   }
 
-  /// Find symbol by symbol string
+  /// Finds a symbol by its ticker string (e.g., `"AAPL"`).
+  ///
+  /// Returns `Ok(None)` if no matching symbol exists.
   pub async fn find_by_symbol(&self, symbol: &str) -> RepositoryResult<Option<Symbol>> {
     let pool = Arc::clone(&self.pool);
     let symbol = symbol.to_string();
@@ -61,7 +128,9 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Find symbol by SID
+  /// Finds a symbol by its security ID (`sid`).
+  ///
+  /// Returns `Ok(None)` if no matching symbol exists.
   pub async fn find_by_sid(&self, sid: i64) -> RepositoryResult<Option<Symbol>> {
     let pool = Arc::clone(&self.pool);
 
@@ -75,7 +144,9 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Find symbols by type
+  /// Returns all symbols of a given security type (e.g., `"Equity"`, `"ETF"`).
+  ///
+  /// An optional `limit` caps the number of returned rows.
   pub async fn find_by_type(
     &self,
     sec_type: &str,
@@ -99,7 +170,9 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Find symbols by region
+  /// Returns all symbols in a given geographic region (e.g., `"United States"`).
+  ///
+  /// An optional `limit` caps the number of returned rows.
   pub async fn find_by_region(
     &self,
     region: &str,
@@ -123,7 +196,11 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Insert a new symbol
+  /// Inserts a single symbol and returns the created row.
+  ///
+  /// Internally converts the borrowed [`NewSymbol`] to an owned
+  /// [`NewSymbolOwned`](crate::models::security::NewSymbolOwned) so it can
+  /// be moved into the `spawn_blocking` closure.
   pub async fn insert(&self, new_symbol: &NewSymbol<'_>) -> RepositoryResult<Symbol> {
     let pool = Arc::clone(&self.pool);
     // Convert borrowed NewSymbol to owned version for async
@@ -141,7 +218,10 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Batch insert symbols
+  /// Bulk-inserts symbols, silently skipping duplicates via
+  /// `ON CONFLICT DO NOTHING`.
+  ///
+  /// Returns the number of rows actually inserted (excludes conflicts).
   pub async fn insert_batch(
     &self,
     new_symbols: Vec<crate::models::security::NewSymbolOwned>,
@@ -163,7 +243,9 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Update symbol
+  /// Updates the `name` and `currency` fields for a given `sid`.
+  ///
+  /// Also bumps `m_time` to `Utc::now()`. Returns the updated row.
   pub async fn update(&self, sid: i64, name: &str, currency: &str) -> RepositoryResult<Symbol> {
     let pool = Arc::clone(&self.pool);
     let name = name.to_string();
@@ -183,7 +265,9 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Check if symbol exists
+  /// Returns `true` if a symbol with the given ticker string exists.
+  ///
+  /// Uses `COUNT(*)` rather than loading the full row, for efficiency.
   pub async fn exists(&self, symbol: &str) -> RepositoryResult<bool> {
     let pool = Arc::clone(&self.pool);
     let symbol = symbol.to_string();
@@ -199,7 +283,11 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Get symbols without overviews (for loading)
+  /// Returns symbols that have not yet had their overview data loaded
+  /// (`overview = false`).
+  ///
+  /// Intended as a work queue for the overview ingestion pipeline. An
+  /// optional `limit` caps the batch size.
   pub async fn find_without_overviews(&self, limit: Option<i64>) -> RepositoryResult<Vec<Symbol>> {
     let pool = Arc::clone(&self.pool);
 
@@ -218,7 +306,10 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Mark symbol as having overview data
+  /// Sets the `overview` flag to `true` for a symbol, indicating that
+  /// overview data has been successfully ingested.
+  ///
+  /// Also bumps `m_time` to `Utc::now()`.
   pub async fn mark_overview_loaded(&self, sid: i64) -> RepositoryResult<()> {
     let pool = Arc::clone(&self.pool);
 
@@ -236,7 +327,7 @@ impl SymbolRepository {
     .map_err(|e| RepositoryError::QueryError(format!("Task join error: {}", e)))?
   }
 
-  /// Count total symbols
+  /// Returns the total number of symbols in the `symbols` table.
   pub async fn count(&self) -> RepositoryResult<i64> {
     let pool = Arc::clone(&self.pool);
 

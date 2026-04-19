@@ -28,79 +28,213 @@
  */
 
 //! Security type definitions and bitmap encoding for security identifiers.
+//!
+//! This module provides two core types:
+//!
+//! - [`SecurityType`] — an enum representing the category of a financial instrument
+//!   (equity, bond, derivative, etc.) with rich metadata methods and bidirectional
+//!   Alpha Vantage API mapping.
+//! - [`SecurityIdentifier`] — a compact, bitmap-encoded identifier that packs both
+//!   the security type and a unique numeric ID into a single `i64` value.
+//!
+//! # Bitmap encoding scheme
+//!
+//! The encoding uses a **variable-length prefix** strategy to maximize the ID space
+//! for high-volume security types while keeping the total width at 64 bits:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │  i64 (64 bits total)                                           │
+//! ├──────────────┬──────────────────────────────────────────────────┤
+//! │ Type prefix  │  Unique ID (remaining bits)                     │
+//! │ (4-6 bits)   │  (58-60 bits)                                   │
+//! └──────────────┴──────────────────────────────────────────────────┘
+//! ```
+//!
+//! | Prefix length | ID bits | Max ID space  | Used for                                           |
+//! |---------------|---------|---------------|----------------------------------------------------|
+//! | 4 bits        | 60 bits | ~1.15 × 10¹⁸ | High-volume: equities, options, futures, ETFs, etc.|
+//! | 5 bits        | 59 bits | ~5.76 × 10¹⁷ | Medium-volume: bonds, crypto, REITs                |
+//! | 6 bits        | 58 bits | ~2.88 × 10¹⁷ | Low-volume: currencies, indexes, commodities       |
+//!
+//! The encoding is designed so that each security type's prefix is **non-overlapping**,
+//! enabling unambiguous decoding by checking 4-bit prefixes first, then 5-bit, then 6-bit.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use av_core::types::market::security_type::{SecurityType, SecurityIdentifier};
+//!
+//! // Encode a security
+//! let sid = SecurityType::encode(SecurityType::Equity, 12345);
+//!
+//! // Decode back
+//! let identifier = SecurityIdentifier::decode(sid).unwrap();
+//! assert_eq!(identifier.security_type, SecurityType::Equity);
+//! assert_eq!(identifier.raw_id, 12345);
+//!
+//! // Category checks
+//! assert!(SecurityType::Equity.is_equity());
+//! assert!(SecurityType::Bond.is_fixed_income());
+//! assert!(SecurityType::Option.is_derivative());
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-// Bit allocation based on typical universe sizes
-// Total: 64 bits (1 bit sign, 63 bits usable)
-// Format: [SecurityType Identifier (4-8 bits)] [Unique ID (remaining bits)]
+// ─── Bitmap type prefix constants ───────────────────────────────────────────
+//
+// Variable-length prefix codes for each security type. Shorter prefixes are
+// assigned to security types with larger universes, maximizing the number of
+// bits available for the unique ID portion.
+//
+// Bit allocation budget:
+//   Total: 64 bits (i64), 1 sign bit unused, 63 bits usable.
+//   Format: [SecurityType prefix (4-6 bits)] [Unique ID (remaining bits)]
 
-// Security type identifiers (using prefix codes for variable length)
-const TYPE_COMMON_STOCK: u8 = 0b0000; // 4 bits - millions of stocks
-const TYPE_PREFERRED: u8 = 0b0001; // 4 bits - tens of thousands
-const TYPE_ETF: u8 = 0b0010; // 4 bits - tens of thousands
-const TYPE_MUTUAL_FUND: u8 = 0b0011; // 4 bits - tens of thousands
-const TYPE_OPTION: u8 = 0b0100; // 4 bits - hundreds of millions
-const TYPE_FUTURE: u8 = 0b0101; // 4 bits - tens of millions
-const TYPE_WARRANT: u8 = 0b0110; // 4 bits - hundreds of thousands
-const TYPE_ADR: u8 = 0b0111; // 4 bits - thousands
+/// 4-bit prefixes — high-volume types (up to 2⁶⁰ unique IDs each).
+const TYPE_COMMON_STOCK: u8 = 0b0000; // Common stock / equities — millions of instruments globally
+const TYPE_PREFERRED: u8 = 0b0001; // Preferred stock — tens of thousands
+const TYPE_ETF: u8 = 0b0010; // Exchange-traded funds — tens of thousands
+const TYPE_MUTUAL_FUND: u8 = 0b0011; // Mutual funds — tens of thousands
+const TYPE_OPTION: u8 = 0b0100; // Options contracts — hundreds of millions (strike × expiry combinations)
+const TYPE_FUTURE: u8 = 0b0101; // Futures contracts — tens of millions
+const TYPE_WARRANT: u8 = 0b0110; // Warrants — hundreds of thousands
+const TYPE_ADR: u8 = 0b0111; // American Depositary Receipts — thousands
 
-// Less common types get longer prefixes
-const TYPE_BOND: u8 = 0b10000; // 5 bits - millions
-const TYPE_GOVT_BOND: u8 = 0b10001; // 5 bits - tens of thousands
-const TYPE_CORP_BOND: u8 = 0b10010; // 5 bits - hundreds of thousands
-const TYPE_MUNI_BOND: u8 = 0b10011; // 5 bits - hundreds of thousands
-const TYPE_CRYPTO: u8 = 0b10100; // 5 bits - tens of thousands
-const TYPE_REIT: u8 = 0b10101; // 5 bits - thousands
+/// 5-bit prefixes — medium-volume types (up to 2⁵⁹ unique IDs each).
+const TYPE_BOND: u8 = 0b10000; // Generic bonds — millions
+const TYPE_GOVT_BOND: u8 = 0b10001; // Government bonds — tens of thousands
+const TYPE_CORP_BOND: u8 = 0b10010; // Corporate bonds — hundreds of thousands
+const TYPE_MUNI_BOND: u8 = 0b10011; // Municipal bonds — hundreds of thousands
+const TYPE_CRYPTO: u8 = 0b10100; // Cryptocurrencies — tens of thousands
+const TYPE_REIT: u8 = 0b10101; // Real Estate Investment Trusts — thousands
 
-// Smallest universes get longest prefixes
-const TYPE_CURRENCY: u8 = 0b110000; // 6 bits - ~200 pairs
-const TYPE_INDEX: u8 = 0b110001; // 6 bits - thousands
-const TYPE_COMMODITY: u8 = 0b110010; // 6 bits - hundreds
-const TYPE_CD: u8 = 0b110011; // 6 bits - tens of thousands
-const TYPE_T_BILL: u8 = 0b110100; // 6 bits - hundreds
-const TYPE_OTHER: u8 = 0b111111; // 6 bits - catch-all
+/// 6-bit prefixes — low-volume types (up to 2⁵⁸ unique IDs each).
+const TYPE_CURRENCY: u8 = 0b110000; // Currency / forex pairs — ~200 major pairs
+const TYPE_INDEX: u8 = 0b110001; // Market indexes — thousands
+const TYPE_COMMODITY: u8 = 0b110010; // Commodities — hundreds
+const TYPE_CD: u8 = 0b110011; // Certificates of Deposit — tens of thousands
+const TYPE_T_BILL: u8 = 0b110100; // Treasury bills — hundreds
+const TYPE_OTHER: u8 = 0b111111; // Catch-all for unclassified instruments
 
-// Bit shifts based on type prefix length
-const SHIFT_4BIT: u8 = 60; // 64 - 4 = 60 bits for ID (1.15 x 10^18)
-const SHIFT_5BIT: u8 = 59; // 64 - 5 = 59 bits for ID (5.76 x 10^17)
-const SHIFT_6BIT: u8 = 58; // 64 - 6 = 58 bits for ID (2.88 x 10^17)
+/// Bit-shift amounts that position the type prefix at the top of the `i64`.
+/// Computed as `64 - prefix_length`, leaving the remaining lower bits for the unique ID.
+const SHIFT_4BIT: u8 = 60; // 64 - 4 = 60 bits for ID (capacity: ~1.15 × 10¹⁸)
+const SHIFT_5BIT: u8 = 59; // 64 - 5 = 59 bits for ID (capacity: ~5.76 × 10¹⁷)
+const SHIFT_6BIT: u8 = 58; // 64 - 6 = 58 bits for ID (capacity: ~2.88 × 10¹⁷)
 
-/// Type of security
+/// Classifies a financial instrument into one of 20 security categories.
+///
+/// `SecurityType` is the primary way the `alphavantage` crate distinguishes between
+/// different kinds of traded instruments. It supports:
+///
+/// - **String parsing** ([`FromStr`]) with case-insensitive, flexible input
+///   (e.g., `"Common Stock"`, `"EQUITY"`, `"stock"` all parse to [`Equity`](SecurityType::Equity)).
+/// - **Display** formatting returning the human-readable name.
+/// - **Bitmap encoding/decoding** via [`encode`](SecurityType::encode) and
+///   [`decode_type`](SecurityType::decode_type) for compact `i64` storage.
+/// - **Category queries**: [`is_equity`](SecurityType::is_equity),
+///   [`is_fixed_income`](SecurityType::is_fixed_income),
+///   [`is_derivative`](SecurityType::is_derivative).
+/// - **Alpha Vantage API interop**: [`from_alpha_vantage`](SecurityType::from_alpha_vantage)
+///   and [`to_alpha_vantage`](SecurityType::to_alpha_vantage).
+///
+/// # Variant groupings
+///
+/// | Group          | Variants                                                          |
+/// |----------------|-------------------------------------------------------------------|
+/// | **Equity**     | `Equity`, `PreferredStock`, `ETF`, `MutualFund`, `REIT`, `ADR`    |
+/// | **Fixed income** | `Bond`, `GovernmentBond`, `CorporateBond`, `MunicipalBond`, `TreasuryBill`, `CD` |
+/// | **Derivatives** | `Option`, `Future`, `Warrant`                                    |
+/// | **Other**      | `Index`, `Currency`, `Commodity`, `Cryptocurrency`, `Other`       |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SecurityType {
+  /// Common stock / ordinary shares — the most common equity instrument.
   Equity,
+  /// Preferred stock — equity with priority dividend rights and liquidation preference.
   PreferredStock,
+  /// Exchange-Traded Fund — a pooled investment fund traded on stock exchanges.
   ETF,
+  /// Mutual Fund — an open-ended pooled investment vehicle priced once daily at NAV.
   MutualFund,
+  /// Real Estate Investment Trust — a company that owns or finances income-producing real estate.
   REIT,
+  /// American Depositary Receipt — a certificate representing shares of a foreign company
+  /// traded on U.S. exchanges.
   ADR,
+  /// Certificate of Deposit — a time deposit offered by banks with a fixed interest rate
+  /// and maturity date.
   CD,
+  /// Generic bond — a debt instrument; use the more specific bond variants when the
+  /// issuer type is known.
   Bond,
+  /// Government bond — sovereign debt instruments (e.g., U.S. Treasuries, UK Gilts).
   GovernmentBond,
+  /// Corporate bond — debt issued by a corporation to fund operations or expansion.
   CorporateBond,
+  /// Municipal bond — debt issued by a state, city, or county, often tax-exempt.
   MunicipalBond,
+  /// Treasury bill — short-term government debt with maturity of one year or less,
+  /// sold at a discount.
   TreasuryBill,
+  /// Options contract — a derivative giving the holder the right (not obligation) to
+  /// buy or sell an underlying asset at a specified price.
   Option,
+  /// Futures contract — a standardized derivative obligating the buyer/seller to
+  /// transact at a predetermined price and date.
   Future,
+  /// Warrant — a long-dated option-like instrument typically issued by the company itself.
   Warrant,
+  /// Market index — a statistical measure of a section of the market (e.g., S&P 500).
+  /// Not directly tradable.
   Index,
+  /// Foreign currency / forex pair (e.g., EUR/USD).
   Currency,
+  /// Physical or financial commodity (e.g., gold, crude oil, wheat).
   Commodity,
+  /// Cryptocurrency / digital currency (e.g., Bitcoin, Ethereum).
   Cryptocurrency,
+  /// Catch-all for instruments that do not fit any other category.
+  /// [`FromStr`] maps unrecognized strings here rather than returning an error.
   Other,
 }
 
-/// A struct that represents a Security identifier with bitmap encoding
+/// A decoded security identifier comprising a [`SecurityType`] and a numeric ID.
+///
+/// `SecurityIdentifier` is the "unpacked" form of a bitmap-encoded `i64` SID.
+/// Use [`SecurityType::encode`] to pack a type + ID into an `i64`, and
+/// [`SecurityIdentifier::decode`] to unpack it back.
+///
+/// # Fields
+///
+/// - `security_type` — the category of the instrument.
+/// - `raw_id` — the unique numeric identifier within that category (up to `u32::MAX`).
+///
+/// # Examples
+///
+/// ```rust
+/// use av_core::types::market::security_type::{SecurityType, SecurityIdentifier};
+///
+/// let encoded = SecurityType::encode(SecurityType::ETF, 42);
+/// let decoded = SecurityIdentifier::decode(encoded).unwrap();
+/// assert_eq!(decoded.security_type, SecurityType::ETF);
+/// assert_eq!(decoded.raw_id, 42);
+/// ```
 #[derive(PartialEq, Debug, Clone, Copy, Eq, Hash, Deserialize)]
 pub struct SecurityIdentifier {
+  /// The category of financial instrument.
   pub security_type: SecurityType,
+  /// The unique numeric ID within the security type's namespace.
   pub raw_id: u32,
 }
 
 impl SecurityIdentifier {
-  /// Decode a full SecurityIdentifier from an encoded i64 SID
+  /// Decodes a bitmap-encoded `i64` SID into a [`SecurityIdentifier`].
+  ///
+  /// Extracts the type prefix to determine the [`SecurityType`], then masks out
+  /// the remaining bits to recover the `raw_id`. Always returns `Some` — the
+  /// `Option` return type is reserved for future validation (e.g., range checks).
   pub fn decode(encoded_id: i64) -> Option<SecurityIdentifier> {
     let security_type = SecurityType::decode_type(encoded_id);
     let shift = SecurityType::get_shift(security_type);
@@ -111,6 +245,9 @@ impl SecurityIdentifier {
   }
 }
 
+/// Formats the security type as a human-readable name (e.g., `"Common Stock"`, `"ETF"`).
+///
+/// This matches the strings returned by [`SecurityType::to_alpha_vantage`].
 impl std::fmt::Display for SecurityType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
@@ -138,6 +275,40 @@ impl std::fmt::Display for SecurityType {
   }
 }
 
+/// Parses a string into a [`SecurityType`].
+///
+/// Parsing is **case-insensitive** and strips spaces, hyphens, and underscores before
+/// matching, so inputs like `"Common Stock"`, `"common-stock"`, and `"COMMONSTOCK"` all
+/// resolve to [`SecurityType::Equity`].
+///
+/// # Infallible by design
+///
+/// Unrecognized strings are mapped to [`SecurityType::Other`] rather than returning an
+/// error. The `Err` type is `String` only to satisfy the [`FromStr`] trait contract.
+///
+/// # Accepted aliases
+///
+/// | Variant            | Aliases (after normalization)                                |
+/// |--------------------|--------------------------------------------------------------|
+/// | `Equity`           | `COMMONSTOCK`, `EQUITY`, `STOCK`                             |
+/// | `PreferredStock`   | `PREFERREDSTOCK`, `PREFERRED`                                |
+/// | `ETF`              | `ETF`, `EXCHANGETRADEDFUND`                                  |
+/// | `MutualFund`       | `MUTUALFUND`, `FUND`                                         |
+/// | `REIT`             | `REIT`, `REALESTATEINVESTMENTTRUST`                          |
+/// | `ADR`              | `ADR`, `AMERICANDEPOSITARYRECEIPT`                           |
+/// | `CD`               | `CD`, `CERTIFICATEOFDEPOSIT`                                 |
+/// | `Bond`             | `BOND`                                                       |
+/// | `GovernmentBond`   | `GOVERNMENTBOND`, `GOVBOND`                                  |
+/// | `CorporateBond`    | `CORPORATEBOND`, `CORPBOND`                                  |
+/// | `MunicipalBond`    | `MUNICIPALBOND`, `MUNIBOND`                                  |
+/// | `TreasuryBill`     | `TREASURYBILL`, `TBILL`                                      |
+/// | `Option`           | `OPTION`                                                     |
+/// | `Future`           | `FUTURE`, `FUTURES`                                          |
+/// | `Warrant`          | `WARRANT`                                                    |
+/// | `Index`            | `INDEX`                                                      |
+/// | `Currency`         | `CURRENCY`, `FX`, `FOREX`                                    |
+/// | `Commodity`        | `COMMODITY`                                                  |
+/// | `Cryptocurrency`   | `CRYPTOCURRENCY`, `CRYPTO`                                   |
 impl FromStr for SecurityType {
   type Err = String;
 
@@ -167,8 +338,32 @@ impl FromStr for SecurityType {
   }
 }
 
+/// Bitmap encoding/decoding, Alpha Vantage API mapping, and category query methods.
 impl SecurityType {
-  /// Encode with variable bit allocation based on expected universe size
+  /// Encodes a [`SecurityType`] and a numeric `id` into a single `i64` bitmap.
+  ///
+  /// The type is packed into the high-order bits using a variable-length prefix
+  /// (4, 5, or 6 bits depending on the expected universe size), and the `id`
+  /// occupies the remaining lower bits.
+  ///
+  /// # Arguments
+  ///
+  /// - `st` — the security type to encode.
+  /// - `id` — the unique numeric identifier (up to `u32::MAX`).
+  ///
+  /// # Returns
+  ///
+  /// A non-negative `i64` containing the packed bitmap. Use
+  /// [`SecurityType::decode_type`] or [`SecurityIdentifier::decode`] to unpack.
+  ///
+  /// # Examples
+  ///
+  /// ```rust
+  /// use av_core::types::market::security_type::SecurityType;
+  ///
+  /// let sid = SecurityType::encode(SecurityType::Equity, 42);
+  /// assert_eq!(SecurityType::decode_type(sid), SecurityType::Equity);
+  /// ```
   pub fn encode(st: SecurityType, id: u32) -> i64 {
     let unsigned_result = match st {
       // High-volume types (4-bit prefix, 60 bits for ID)
@@ -200,7 +395,13 @@ impl SecurityType {
     unsigned_result
   }
 
-  /// Decode SecurityType from an encoded SID
+  /// Extracts the [`SecurityType`] from a bitmap-encoded `i64` SID.
+  ///
+  /// Decoding proceeds in prefix-length order: 4-bit prefixes are checked first
+  /// (most common types), then 5-bit, then 6-bit. If no prefix matches,
+  /// [`SecurityType::Other`] is returned.
+  ///
+  /// To decode both the type and the ID, use [`SecurityIdentifier::decode`] instead.
   pub fn decode_type(sid: i64) -> SecurityType {
     // Check 4-bit types first (most common)
     let type_4bit = (sid >> SHIFT_4BIT) & 0b1111;
@@ -241,7 +442,15 @@ impl SecurityType {
     }
   }
 
-  /// Get the bit shift for encoding based on security type
+  /// Returns the bit-shift amount for the given security type's prefix length.
+  ///
+  /// This determines how many bits are available for the unique ID:
+  /// - 4-bit prefix types → shift 60
+  /// - 5-bit prefix types → shift 59
+  /// - 6-bit prefix types → shift 58
+  ///
+  /// This is a crate-internal helper used by [`encode`](SecurityType::encode) and
+  /// [`SecurityIdentifier::decode`].
   pub(crate) fn get_shift(st: SecurityType) -> u8 {
     match st {
       SecurityType::Equity
@@ -264,7 +473,14 @@ impl SecurityType {
     }
   }
 
-  /// Map AlphaVantage asset type string to SecurityType
+  /// Converts an Alpha Vantage API `asset_type` string into a [`SecurityType`].
+  ///
+  /// Similar to [`FromStr`] but includes additional aliases specific to Alpha Vantage
+  /// API responses (e.g., `"CS"` for common stock, `"PS"` for preferred stock,
+  /// `"MF"` for mutual fund, `"WT"` for warrant, `"DIGITALCURRENCY"` for crypto).
+  ///
+  /// Input is case-insensitive with spaces, underscores, and hyphens stripped.
+  /// Unrecognized strings map to [`SecurityType::Other`].
   pub fn from_alpha_vantage(asset_type: &str) -> Self {
     match asset_type.to_uppercase().replace([' ', '_', '-'], "").as_str() {
       "EQUITY" | "CS" | "COMMONSTOCK" => SecurityType::Equity,
@@ -290,7 +506,10 @@ impl SecurityType {
     }
   }
 
-  /// Convert SecurityType to AlphaVantage asset type string
+  /// Returns the Alpha Vantage API-canonical string for this security type.
+  ///
+  /// These strings match the `asset_type` field values used in Alpha Vantage
+  /// API responses (e.g., `"Common Stock"`, `"Exchange Traded Fund"`).
   pub fn to_alpha_vantage(&self) -> &'static str {
     match self {
       SecurityType::Equity => "Common Stock",
@@ -316,7 +535,12 @@ impl SecurityType {
     }
   }
 
-  /// Check if this security type represents equity
+  /// Returns `true` if this security type belongs to the **equity** family.
+  ///
+  /// Includes: `Equity`, `PreferredStock`, `ETF`, `REIT`, `ADR`.
+  ///
+  /// Note: `MutualFund` is excluded because mutual funds can hold mixed assets
+  /// (equities, bonds, etc.) and are priced differently (NAV-based, T+1 settlement).
   pub fn is_equity(&self) -> bool {
     matches!(
       self,
@@ -328,7 +552,10 @@ impl SecurityType {
     )
   }
 
-  /// Check if this security type represents fixed income
+  /// Returns `true` if this security type belongs to the **fixed income** family.
+  ///
+  /// Includes: `Bond`, `GovernmentBond`, `CorporateBond`, `MunicipalBond`,
+  /// `TreasuryBill`, `CD`.
   pub fn is_fixed_income(&self) -> bool {
     matches!(
       self,
@@ -341,12 +568,27 @@ impl SecurityType {
     )
   }
 
-  /// Check if this security type represents derivatives
+  /// Returns `true` if this security type is a **derivative** instrument.
+  ///
+  /// Includes: `Option`, `Future`, `Warrant`.
   pub fn is_derivative(&self) -> bool {
     matches!(self, SecurityType::Option | SecurityType::Future | SecurityType::Warrant)
   }
 
-  /// Get the typical settlement period in days
+  /// Returns the typical settlement period in business days for this security type.
+  ///
+  /// Settlement conventions follow standard market practice:
+  ///
+  /// | Settlement | Security types                                             |
+  /// |------------|-----------------------------------------------------------|
+  /// | **T+0**    | `Future` (daily mark-to-market), `Commodity`, `Cryptocurrency` (immediate) |
+  /// | **T+1**    | `MutualFund`, `Bond` (all sub-types), `TreasuryBill`, `Option` |
+  /// | **T+2**    | `Equity`, `PreferredStock`, `ETF`, `REIT`, `ADR`, `Currency` |
+  ///
+  /// All other / unclassified types default to **T+2**.
+  ///
+  /// **Note:** These are typical conventions and may vary by jurisdiction or
+  /// specific instrument. Always verify with the relevant exchange or clearinghouse.
   pub fn settlement_days(&self) -> u8 {
     match self {
       SecurityType::Equity

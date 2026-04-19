@@ -27,12 +27,47 @@
  * SOFTWARE.
  */
 
-//! Foreign exchange (forex) data models
+//! Foreign exchange (forex) data models.
+//!
+//! This module provides serde-deserializable structs for the Alpha Vantage
+//! forex endpoints, plus utility types for currency-pair analysis.
+//!
+//! # Endpoint mapping
+//!
+//! | Endpoint                 | Model              | Time-series JSON key                  |
+//! |--------------------------|--------------------|---------------------------------------|
+//! | `CURRENCY_EXCHANGE_RATE` | [`ExchangeRate`]   | N/A (single-value response)           |
+//! | `FX_INTRADAY`            | [`FxIntraday`]     | Flattened via `#[serde(flatten)]`     |
+//! | `FX_DAILY`               | [`FxDaily`]        | `"Time Series FX (Daily)"`            |
+//! | `FX_WEEKLY`              | [`FxWeekly`]       | `"Time Series FX (Weekly)"`           |
+//! | `FX_MONTHLY`             | [`FxMonthly`]      | `"Time Series FX (Monthly)"`          |
+//!
+//! # Key differences from equity time-series
+//!
+//! - Forex bars use [`OhlcData`] (no volume) instead of [`OhlcvData`](super::common::OhlcvData).
+//! - Metadata uses `From Symbol` / `To Symbol` instead of a single `Symbol` field.
+//! - Exchange rate responses include bid/ask prices with spread helpers.
+//!
+//! # Utility types
+//!
+//! | Type                  | Purpose                                           |
+//! |-----------------------|---------------------------------------------------|
+//! | [`CurrencyPair`]      | Currency pair metadata, major/cross classification |
+//! | [`ForexSession`]      | Trading session hours by geographic region         |
+//! | [`CrossRate`]         | Computed cross-currency rate via intermediate      |
+//! | [`CurrencyVolatility`]| Historical/implied volatility for a pair           |
+//! | [`EconomicImpact`]    | Economic indicator release with currency impact    |
 
 use crate::common::{OhlcData, TimeSeriesData};
 use serde::{Deserialize, Serialize};
 
-/// Real-time exchange rate response
+// ─── Exchange rate ──────────────────────────────────────────────────────────
+
+/// Top-level response from the `CURRENCY_EXCHANGE_RATE` endpoint (forex variant).
+///
+/// Wraps a single [`ExchangeRateData`] under the JSON key
+/// `"Realtime Currency Exchange Rate"`. Use [`rate()`](ExchangeRate::rate)
+/// for convenient access to the inner data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExchangeRate {
   /// Realtime currency exchange rate data
@@ -40,7 +75,18 @@ pub struct ExchangeRate {
   pub realtime_currency_exchange_rate: ExchangeRateData,
 }
 
-/// Exchange rate data structure
+/// Real-time exchange rate data for a fiat currency pair.
+///
+/// Contains from/to currency codes and names, the rate itself,
+/// bid/ask prices, and a timestamp. All numeric values are strings.
+///
+/// # Helper methods
+///
+/// - [`rate_as_f64`](ExchangeRateData::rate_as_f64) — parse the exchange rate.
+/// - [`bid_as_f64`](ExchangeRateData::bid_as_f64) / [`ask_as_f64`](ExchangeRateData::ask_as_f64) — parse bid/ask.
+/// - [`spread`](ExchangeRateData::spread) — absolute bid-ask spread.
+/// - [`spread_percentage`](ExchangeRateData::spread_percentage) — spread as % of mid price.
+/// - [`pair_symbol`](ExchangeRateData::pair_symbol) — e.g., `"EURUSD"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExchangeRateData {
   /// From currency code
@@ -80,7 +126,20 @@ pub struct ExchangeRateData {
   pub ask_price: String,
 }
 
-/// Forex intraday time series
+// ─── Time series responses ──────────────────────────────────────────────────
+
+/// Response from the `FX_INTRADAY` endpoint.
+///
+/// Uses `#[serde(flatten)]` for the time-series data because the JSON key
+/// varies by interval (e.g., `"Time Series FX (Intraday) (5min)"`).
+/// The `time_series` field uses [`OhlcData`] (no volume for forex).
+///
+/// # Methods
+///
+/// - [`latest`](FxIntraday::latest) — most recent bar.
+/// - [`len`](FxIntraday::len) / [`is_empty`](FxIntraday::is_empty) — count.
+/// - [`calculate_volatility`](FxIntraday::calculate_volatility) — standard
+///   deviation of period returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FxIntraday {
   /// Metadata
@@ -92,7 +151,13 @@ pub struct FxIntraday {
   pub time_series: TimeSeriesData<OhlcData>,
 }
 
-/// Forex daily time series
+/// Response from the `FX_DAILY` endpoint.
+///
+/// # Methods
+///
+/// - [`latest`](FxDaily::latest), [`len`](FxDaily::len), [`is_empty`](FxDaily::is_empty).
+/// - [`simple_moving_average`](FxDaily::simple_moving_average) — compute SMA
+///   of closing prices over `periods` bars.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FxDaily {
   /// Metadata
@@ -104,7 +169,7 @@ pub struct FxDaily {
   pub time_series: TimeSeriesData<OhlcData>,
 }
 
-/// Forex weekly time series
+/// Response from the `FX_WEEKLY` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FxWeekly {
   /// Metadata
@@ -116,7 +181,7 @@ pub struct FxWeekly {
   pub time_series: TimeSeriesData<OhlcData>,
 }
 
-/// Forex monthly time series
+/// Response from the `FX_MONTHLY` endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FxMonthly {
   /// Metadata
@@ -128,7 +193,12 @@ pub struct FxMonthly {
   pub time_series: TimeSeriesData<OhlcData>,
 }
 
-/// Forex metadata structure
+// ─── Metadata ───────────────────────────────────────────────────────────────
+
+/// Metadata block for forex time-series responses.
+///
+/// Uses `From Symbol` / `To Symbol` instead of the equity `Symbol` field.
+/// `interval` and `output_size` are only present for intraday responses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FxMetadata {
   /// Information
@@ -160,7 +230,20 @@ pub struct FxMetadata {
   pub time_zone: Option<String>,
 }
 
-/// Currency pair information
+// ─── Utility types ──────────────────────────────────────────────────────────
+
+/// A currency pair with metadata for forex analysis.
+///
+/// Constructed via [`CurrencyPair::new`], which auto-generates the `symbol`
+/// (e.g., `"EURUSD"`) and `display_name` (e.g., `"EUR/USD"`), and sets
+/// `decimal_places` based on whether JPY is involved (3 for JPY pairs, 5
+/// for all others).
+///
+/// # Methods
+///
+/// - [`is_major`](CurrencyPair::is_major) — checks against the 7 major pairs.
+/// - [`is_cross`](CurrencyPair::is_cross) — `true` if neither currency is USD.
+/// - [`inverse`](CurrencyPair::inverse) — returns the reciprocal pair (e.g., EUR/USD → USD/EUR).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CurrencyPair {
   /// Base currency
@@ -179,7 +262,10 @@ pub struct CurrencyPair {
   pub decimal_places: u8,
 }
 
-/// Forex market session information
+/// Forex trading session information (London, New York, Tokyo, Sydney).
+///
+/// Tracks session hours in UTC, whether the session is currently active,
+/// and which major pairs are primarily traded during the session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForexSession {
   /// Session name (e.g., "London", "New York", "Tokyo", "Sydney")
@@ -201,7 +287,11 @@ pub struct ForexSession {
   pub major_pairs: Vec<String>,
 }
 
-/// Cross-currency rate calculation
+/// A computed cross-currency rate, optionally via an intermediate currency.
+///
+/// When a direct pair is unavailable, the rate is calculated through an
+/// intermediate (typically USD). The `calculation_method` field records
+/// how the rate was derived.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CrossRate {
   /// Base currency
@@ -223,7 +313,11 @@ pub struct CrossRate {
   pub calculated_at: String,
 }
 
-/// Volatility information for currency pair
+/// Historical and implied volatility for a currency pair over a time period.
+///
+/// `historical_volatility` is annualized from the specified `period`.
+/// `implied_volatility` is available only when options data is provided.
+/// `average_true_range` (ATR) measures typical bar range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CurrencyVolatility {
   /// Currency pair
@@ -245,7 +339,10 @@ pub struct CurrencyVolatility {
   pub calculated_on: String,
 }
 
-/// Economic indicator impact on currency
+/// An economic indicator release and its potential impact on a currency.
+///
+/// Tracks expected vs. actual values and the observed market reaction
+/// direction. `impact_level` is `"High"`, `"Medium"`, or `"Low"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EconomicImpact {
   /// Currency affected
@@ -273,37 +370,43 @@ pub struct EconomicImpact {
   pub currency_reaction: Option<String>,
 }
 
+// ─── Helper methods ─────────────────────────────────────────────────────────
+
 impl ExchangeRate {
-  /// Get the actual exchange rate data
+  /// Returns a reference to the inner [`ExchangeRateData`].
   pub fn rate(&self) -> &ExchangeRateData {
     &self.realtime_currency_exchange_rate
   }
 }
 
+/// Numeric parsing and spread calculation helpers for [`ExchangeRateData`].
 impl ExchangeRateData {
-  /// Parse exchange rate as f64
+  /// Parses the exchange rate as `f64`.
   pub fn rate_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.exchange_rate.parse()
   }
 
-  /// Parse bid price as f64
+  /// Parses the bid price as `f64`.
   pub fn bid_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.bid_price.parse()
   }
 
-  /// Parse ask price as f64
+  /// Parses the ask price as `f64`.
   pub fn ask_as_f64(&self) -> Result<f64, std::num::ParseFloatError> {
     self.ask_price.parse()
   }
 
-  /// Calculate bid-ask spread
+  /// Computes the absolute bid-ask spread (`ask - bid`).
   pub fn spread(&self) -> Result<f64, std::num::ParseFloatError> {
     let bid = self.bid_as_f64()?;
     let ask = self.ask_as_f64()?;
     Ok(ask - bid)
   }
 
-  /// Calculate spread as percentage of mid price
+  /// Computes the spread as a percentage of the mid price.
+  ///
+  /// Formula: `((ask - bid) / ((bid + ask) / 2)) * 100`. Returns `0.0`
+  /// if the mid price is zero.
   pub fn spread_percentage(&self) -> Result<f64, std::num::ParseFloatError> {
     let bid = self.bid_as_f64()?;
     let ask = self.ask_as_f64()?;
@@ -313,14 +416,15 @@ impl ExchangeRateData {
     if mid == 0.0 { Ok(0.0) } else { Ok((spread / mid) * 100.0) }
   }
 
-  /// Get currency pair symbol
+  /// Returns the concatenated currency pair symbol (e.g., `"EURUSD"`).
   pub fn pair_symbol(&self) -> String {
     format!("{}{}", self.from_currency_code, self.to_currency_code)
   }
 }
 
+/// Time-series access and analysis methods for [`FxIntraday`].
 impl FxIntraday {
-  /// Get the latest data point
+  /// Returns the first (earliest) data point from the sorted BTreeMap.
   pub fn latest(&self) -> Option<(&String, &OhlcData)> {
     self.time_series.iter().next()
   }
@@ -335,7 +439,10 @@ impl FxIntraday {
     self.time_series.is_empty()
   }
 
-  /// Calculate volatility over the time period
+  /// Computes the standard deviation of period-over-period returns.
+  ///
+  /// Returns `0.0` if fewer than 2 data points are available. Returns are
+  /// calculated as `(close[i-1] / close[i] - 1) * 100`.
   pub fn calculate_volatility(&self) -> Result<f64, std::num::ParseFloatError> {
     let closes: Result<Vec<f64>, _> =
       self.time_series.values().map(|data| data.close.parse::<f64>()).collect();
@@ -361,8 +468,9 @@ impl FxIntraday {
   }
 }
 
+/// Time-series access and analysis methods for [`FxDaily`].
 impl FxDaily {
-  /// Get the latest data point
+  /// Returns the first (earliest) data point from the sorted BTreeMap.
   pub fn latest(&self) -> Option<(&String, &OhlcData)> {
     self.time_series.iter().next()
   }
@@ -377,7 +485,11 @@ impl FxDaily {
     self.time_series.is_empty()
   }
 
-  /// Calculate simple moving average
+  /// Computes a simple moving average (SMA) of closing prices.
+  ///
+  /// Returns `Vec<(date_string, sma_value)>` for each bar that has enough
+  /// preceding data to fill the window. Returns an empty vec if
+  /// `data_points.len() < periods`.
   pub fn simple_moving_average(
     &self,
     periods: usize,
@@ -401,8 +513,11 @@ impl FxDaily {
   }
 }
 
+/// Construction and classification methods for [`CurrencyPair`].
 impl CurrencyPair {
-  /// Create a new currency pair
+  /// Creates a new currency pair, auto-generating the symbol and display name.
+  ///
+  /// `decimal_places` is set to 3 for JPY pairs, 5 for all others.
   pub fn new(base: &str, quote: &str) -> Self {
     let symbol = format!("{}{}", base, quote);
     let display_name = format!("{}/{}", base, quote);
@@ -416,18 +531,19 @@ impl CurrencyPair {
     }
   }
 
-  /// Check if this is a major currency pair
+  /// Returns `true` if this is one of the 7 major forex pairs
+  /// (EURUSD, USDJPY, GBPUSD, USDCHF, AUDUSD, USDCAD, NZDUSD).
   pub fn is_major(&self) -> bool {
     let majors = ["EURUSD", "USDJPY", "GBPUSD", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"];
     majors.contains(&self.symbol.as_str())
   }
 
-  /// Check if this is a cross currency pair (no USD)
+  /// Returns `true` if neither currency in the pair is USD.
   pub fn is_cross(&self) -> bool {
     self.base_currency != "USD" && self.quote_currency != "USD"
   }
 
-  /// Get the inverse pair
+  /// Returns the reciprocal pair (e.g., EUR/USD → USD/EUR).
   pub fn inverse(&self) -> Self {
     CurrencyPair::new(&self.quote_currency, &self.base_currency)
   }
