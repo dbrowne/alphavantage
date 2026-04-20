@@ -63,7 +63,7 @@
 //! # Examples
 //!
 //! ```rust
-//! use av_core::types::market::security_type::{SecurityType, SecurityIdentifier};
+//! use av_core::types::market::{SecurityType, SecurityIdentifier};
 //!
 //! // Encode a security
 //! let sid = SecurityType::encode(SecurityType::Equity, 12345);
@@ -214,7 +214,7 @@ pub enum SecurityType {
 /// # Examples
 ///
 /// ```rust
-/// use av_core::types::market::security_type::{SecurityType, SecurityIdentifier};
+/// use av_core::types::market::{SecurityType, SecurityIdentifier};
 ///
 /// let encoded = SecurityType::encode(SecurityType::ETF, 42);
 /// let decoded = SecurityIdentifier::decode(encoded).unwrap();
@@ -359,7 +359,7 @@ impl SecurityType {
   /// # Examples
   ///
   /// ```rust
-  /// use av_core::types::market::security_type::SecurityType;
+  /// use av_core::types::market::SecurityType;
   ///
   /// let sid = SecurityType::encode(SecurityType::Equity, 42);
   /// assert_eq!(SecurityType::decode_type(sid), SecurityType::Equity);

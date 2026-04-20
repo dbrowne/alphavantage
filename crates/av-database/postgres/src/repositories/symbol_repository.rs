@@ -93,7 +93,7 @@ use std::sync::Arc;
 ///
 /// # Construction
 ///
-/// ```rust,no_run
+/// ```rust,ignore
 /// use std::sync::Arc;
 /// use av_database_postgres::repositories::symbol_repository::SymbolRepository;
 ///

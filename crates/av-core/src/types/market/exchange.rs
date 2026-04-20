@@ -48,7 +48,7 @@
 //!
 //! ```rust
 //! use std::str::FromStr;
-//! use av_core::types::market::exchange::Exchange;
+//! use av_core::types::market::Exchange;
 //!
 //! // Parse from string (case-insensitive)
 //! let nyse = Exchange::from_str("nyse").unwrap();
@@ -314,7 +314,7 @@ impl Exchange {
   /// # Examples
   ///
   /// ```rust
-  /// use av_core::types::market::exchange::Exchange;
+  /// use av_core::types::market::Exchange;
   ///
   /// assert_eq!(Exchange::NYSE.full_name(), "New York Stock Exchange");
   /// assert_eq!(Exchange::BOVESPA.full_name(), "São Paulo Stock Exchange");
@@ -358,7 +358,7 @@ impl Exchange {
   /// # Examples
   ///
   /// ```rust
-  /// use av_core::types::market::exchange::Exchange;
+  /// use av_core::types::market::Exchange;
   ///
   /// assert_eq!(Exchange::TSE.timezone(), "Asia/Tokyo");
   /// assert_eq!(Exchange::LSE.timezone(), "Europe/London");
@@ -398,7 +398,7 @@ impl Exchange {
   /// # Examples
   ///
   /// ```rust
-  /// use av_core::types::market::exchange::Exchange;
+  /// use av_core::types::market::Exchange;
   ///
   /// assert_eq!(Exchange::HKSE.primary_currency(), "HKD");
   /// assert_eq!(Exchange::SIX.primary_currency(), "CHF");
@@ -441,7 +441,7 @@ impl Exchange {
   /// # Examples
   ///
   /// ```rust
-  /// use av_core::types::market::exchange::Exchange;
+  /// use av_core::types::market::Exchange;
   ///
   /// assert!(Exchange::NYSE.is_major());
   /// assert!(Exchange::LSE.is_major());
