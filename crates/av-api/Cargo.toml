@@ -1,0 +1,46 @@
+[package]
+name = "av-api"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified API facade for Alpha Vantage financial data"
+keywords = ["alphavantage", "finance", "api", "market-data"]
+categories = ["api-bindings", "finance"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Always available — lightweight core types, config, errors
+av-core = { path = "../av-core" }
+thiserror = { workspace = true }
+
+# Feature-gated dependencies
+av-models = { path = "../av-models", optional = true }
+av-client = { path = "../av-client", optional = true }
+av-database-postgres = { path = "../av-database/postgres", optional = true }
+av-loaders = { path = "../av-loaders", optional = true }
+
+# Used by the queries module (gated behind "database" feature)
+diesel = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[features]
+default = ["client"]
+## Response model types only — no HTTP, no DB. For deserializing cached JSON.
+models = ["dep:av-models"]
+## HTTP client + response models. The common case for API consumers.
+client = ["models", "dep:av-client"]
+## Database access via Diesel/TimescaleDB. Enables DatabaseContext, repositories, and queries.
+database = ["dep:av-database-postgres", "dep:diesel", "dep:chrono", "dep:serde"]
+## Data ingestion loaders. Implies client + database.
+loaders = ["client", "database", "dep:av-loaders"]
+## Everything enabled.
+full = ["client", "database", "loaders"]
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

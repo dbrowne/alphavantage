@@ -187,6 +187,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "av-api"
+version = "0.1.0"
+dependencies = [
+ "av-client",
+ "av-core",
+ "av-database-postgres",
+ "av-loaders",
+ "av-models",
+ "chrono",
+ "diesel",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
+]
+
+[[package]]
 name = "av-cli"
 version = "0.1.0"
 dependencies = [
