@@ -8,7 +8,8 @@
 
 use actix_web::{web, HttpResponse};
 use av_api::queries::{
-  format_market_cap, get_overview_row, get_sids, get_symbol_row, security_snapshot,
+  format_market_cap, get_crypto_overview_row, get_overview_row, get_sids, get_symbol_row,
+  security_snapshot_by_sid,
 };
 use av_database_postgres::DatabaseContext;
 use serde::Deserialize;
@@ -17,7 +18,11 @@ use tera::Tera;
 /// Query parameters for the search endpoint.
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
+  /// Ticker symbol to search for.
   pub q: Option<String>,
+  /// Optional SID override — when present, display this specific security
+  /// instead of the highest-priority match.
+  pub sid: Option<i64>,
 }
 
 /// GET / — renders the empty search form.
@@ -30,7 +35,7 @@ pub async fn index(tmpl: web::Data<Tera>) -> HttpResponse {
   render(tmpl.get_ref(), ctx)
 }
 
-/// GET /search?q=AAPL — performs the lookup and renders results.
+/// GET /search?q=BTC or /search?q=BTC&sid=12345
 pub async fn search(
   tmpl: web::Data<Tera>,
   db: web::Data<DatabaseContext>,
@@ -49,7 +54,7 @@ pub async fn search(
 
   ctx.insert("searched", &true);
 
-  // 1) All SID entries for this ticker (handles crypto duplicates).
+  // 1) All SID entries for this ticker, priority-ordered.
   let sid_entries = match get_sids(&db, &ticker).await {
     Ok(entries) => entries,
     Err(e) => {
@@ -58,19 +63,24 @@ pub async fn search(
     }
   };
 
-  // 2) Snapshot (joined view) for the best match.
-  let snapshot = match security_snapshot(&db, &ticker).await {
-    Ok(snap) => snap,
-    Err(e) => {
-      tracing::error!("security_snapshot failed for '{}': {}", ticker, e);
-      None
+  // 2) Determine which SID to show details for.
+  let selected_sid: Option<i64> = query.sid.or_else(|| sid_entries.first().map(|e| e.sid));
+  ctx.insert("selected_sid", &selected_sid);
+
+  // 3) Fetch snapshot and symbol row.
+  let snapshot = if let Some(sid) = selected_sid {
+    match security_snapshot_by_sid(&db, sid).await {
+      Ok(snap) => snap,
+      Err(e) => {
+        tracing::error!("security_snapshot_by_sid failed for SID {}: {}", sid, e);
+        None
+      }
     }
+  } else {
+    None
   };
 
-  // 3) Full symbol row + overview row for the best match SID.
-  let best_sid = snapshot.as_ref().map(|s| s.sid);
-
-  let symbol_row = if let Some(sid) = best_sid {
+  let symbol_row = if let Some(sid) = selected_sid {
     match get_symbol_row(&db, sid).await {
       Ok(row) => row,
       Err(e) => {
@@ -82,24 +92,61 @@ pub async fn search(
     None
   };
 
-  let overview_row = if let Some(sid) = best_sid {
-    match get_overview_row(&db, sid).await {
-      Ok(row) => row,
-      Err(e) => {
-        tracing::error!("get_overview_row failed for SID {}: {}", sid, e);
-        None
+  // 4) Determine if this is a cryptocurrency.
+  let is_crypto = symbol_row
+    .as_ref()
+    .map(|s| s.sec_type == "Cryptocurrency")
+    .unwrap_or(false);
+  ctx.insert("is_crypto", &is_crypto);
+
+  // 5) Fetch the appropriate overview: crypto_overview_basic for crypto,
+  //    overviews for everything else.
+  let overview_row = if !is_crypto {
+    if let Some(sid) = selected_sid {
+      match get_overview_row(&db, sid).await {
+        Ok(row) => row,
+        Err(e) => {
+          tracing::error!("get_overview_row failed for SID {}: {}", sid, e);
+          None
+        }
       }
+    } else {
+      None
     }
   } else {
     None
   };
 
-  // Pre-format market cap values for the template.
-  let market_cap_fmt = snapshot
-    .as_ref()
-    .and_then(|s| s.market_cap)
-    .map(format_market_cap)
-    .unwrap_or_default();
+  let crypto_overview = if is_crypto {
+    if let Some(sid) = selected_sid {
+      match get_crypto_overview_row(&db, sid).await {
+        Ok(row) => row,
+        Err(e) => {
+          tracing::error!("get_crypto_overview_row failed for SID {}: {}", sid, e);
+          None
+        }
+      }
+    } else {
+      None
+    }
+  } else {
+    None
+  };
+
+  // Pre-format market cap values.
+  let market_cap_fmt = if is_crypto {
+    crypto_overview
+      .as_ref()
+      .and_then(|c| c.market_cap)
+      .map(format_market_cap)
+      .unwrap_or_default()
+  } else {
+    snapshot
+      .as_ref()
+      .and_then(|s| s.market_cap)
+      .map(format_market_cap)
+      .unwrap_or_default()
+  };
 
   let ebitda_fmt = overview_row
     .as_ref()
@@ -110,6 +157,7 @@ pub async fn search(
   ctx.insert("snapshot", &snapshot);
   ctx.insert("symbol_row", &symbol_row);
   ctx.insert("overview_row", &overview_row);
+  ctx.insert("crypto_overview", &crypto_overview);
   ctx.insert("market_cap_fmt", &market_cap_fmt);
   ctx.insert("ebitda_fmt", &ebitda_fmt);
 

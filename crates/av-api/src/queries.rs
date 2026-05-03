@@ -77,25 +77,30 @@ pub struct SecuritySnapshot {
 /// Joins `symbols` with `overviews` (LEFT — overview may not exist yet)
 /// and a lateral subquery on `summaryprices` to get only the most recent
 /// price bar. Using `LATERAL` avoids pulling the entire price history.
+/// The overviews table may use a different SID scheme than the symbols
+/// table, so we join on both SID and symbol name (COALESCE picks the
+/// first non-NULL match). The summaryprices lateral join also tries
+/// both SID and symbol.
 const SNAPSHOT_SQL: &str = r#"
     SELECT
         s.sid,
         s.symbol,
         s.name,
         s.sec_type,
-        o.exchange,
-        o.sector,
-        o.description,
-        o.market_capitalization AS market_cap,
+        COALESCE(o1.exchange,  o2.exchange)             AS exchange,
+        COALESCE(o1.sector,    o2.sector)               AS sector,
+        COALESCE(o1.description, o2.description)        AS description,
+        COALESCE(o1.market_capitalization, o2.market_capitalization) AS market_cap,
         p.close              AS last_close,
         p.volume             AS last_volume,
         p.date               AS last_price_date
     FROM symbols s
-    LEFT JOIN overviews o ON o.sid = s.sid
+    LEFT JOIN overviews o1 ON o1.sid = s.sid
+    LEFT JOIN overviews o2 ON o2.symbol = s.symbol AND o1.sid IS NULL
     LEFT JOIN LATERAL (
         SELECT close, volume, date
         FROM summaryprices
-        WHERE sid = s.sid
+        WHERE sid = s.sid OR symbol = s.symbol
         ORDER BY date DESC
         LIMIT 1
     ) p ON true
@@ -351,6 +356,7 @@ pub async fn get_best_sid(
 /// Re-export the database model types so callers don't need a direct
 /// dependency on `av-database-postgres` for simple lookups.
 pub use av_database_postgres::models::security::{Overview, Symbol};
+pub use av_database_postgres::models::crypto::CryptoOverviewBasic;
 
 /// Fetches the full `symbols` table row for a given SID.
 pub async fn get_symbol_row(
@@ -362,6 +368,7 @@ pub async fn get_symbol_row(
       use av_database_postgres::schema::symbols;
       symbols::table
         .find(sid)
+        .select(Symbol::as_select())
         .first::<Symbol>(conn)
         .optional()
         .map_err(Into::into)
@@ -372,17 +379,75 @@ pub async fn get_symbol_row(
 
 /// Fetches the full `overviews` table row for a given SID.
 ///
-/// Returns `None` if the overview hasn't been loaded yet.
+/// First tries a direct SID lookup. If that returns nothing (the overviews
+/// table may use a different SID scheme than the symbols table), falls back
+/// to matching by ticker symbol.
+///
+/// Returns `None` if no overview data exists for this security.
 pub async fn get_overview_row(
   db: &DatabaseContext,
   sid: i64,
 ) -> Result<Option<Overview>> {
   let result = db
     .run(move |conn| {
-      use av_database_postgres::schema::overviews;
-      overviews::table
+      use av_database_postgres::schema::{overviews, symbols};
+
+      // Try 1: direct SID match.
+      let by_sid = overviews::table
         .find(sid)
+        .select(Overview::as_select())
         .first::<Overview>(conn)
+        .optional()?;
+
+      if by_sid.is_some() {
+        return Ok(by_sid);
+      }
+
+      // Try 2: look up the ticker from symbols, then find the overview
+      // by symbol name. Handles SID-scheme mismatches.
+      let ticker: Option<String> = symbols::table
+        .find(sid)
+        .select(symbols::symbol)
+        .first::<String>(conn)
+        .optional()?;
+
+      if let Some(ticker) = ticker {
+        overviews::table
+          .filter(overviews::symbol.eq(&ticker))
+          .select(Overview::as_select())
+          .first::<Overview>(conn)
+          .optional()
+          .map_err(Into::into)
+      } else {
+        Ok(None)
+      }
+    })
+    .await?;
+  Ok(result)
+}
+
+/// Fetches the `crypto_overview_basic` row for a given SID.
+///
+/// Uses **direct SID match only** — no symbol-name fallback. This is
+/// intentional: multiple coins share the same ticker (e.g., `BTC` maps
+/// to both "Bitcoin" and "Big Tom Coin"), and a symbol-name fallback
+/// would incorrectly return Bitcoin's overview for every `BTC`-tickered
+/// coin. The `crypto_overview_basic` table has a proper FK to
+/// `symbols.sid`, so a direct match is the only correct lookup.
+///
+/// Returns `None` if no crypto overview exists for this specific SID.
+pub async fn get_crypto_overview_row(
+  db: &DatabaseContext,
+  sid: i64,
+) -> Result<Option<CryptoOverviewBasic>> {
+  let result = db
+    .run(move |conn| {
+      use av_database_postgres::schema::crypto_overview_basic;
+
+      crypto_overview_basic::table
+        .find(sid)
+        .select(CryptoOverviewBasic::as_select())
+        .first::<CryptoOverviewBasic>(conn)
         .optional()
         .map_err(Into::into)
     })

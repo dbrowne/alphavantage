@@ -19,6 +19,37 @@
 
 {% if searched %}
 
+  {# ── SID selector table (when multiple matches exist) ───────────── #}
+  {% if sid_entries | length > 1 %}
+  <section class="detail-section">
+    <h2>{{ sid_entries | length }} securities match "{{ query }}"</h2>
+    <p class="hint">Click a row to view its details.</p>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>SID</th>
+          <th>Symbol</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Priority</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in sid_entries %}
+        <tr class="{% if selected_sid and entry.sid == selected_sid %}active-row{% endif %} clickable-row"
+            onclick="window.location='/search?q={{ query | urlencode }}&sid={{ entry.sid }}'">
+          <td><code>{{ entry.sid }}</code></td>
+          <td>{{ entry.symbol }}</td>
+          <td>{{ entry.name }}</td>
+          <td><span class="badge badge-{{ entry.sec_type | lower }}">{{ entry.sec_type }}</span></td>
+          <td>{{ entry.priority }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
   {# ── Snapshot summary card ──────────────────────────────────────── #}
   {% if snapshot %}
   <section class="snapshot-card">
@@ -68,36 +99,6 @@
   </section>
   {% endif %}
 
-  {# ── SID disambiguation table (only when multiple matches) ─────── #}
-  {% if sid_entries | length > 1 %}
-  <section class="detail-section">
-    <h2>All matches for "{{ query }}" <span class="count">({{ sid_entries | length }})</span></h2>
-    <p class="hint">Multiple securities share this ticker symbol.</p>
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>SID</th>
-          <th>Symbol</th>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Priority</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for entry in sid_entries %}
-        <tr{% if snapshot and entry.sid == snapshot.sid %} class="active-row"{% endif %}>
-          <td><code>{{ entry.sid }}</code></td>
-          <td>{{ entry.symbol }}</td>
-          <td>{{ entry.name }}</td>
-          <td><span class="badge badge-{{ entry.sec_type | lower }}">{{ entry.sec_type }}</span></td>
-          <td>{{ entry.priority }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </section>
-  {% endif %}
-
   {# ── Symbol table row ──────────────────────────────────────────── #}
   {% if symbol_row %}
   <section class="detail-section">
@@ -121,8 +122,40 @@
   </section>
   {% endif %}
 
-  {# ── Overview table row ────────────────────────────────────────── #}
-  {% if overview_row %}
+  {# ── Crypto Overview (for cryptocurrencies) ─────────────────── #}
+  {% if crypto_overview %}
+  <section class="detail-section">
+    <h2>Crypto Overview</h2>
+    <table class="data-table kv-table">
+      <tbody>
+        <tr><td class="kv-key">Symbol</td><td>{{ crypto_overview.symbol }}</td></tr>
+        <tr><td class="kv-key">Name</td><td>{{ crypto_overview.name }}</td></tr>
+        {% if crypto_overview.slug %}<tr><td class="kv-key">Slug</td><td>{{ crypto_overview.slug }}</td></tr>{% endif %}
+        {% if crypto_overview.market_cap_rank %}<tr><td class="kv-key">Market Cap Rank</td><td>#{{ crypto_overview.market_cap_rank }}</td></tr>{% endif %}
+        <tr><td class="kv-key">Market Cap</td><td>{{ market_cap_fmt }}</td></tr>
+        {% if crypto_overview.fully_diluted_valuation %}<tr><td class="kv-key">Fully Diluted Val.</td><td>{{ crypto_overview.fully_diluted_valuation }}</td></tr>{% endif %}
+        {% if crypto_overview.current_price %}<tr><td class="kv-key">Current Price</td><td>${{ crypto_overview.current_price }}</td></tr>{% endif %}
+        {% if crypto_overview.volume_24h %}<tr><td class="kv-key">24h Volume</td><td>{{ crypto_overview.volume_24h }}</td></tr>{% endif %}
+        {% if crypto_overview.volume_change_24h %}<tr><td class="kv-key">24h Volume Change</td><td>{{ crypto_overview.volume_change_24h }}%</td></tr>{% endif %}
+        {% if crypto_overview.circulating_supply %}<tr><td class="kv-key">Circulating Supply</td><td>{{ crypto_overview.circulating_supply }}</td></tr>{% endif %}
+        {% if crypto_overview.total_supply %}<tr><td class="kv-key">Total Supply</td><td>{{ crypto_overview.total_supply }}</td></tr>{% endif %}
+        {% if crypto_overview.max_supply %}<tr><td class="kv-key">Max Supply</td><td>{{ crypto_overview.max_supply }}</td></tr>{% endif %}
+        {% if crypto_overview.last_updated %}<tr><td class="kv-key">Last Updated</td><td>{{ crypto_overview.last_updated }}</td></tr>{% endif %}
+        <tr><td class="kv-key">Created</td><td>{{ crypto_overview.c_time }}</td></tr>
+        <tr><td class="kv-key">Modified</td><td>{{ crypto_overview.m_time }}</td></tr>
+      </tbody>
+    </table>
+
+    {% if crypto_overview.description %}
+    <details class="description" open>
+      <summary>Description</summary>
+      <p>{{ crypto_overview.description }}</p>
+    </details>
+    {% endif %}
+  </section>
+
+  {# ── Company Overview (for equities/non-crypto) ────────────── #}
+  {% elif overview_row %}
   <section class="detail-section">
     <h2>Company Overview</h2>
     <table class="data-table kv-table">
@@ -155,6 +188,13 @@
       <p>{{ overview_row.description }}</p>
     </details>
     {% endif %}
+  </section>
+
+  {# ── No overview data ──────────────────────────────────────── #}
+  {% elif symbol_row %}
+  <section class="detail-section no-overview">
+    <h2>{% if is_crypto %}Crypto Overview{% else %}Company Overview{% endif %}</h2>
+    <p class="hint">No overview data has been loaded for this security yet.</p>
   </section>
   {% endif %}
 

@@ -266,7 +266,21 @@ h1 {
 }
 
 .active-row {
-  background: #1f6feb15;
+  background: #1f6feb22;
+  border-left: 3px solid var(--accent);
+}
+
+.clickable-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.clickable-row:hover {
+  background: #ffffff0d;
+}
+
+.no-overview {
+  color: var(--muted);
 }
 
 /* Key-value table variant */
