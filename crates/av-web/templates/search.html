@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block title %}Symbol Lookup — AlphaVantage{% endblock %}
+
+{% block content %}
+<h1>Symbol Lookup</h1>
+
+<form action="/search" method="get" class="search-form">
+  <input
+    type="text"
+    name="q"
+    value="{{ query }}"
+    placeholder="Enter ticker symbol (e.g. AAPL, BTC, LUNA)"
+    autofocus
+    autocomplete="off"
+  >
+  <button type="submit">Search</button>
+</form>
+
+{% if searched %}
+
+  {% if snapshot %}
+  <section class="snapshot-card">
+    <div class="snapshot-header">
+      <h2>{{ snapshot.symbol }}</h2>
+      <span class="badge badge-{{ snapshot.sec_type | lower }}">{{ snapshot.sec_type }}</span>
+      {% if snapshot.exchange %}
+        <span class="badge badge-exchange">{{ snapshot.exchange }}</span>
+      {% endif %}
+    </div>
+
+    <h3>{{ snapshot.name }}</h3>
+
+    <div class="snapshot-grid">
+      {% if snapshot.last_close %}
+      <div class="stat">
+        <span class="stat-label">Last Close</span>
+        <span class="stat-value">${{ snapshot.last_close | round(method="common", precision=2) }}</span>
+        {% if snapshot.last_price_date %}
+        <span class="stat-date">{{ snapshot.last_price_date }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if snapshot.last_volume %}
+      <div class="stat">
+        <span class="stat-label">Volume</span>
+        <span class="stat-value">{{ snapshot.last_volume }}</span>
+      </div>
+      {% endif %}
+
+      {% if snapshot.market_cap %}
+      <div class="stat">
+        <span class="stat-label">Market Cap</span>
+        <span class="stat-value">${{ snapshot.market_cap }}</span>
+      </div>
+      {% endif %}
+
+      {% if snapshot.sector %}
+      <div class="stat">
+        <span class="stat-label">Sector</span>
+        <span class="stat-value">{{ snapshot.sector }}</span>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if snapshot.description %}
+    <details class="description">
+      <summary>Company Description</summary>
+      <p>{{ snapshot.description }}</p>
+    </details>
+    {% endif %}
+
+    <div class="snapshot-meta">
+      <code>SID: {{ snapshot.sid }}</code>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if sid_entries | length > 1 %}
+  <section class="sid-table-section">
+    <h2>All matches for "{{ query }}" ({{ sid_entries | length }} found)</h2>
+    <p class="hint">Multiple securities share this ticker symbol.</p>
+    <table class="sid-table">
+      <thead>
+        <tr>
+          <th>SID</th>
+          <th>Symbol</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Priority</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in sid_entries %}
+        <tr{% if snapshot and entry.sid == snapshot.sid %} class="active-row"{% endif %}>
+          <td><code>{{ entry.sid }}</code></td>
+          <td>{{ entry.symbol }}</td>
+          <td>{{ entry.name }}</td>
+          <td><span class="badge badge-{{ entry.sec_type | lower }}">{{ entry.sec_type }}</span></td>
+          <td>{{ entry.priority }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if not snapshot and sid_entries | length == 0 %}
+  <div class="no-results">
+    <p>No securities found for "<strong>{{ query }}</strong>"</p>
+  </div>
+  {% endif %}
+
+{% endif %}
+{% endblock %}

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AlphaVantage{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <a href="/" class="nav-brand">AlphaVantage</a>
+    <div class="nav-links">
+      <a href="/" class="{% if active_page == 'search' %}active{% endif %}">Symbol Lookup</a>
+    </div>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">
+    <p>Powered by <code>av-api</code></p>
+  </footer>
+</body>
+</html>

@@ -6,6 +6,7 @@ members = [
   "crates/av-client",
   "crates/av-loaders",
   "crates/av-api",
+  "crates/av-web",
   "crates/av-cli",
   "crates/crypto-loaders"
 ]

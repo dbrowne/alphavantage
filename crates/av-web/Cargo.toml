@@ -1,0 +1,26 @@
+[package]
+name = "av-web"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Web UI for Alpha Vantage financial data"
+
+[lints]
+workspace = true
+
+[dependencies]
+av-api = { path = "../av-api", features = ["database"] }
+av-database-postgres = { path = "../av-database/postgres" }
+
+actix-web = "4"
+actix-files = "0.6"
+tera = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = { workspace = true }
