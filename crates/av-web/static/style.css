@@ -136,6 +136,13 @@ h1 {
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.sid-label {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .snapshot-header h2 {
@@ -193,6 +200,25 @@ h1 {
   font-size: 0.9rem;
 }
 
+/* ── Detail sections ──────────────────────────────────────── */
+.detail-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.detail-section h2 {
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+}
+
+.detail-section .count {
+  color: var(--muted);
+  font-weight: 400;
+}
+
 .description p {
   margin-top: 0.5rem;
   color: var(--muted);
@@ -206,36 +232,27 @@ h1 {
   font-size: 0.8rem;
 }
 
-/* ── SID table ────────────────────────────────────────────── */
-.sid-table-section {
-  margin-bottom: 2rem;
-}
-
-.sid-table-section h2 {
-  font-size: 1.1rem;
-  margin-bottom: 0.25rem;
-}
-
+/* ── Data tables ──────────────────────────────────────────── */
 .hint {
   color: var(--muted);
   font-size: 0.85rem;
   margin-bottom: 0.75rem;
 }
 
-.sid-table {
+.data-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
 }
 
-.sid-table th,
-.sid-table td {
+.data-table th,
+.data-table td {
   text-align: left;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border);
 }
 
-.sid-table th {
+.data-table th {
   color: var(--muted);
   font-weight: 600;
   font-size: 0.75rem;
@@ -244,12 +261,23 @@ h1 {
   background: var(--surface);
 }
 
-.sid-table tbody tr:hover {
-  background: var(--surface);
+.data-table tbody tr:hover {
+  background: #ffffff06;
 }
 
 .active-row {
   background: #1f6feb15;
+}
+
+/* Key-value table variant */
+.kv-table .kv-key {
+  width: 180px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 
 /* ── No results ───────────────────────────────────────────── */

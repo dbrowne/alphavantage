@@ -33,8 +33,9 @@ pub use av_database_postgres::DatabaseContext;
 
 #[cfg(feature = "database")]
 pub use crate::queries::{
-  get_best_sid, get_sids, get_sids_by_type, security_snapshot, security_snapshot_by_sid,
-  security_snapshots, security_snapshots_by_sector, SecuritySnapshot, SidEntry,
+  format_market_cap, get_best_sid, get_overview_row, get_sids, get_sids_by_type, get_symbol_row,
+  security_snapshot, security_snapshot_by_sid, security_snapshots, security_snapshots_by_sector,
+  Overview, SecuritySnapshot, SidEntry, Symbol,
 };
 
 // ── Loaders feature ─────────────────────────────────────────────────────

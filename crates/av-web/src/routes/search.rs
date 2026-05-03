@@ -7,7 +7,9 @@
 //! Symbol lookup route handler.
 
 use actix_web::{web, HttpResponse};
-use av_api::queries::{get_sids, security_snapshot};
+use av_api::queries::{
+  format_market_cap, get_overview_row, get_sids, get_symbol_row, security_snapshot,
+};
 use av_database_postgres::DatabaseContext;
 use serde::Deserialize;
 use tera::Tera;
@@ -47,7 +49,7 @@ pub async fn search(
 
   ctx.insert("searched", &true);
 
-  // Fetch all SID entries for this ticker (handles duplicates).
+  // 1) All SID entries for this ticker (handles crypto duplicates).
   let sid_entries = match get_sids(&db, &ticker).await {
     Ok(entries) => entries,
     Err(e) => {
@@ -56,7 +58,7 @@ pub async fn search(
     }
   };
 
-  // Fetch the full snapshot for the best (first) match.
+  // 2) Snapshot (joined view) for the best match.
   let snapshot = match security_snapshot(&db, &ticker).await {
     Ok(snap) => snap,
     Err(e) => {
@@ -65,8 +67,51 @@ pub async fn search(
     }
   };
 
+  // 3) Full symbol row + overview row for the best match SID.
+  let best_sid = snapshot.as_ref().map(|s| s.sid);
+
+  let symbol_row = if let Some(sid) = best_sid {
+    match get_symbol_row(&db, sid).await {
+      Ok(row) => row,
+      Err(e) => {
+        tracing::error!("get_symbol_row failed for SID {}: {}", sid, e);
+        None
+      }
+    }
+  } else {
+    None
+  };
+
+  let overview_row = if let Some(sid) = best_sid {
+    match get_overview_row(&db, sid).await {
+      Ok(row) => row,
+      Err(e) => {
+        tracing::error!("get_overview_row failed for SID {}: {}", sid, e);
+        None
+      }
+    }
+  } else {
+    None
+  };
+
+  // Pre-format market cap values for the template.
+  let market_cap_fmt = snapshot
+    .as_ref()
+    .and_then(|s| s.market_cap)
+    .map(format_market_cap)
+    .unwrap_or_default();
+
+  let ebitda_fmt = overview_row
+    .as_ref()
+    .map(|o| format_market_cap(o.ebitda))
+    .unwrap_or_default();
+
   ctx.insert("sid_entries", &sid_entries);
   ctx.insert("snapshot", &snapshot);
+  ctx.insert("symbol_row", &symbol_row);
+  ctx.insert("overview_row", &overview_row);
+  ctx.insert("market_cap_fmt", &market_cap_fmt);
+  ctx.insert("ebitda_fmt", &ebitda_fmt);
 
   render(tmpl.get_ref(), ctx)
 }

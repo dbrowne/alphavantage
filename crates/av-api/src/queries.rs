@@ -346,6 +346,82 @@ pub async fn get_best_sid(
   Ok(result)
 }
 
+// ─── Full row lookups ───────────────────────────────────────────────────────
+
+/// Re-export the database model types so callers don't need a direct
+/// dependency on `av-database-postgres` for simple lookups.
+pub use av_database_postgres::models::security::{Overview, Symbol};
+
+/// Fetches the full `symbols` table row for a given SID.
+pub async fn get_symbol_row(
+  db: &DatabaseContext,
+  sid: i64,
+) -> Result<Option<Symbol>> {
+  let result = db
+    .run(move |conn| {
+      use av_database_postgres::schema::symbols;
+      symbols::table
+        .find(sid)
+        .first::<Symbol>(conn)
+        .optional()
+        .map_err(Into::into)
+    })
+    .await?;
+  Ok(result)
+}
+
+/// Fetches the full `overviews` table row for a given SID.
+///
+/// Returns `None` if the overview hasn't been loaded yet.
+pub async fn get_overview_row(
+  db: &DatabaseContext,
+  sid: i64,
+) -> Result<Option<Overview>> {
+  let result = db
+    .run(move |conn| {
+      use av_database_postgres::schema::overviews;
+      overviews::table
+        .find(sid)
+        .first::<Overview>(conn)
+        .optional()
+        .map_err(Into::into)
+    })
+    .await?;
+  Ok(result)
+}
+
+/// Formats an integer amount (e.g. market cap, EBITDA) as a human-readable
+/// string with M/B/T suffixes.
+///
+/// Examples:
+/// - `1_500_000_000_000` → `"$1.50T"`
+/// - `350_000_000_000` → `"$350.00B"`
+/// - `45_000_000` → `"$45.00M"`
+/// - `1_234_567` → `"$1.23M"`
+/// - `0` → `"$0"`
+/// - Negative values: `"-$1.23B"`
+pub fn format_market_cap(value: i64) -> String {
+  if value == 0 {
+    return "$0".to_string();
+  }
+
+  let (sign, abs) = if value < 0 {
+    ("-", (-value) as f64)
+  } else {
+    ("", value as f64)
+  };
+
+  if abs >= 1_000_000_000_000.0 {
+    format!("{}${:.2}T", sign, abs / 1_000_000_000_000.0)
+  } else if abs >= 1_000_000_000.0 {
+    format!("{}${:.2}B", sign, abs / 1_000_000_000.0)
+  } else if abs >= 1_000_000.0 {
+    format!("{}${:.2}M", sign, abs / 1_000_000.0)
+  } else {
+    format!("{}${:.0}", sign, abs)
+  }
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -782,5 +858,89 @@ mod tests {
           "get_best_sid and security_snapshot should agree on SID");
       }
     }
+  }
+
+  // ── format_market_cap unit tests ────────────────────────────────────
+
+  #[test]
+  fn test_format_market_cap_trillions() {
+    assert_eq!(format_market_cap(1_500_000_000_000), "$1.50T");
+    assert_eq!(format_market_cap(3_000_000_000_000), "$3.00T");
+  }
+
+  #[test]
+  fn test_format_market_cap_billions() {
+    assert_eq!(format_market_cap(350_000_000_000), "$350.00B");
+    assert_eq!(format_market_cap(1_230_000_000), "$1.23B");
+  }
+
+  #[test]
+  fn test_format_market_cap_millions() {
+    assert_eq!(format_market_cap(45_000_000), "$45.00M");
+    assert_eq!(format_market_cap(1_234_567), "$1.23M");
+  }
+
+  #[test]
+  fn test_format_market_cap_zero() {
+    assert_eq!(format_market_cap(0), "$0");
+  }
+
+  #[test]
+  fn test_format_market_cap_negative() {
+    assert_eq!(format_market_cap(-1_230_000_000), "-$1.23B");
+  }
+
+  #[test]
+  fn test_format_market_cap_small() {
+    assert_eq!(format_market_cap(500_000), "$500000");
+  }
+
+  // ── Full row lookup integration tests ───────────────────────────────
+
+  #[tokio::test]
+  #[ignore]
+  async fn test_get_symbol_row() {
+    let db = test_db();
+
+    if let Some(best) = get_best_sid(&db, "AAPL").await.unwrap() {
+      let row = get_symbol_row(&db, best.sid).await.unwrap();
+      assert!(row.is_some());
+      let row = row.unwrap();
+      assert_eq!(row.sid, best.sid);
+      assert_eq!(row.symbol, "AAPL");
+      assert!(!row.name.is_empty());
+    }
+  }
+
+  #[tokio::test]
+  #[ignore]
+  async fn test_get_symbol_row_nonexistent() {
+    let db = test_db();
+    let row = get_symbol_row(&db, -999).await.unwrap();
+    assert!(row.is_none());
+  }
+
+  #[tokio::test]
+  #[ignore]
+  async fn test_get_overview_row() {
+    let db = test_db();
+
+    if let Some(best) = get_best_sid(&db, "AAPL").await.unwrap() {
+      let row = get_overview_row(&db, best.sid).await.unwrap();
+      // Overview may or may not exist depending on DB state.
+      if let Some(ov) = row {
+        assert_eq!(ov.sid, best.sid);
+        assert!(!ov.description.is_empty());
+        assert!(ov.market_capitalization > 0);
+      }
+    }
+  }
+
+  #[tokio::test]
+  #[ignore]
+  async fn test_get_overview_row_nonexistent() {
+    let db = test_db();
+    let row = get_overview_row(&db, -999).await.unwrap();
+    assert!(row.is_none());
   }
 }
