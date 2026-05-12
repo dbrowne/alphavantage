@@ -6,4 +6,6 @@
 
 //! Route handlers for the web UI.
 
+pub mod load;
+pub mod news;
 pub mod search;

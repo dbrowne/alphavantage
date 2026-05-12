@@ -129,11 +129,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
-use super::securities::normalize_alpha_region;
 use super::sid_generator::SidGenerator;
 use crate::config::Config;
 use av_client::AlphaVantageClient;
-use av_core::types::market::SecurityType;
+use av_core::types::market::{SecurityType, normalize_alpha_region};
 use av_database_postgres::models::{MissingSymbol, NewSymbolOwned};
 use av_database_postgres::schema::{missing_symbols, symbols};
 

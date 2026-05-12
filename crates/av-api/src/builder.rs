@@ -22,9 +22,9 @@
 //! # }
 //! ```
 
-use crate::error::Result;
 #[cfg(feature = "client")]
 use crate::error::ApiError;
+use crate::error::Result;
 use av_core::Config;
 
 /// Central entry point for the Alpha Vantage API.
@@ -78,8 +78,7 @@ impl AlphaVantage {
   pub fn client(&self) -> Result<&av_client::AlphaVantageClient> {
     // OnceLock::get_or_try_init is unstable, so we init-then-get.
     if self.client.get().is_none() {
-      let c =
-        av_client::AlphaVantageClient::new(self.config.clone()).map_err(ApiError::Core)?;
+      let c = av_client::AlphaVantageClient::new(self.config.clone()).map_err(ApiError::Core)?;
       // Another thread may have raced us — that's fine, set returns Err
       // containing the value but we just discard it.
       let _ = self.client.set(c);

@@ -13,7 +13,7 @@ use crate::error::Result;
 use av_database_postgres::DatabaseContext;
 use chrono::NaiveDate;
 use diesel::prelude::*;
-use diesel::sql_types::{BigInt, Date, Float4, Nullable, Text};
+use diesel::sql_types::{Array, BigInt, Date, Float4, Nullable, Text, Timestamp, Timestamptz};
 use serde::{Deserialize, Serialize};
 
 /// A point-in-time snapshot of a security: identity, description, and
@@ -263,10 +263,7 @@ pub struct SidEntry {
 /// # Ok(())
 /// # }
 /// ```
-pub async fn get_sids(
-  db: &DatabaseContext,
-  ticker: &str,
-) -> Result<Vec<SidEntry>> {
+pub async fn get_sids(db: &DatabaseContext, ticker: &str) -> Result<Vec<SidEntry>> {
   let ticker = ticker.to_uppercase();
   let result = db
     .run(move |conn| {
@@ -328,10 +325,7 @@ pub async fn get_sids_by_type(
 /// This is the "give me the most important one" shorthand — equivalent to
 /// `get_sids(db, ticker).await?.first().map(|e| e.sid)` but done in a
 /// single `LIMIT 1` query.
-pub async fn get_best_sid(
-  db: &DatabaseContext,
-  ticker: &str,
-) -> Result<Option<SidEntry>> {
+pub async fn get_best_sid(db: &DatabaseContext, ticker: &str) -> Result<Option<SidEntry>> {
   let ticker = ticker.to_uppercase();
   let result = db
     .run(move |conn| {
@@ -353,16 +347,13 @@ pub async fn get_best_sid(
 
 // ─── Full row lookups ───────────────────────────────────────────────────────
 
+pub use av_database_postgres::models::crypto::CryptoOverviewBasic;
 /// Re-export the database model types so callers don't need a direct
 /// dependency on `av-database-postgres` for simple lookups.
 pub use av_database_postgres::models::security::{Overview, Symbol};
-pub use av_database_postgres::models::crypto::CryptoOverviewBasic;
 
 /// Fetches the full `symbols` table row for a given SID.
-pub async fn get_symbol_row(
-  db: &DatabaseContext,
-  sid: i64,
-) -> Result<Option<Symbol>> {
+pub async fn get_symbol_row(db: &DatabaseContext, sid: i64) -> Result<Option<Symbol>> {
   let result = db
     .run(move |conn| {
       use av_database_postgres::schema::symbols;
@@ -384,10 +375,7 @@ pub async fn get_symbol_row(
 /// to matching by ticker symbol.
 ///
 /// Returns `None` if no overview data exists for this security.
-pub async fn get_overview_row(
-  db: &DatabaseContext,
-  sid: i64,
-) -> Result<Option<Overview>> {
+pub async fn get_overview_row(db: &DatabaseContext, sid: i64) -> Result<Option<Overview>> {
   let result = db
     .run(move |conn| {
       use av_database_postgres::schema::{overviews, symbols};
@@ -405,11 +393,8 @@ pub async fn get_overview_row(
 
       // Try 2: look up the ticker from symbols, then find the overview
       // by symbol name. Handles SID-scheme mismatches.
-      let ticker: Option<String> = symbols::table
-        .find(sid)
-        .select(symbols::symbol)
-        .first::<String>(conn)
-        .optional()?;
+      let ticker: Option<String> =
+        symbols::table.find(sid).select(symbols::symbol).first::<String>(conn).optional()?;
 
       if let Some(ticker) = ticker {
         overviews::table
@@ -470,11 +455,7 @@ pub fn format_market_cap(value: i64) -> String {
     return "$0".to_string();
   }
 
-  let (sign, abs) = if value < 0 {
-    ("-", (-value) as f64)
-  } else {
-    ("", value as f64)
-  };
+  let (sign, abs) = if value < 0 { ("-", (-value) as f64) } else { ("", value as f64) };
 
   if abs >= 1_000_000_000_000.0 {
     format!("{}${:.2}T", sign, abs / 1_000_000_000_000.0)
@@ -485,6 +466,225 @@ pub fn format_market_cap(value: i64) -> String {
   } else {
     format!("{}${:.0}", sign, abs)
   }
+}
+
+// ─── News by SID ────────────────────────────────────────────────────────────
+
+/// A news article materialised against a specific security (`sid`),
+/// joining `feeds → articles → newsoverviews` and aggregating authors
+/// from both the direct `articles.author` foreign key and the
+/// many-to-many `authormaps` table.
+///
+/// Returned by [`news_by_sid`] and [`news_by_sid_recent`].
+///
+/// # Fields
+///
+/// | Field               | Source table     | Description                                    |
+/// |---------------------|------------------|------------------------------------------------|
+/// | `hashid`            | `articles`       | Content-addressable article PK                 |
+/// | `title`             | `articles`       | Article headline                               |
+/// | `url`               | `articles`       | Original article URL                           |
+/// | `summary`           | `articles`       | Short summary / lede                           |
+/// | `category`          | `articles`       | Editorial category                             |
+/// | `banner`            | `articles`       | Banner image URL                               |
+/// | `source_link`       | `articles`       | Optional canonical source link                 |
+/// | `source_name`       | `sources`        | Publisher name (e.g. `"Reuters"`)              |
+/// | `source_domain`     | `sources`        | Publisher domain (e.g. `"reuters.com"`)        |
+/// | `published_at`      | `articles.ct`    | Article publication time                       |
+/// | `sentiment_score`   | `feeds`          | Overall sentiment (`osentiment`, in [-1, 1])   |
+/// | `sentiment_label`   | `feeds`          | Sentiment bucket (e.g. `"Bullish"`)            |
+/// | `overview_creation` | `newsoverviews`  | When this article was last seen for the SID    |
+/// | `authors`           | `authors` (×2)   | Distinct author names from both author paths   |
+#[derive(Debug, Clone, QueryableByName, Serialize, Deserialize)]
+pub struct NewsArticle {
+  #[diesel(sql_type = Text)]
+  pub hashid: String,
+
+  #[diesel(sql_type = Text)]
+  pub title: String,
+
+  #[diesel(sql_type = Text)]
+  pub url: String,
+
+  #[diesel(sql_type = Text)]
+  pub summary: String,
+
+  #[diesel(sql_type = Text)]
+  pub category: String,
+
+  #[diesel(sql_type = Text)]
+  pub banner: String,
+
+  #[diesel(sql_type = Nullable<Text>)]
+  pub source_link: Option<String>,
+
+  #[diesel(sql_type = Text)]
+  pub source_name: String,
+
+  #[diesel(sql_type = Text)]
+  pub source_domain: String,
+
+  #[diesel(sql_type = Timestamp)]
+  pub published_at: chrono::NaiveDateTime,
+
+  #[diesel(sql_type = Float4)]
+  pub sentiment_score: f32,
+
+  #[diesel(sql_type = Text)]
+  pub sentiment_label: String,
+
+  #[diesel(sql_type = Timestamptz)]
+  pub overview_creation: chrono::DateTime<chrono::Utc>,
+
+  #[diesel(sql_type = Array<Text>)]
+  pub authors: Vec<String>,
+}
+
+/// Shared SQL fragment for both news lookup variants.
+///
+/// `DISTINCT ON (a.hashid)` collapses the same article appearing across
+/// multiple `newsoverviews` snapshots into a single row. The accompanying
+/// `ORDER BY a.hashid, f.created_at DESC` (added by the caller) keeps
+/// the most recent feed appearance, so sentiment/overview_creation
+/// reflect the latest ingestion.
+///
+/// Authors are aggregated via a correlated subquery that UNIONs the
+/// two author paths in the schema (`articles.author` direct FK plus
+/// `authormaps.authorid`). Doing this inside the SELECT — rather than
+/// as a flat join — avoids row multiplication that would break
+/// `DISTINCT ON`.
+const NEWS_BY_SID_SQL: &str = r#"
+    SELECT DISTINCT ON (a.hashid)
+        a.hashid,
+        a.title,
+        a.url,
+        a.summary,
+        a.category,
+        a.banner,
+        a.source_link,
+        COALESCE(s.source_name, '') AS source_name,
+        COALESCE(s.domain, '')      AS source_domain,
+        a.ct                 AS published_at,
+        f.osentiment         AS sentiment_score,
+        f.sentlabel          AS sentiment_label,
+        n.creation           AS overview_creation,
+        COALESCE(
+          (
+            SELECT array_agg(DISTINCT name) FROM (
+              SELECT au.author_name AS name
+              FROM authors au
+              WHERE au.id = a.author
+              UNION
+              SELECT au2.author_name AS name
+              FROM authormaps am
+              JOIN authors au2 ON au2.id = am.authorid
+              WHERE am.feedid = f.id
+            ) merged
+            WHERE name IS NOT NULL
+          ),
+          ARRAY[]::TEXT[]
+        )                    AS authors
+    FROM feeds f
+    JOIN articles a       ON f.articleid = a.hashid
+    JOIN newsoverviews n  ON f.newsoverviewid = n.id
+    LEFT JOIN sources s   ON a.sourceid = s.id
+    WHERE f.sid = $1
+"#;
+
+/// Fetches **all** news articles ever ingested for a given security ID.
+///
+/// One row per unique article (deduped by `articles.hashid`), keeping
+/// the sentiment values from its most recent feed appearance. Results
+/// are sorted by `published_at` descending (most recent first).
+///
+/// For large or popular SIDs this can return many rows — prefer
+/// [`news_by_sid_recent`] when you only need a recent slice.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # async fn run(db: &av_database_postgres::DatabaseContext) -> av_api::error::Result<()> {
+/// use av_api::queries::{get_best_sid, news_by_sid};
+///
+/// if let Some(best) = get_best_sid(db, "AAPL").await? {
+///     let articles = news_by_sid(db, best.sid).await?;
+///     for art in &articles {
+///         println!("[{}] {} — {}", art.sentiment_label, art.title, art.url);
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub async fn news_by_sid(db: &DatabaseContext, sid: i64) -> Result<Vec<NewsArticle>> {
+  let result = db
+    .run(move |conn| {
+      let query = format!("{} ORDER BY a.hashid, f.created_at DESC", NEWS_BY_SID_SQL);
+      diesel::sql_query(query).bind::<BigInt, _>(sid).load::<NewsArticle>(conn).map_err(Into::into)
+    })
+    .await?;
+  // DISTINCT ON forces SQL-level ordering by hashid first; re-sort by
+  // publication time so callers get the most recent article first.
+  let mut result = result;
+  result.sort_by(|a, b| b.published_at.cmp(&a.published_at));
+  Ok(result)
+}
+
+/// Fetches recent news articles for a given security ID, with a hard cap.
+///
+/// `days` is the lookback window applied to `newsoverviews.creation`
+/// (i.e. when the article was last seen for this SID, not its original
+/// publication date). `limit` caps the number of rows returned.
+///
+/// Returns at most `limit` rows, sorted by `published_at` descending.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # async fn run(db: &av_database_postgres::DatabaseContext) -> av_api::error::Result<()> {
+/// use av_api::queries::{get_best_sid, news_by_sid_recent};
+///
+/// if let Some(best) = get_best_sid(db, "AAPL").await? {
+///     // Last 30 days, top 25 articles by publication time
+///     let recent = news_by_sid_recent(db, best.sid, 30, 25).await?;
+///     println!("{} recent articles", recent.len());
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub async fn news_by_sid_recent(
+  db: &DatabaseContext,
+  sid: i64,
+  days: i32,
+  limit: i64,
+) -> Result<Vec<NewsArticle>> {
+  let result = db
+    .run(move |conn| {
+      // Wrap in a CTE: DISTINCT ON requires its key to be the leading
+      // ORDER BY column, so we can't ORDER BY published_at + LIMIT in
+      // the same query. The CTE deduplicates first, then we re-order
+      // and apply the limit on the outer SELECT.
+      let query = format!(
+        r#"
+        WITH deduped AS (
+          {core}
+            AND n.creation >= NOW() - INTERVAL '1 day' * $2
+          ORDER BY a.hashid, f.created_at DESC
+        )
+        SELECT * FROM deduped
+        ORDER BY published_at DESC
+        LIMIT $3
+        "#,
+        core = NEWS_BY_SID_SQL
+      );
+      diesel::sql_query(query)
+        .bind::<BigInt, _>(sid)
+        .bind::<diesel::sql_types::Integer, _>(days)
+        .bind::<BigInt, _>(limit)
+        .load::<NewsArticle>(conn)
+        .map_err(Into::into)
+    })
+    .await?;
+  Ok(result)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -511,7 +711,11 @@ mod tests {
     // The fragment should end with the lateral join so callers can append WHERE.
     // (The LATERAL subquery itself contains WHERE, but the top-level does not.)
     let after_lateral = SNAPSHOT_SQL.rsplit_once("p ON true").unwrap().1.trim();
-    assert!(after_lateral.is_empty(), "Unexpected trailing SQL after lateral join: {:?}", after_lateral);
+    assert!(
+      after_lateral.is_empty(),
+      "Unexpected trailing SQL after lateral join: {:?}",
+      after_lateral
+    );
   }
 
   #[test]
@@ -863,8 +1067,11 @@ mod tests {
 
     let cryptos = get_sids_by_type(&db, "BTC", "Cryptocurrency").await.unwrap();
     for entry in &cryptos {
-      assert_eq!(entry.sec_type, "Cryptocurrency",
-        "Expected Cryptocurrency but got {} for SID {}", entry.sec_type, entry.sid);
+      assert_eq!(
+        entry.sec_type, "Cryptocurrency",
+        "Expected Cryptocurrency but got {} for SID {}",
+        entry.sec_type, entry.sid
+      );
     }
 
     let equities = get_sids_by_type(&db, "BTC", "Equity").await.unwrap();
@@ -919,8 +1126,7 @@ mod tests {
     // The best SID for a ticker should match the snapshot lookup.
     if let Some(best) = get_best_sid(&db, "AAPL").await.unwrap() {
       if let Some(snap) = security_snapshot(&db, "AAPL").await.unwrap() {
-        assert_eq!(best.sid, snap.sid,
-          "get_best_sid and security_snapshot should agree on SID");
+        assert_eq!(best.sid, snap.sid, "get_best_sid and security_snapshot should agree on SID");
       }
     }
   }

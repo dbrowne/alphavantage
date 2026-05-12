@@ -11,8 +11,11 @@ description = "Web UI for Alpha Vantage financial data"
 workspace = true
 
 [dependencies]
-av-api = { path = "../av-api", features = ["database"] }
+av-api = { path = "../av-api", features = ["client", "database"] }
+av-core = { path = "../av-core" }
+av-client = { path = "../av-client" }
 av-database-postgres = { path = "../av-database/postgres" }
+av-models = { path = "../av-models" }
 
 actix-web = "4"
 actix-files = "0.6"
@@ -24,3 +27,5 @@ tokio = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = { workspace = true }
+diesel = { workspace = true }
+serde_urlencoded = "0.7"

@@ -73,16 +73,16 @@ pub mod queries;
 
 // ─── Always available (av-core is lightweight) ──────────────────────────
 
-/// Re-exported from `av-core`: API configuration.
-pub use av_core::Config;
-/// Re-exported from `av-core`: type-safe API function identifiers.
-pub use av_core::FuncType;
-/// Re-exported from `av-core`: core error type.
-pub use av_core::Error as CoreError;
 /// Re-exported from `av-core`: canonical API base URL.
 pub use av_core::ALPHA_VANTAGE_BASE_URL;
+/// Re-exported from `av-core`: API configuration.
+pub use av_core::Config;
 /// Re-exported from `av-core`: free-tier rate limit (75 RPM).
 pub use av_core::DEFAULT_RATE_LIMIT;
+/// Re-exported from `av-core`: core error type.
+pub use av_core::Error as CoreError;
+/// Re-exported from `av-core`: type-safe API function identifiers.
+pub use av_core::FuncType;
 /// Re-exported from `av-core`: premium rate limit (600 RPM).
 pub use av_core::PREMIUM_RATE_LIMIT;
 
@@ -151,9 +151,7 @@ pub mod loaders {
   };
 
   // Crypto loaders
-  pub use av_loaders::{
-    CryptoDataSource, CryptoLoaderConfig, CryptoSymbolLoader, SourceResult,
-  };
+  pub use av_loaders::{CryptoDataSource, CryptoLoaderConfig, CryptoSymbolLoader, SourceResult};
 }
 
 #[cfg(test)]

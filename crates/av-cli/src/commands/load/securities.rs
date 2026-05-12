@@ -132,7 +132,7 @@
 use super::sid_generator::SidGenerator;
 use anyhow::{Result, anyhow};
 use av_client::AlphaVantageClient;
-use av_core::types::market::{Exchange, SecurityType};
+use av_core::types::market::{Exchange, SecurityType, normalize_alpha_region};
 use av_database_postgres::repository::DatabaseContext;
 use av_loaders::SecurityLoaderConfig;
 use av_loaders::{
@@ -225,65 +225,6 @@ enum MatchMode {
   All,
   /// Accept the top N results sorted by `match_score` (N from `--top-matches`).
   Top,
-}
-
-/// Normalizes a region name from AlphaVantage to the abbreviated form used
-/// in the database `region` column.
-///
-/// AlphaVantage's `SYMBOL_SEARCH` endpoint returns full region names (e.g.,
-/// `"United States"`, `"Toronto Venture"`, `"India/Bombay"`) which are too
-/// long for the `VARCHAR(10)` `region` column. This function maps the most
-/// common full names to short codes:
-///
-/// | Input                                  | Output  |
-/// |----------------------------------------|---------|
-/// | `"United States"`                       | `"USA"`   |
-/// | `"United Kingdom"`                      | `"UK"`    |
-/// | `"Toronto"`, `"Toronto Venture"`        | `"TOR"`   |
-/// | `"India"`, `"India/Bombay"`, `"Bombay"` | `"Bomb"`  |
-/// | `"Brazil"`, `"Sao Paolo"`, etc.        | `"SaoP"`  |
-/// | (many more...)                          |         |
-///
-/// Unknown regions are returned unchanged. Any result longer than 10
-/// characters is truncated with a warning so it fits the database column.
-///
-/// This function is also used by [`super::missing_symbols`] when resolving
-/// pending symbols via `SYMBOL_SEARCH`, so changes here affect both bootstrap
-/// and resolution paths.
-pub fn normalize_alpha_region(region: &str) -> String {
-  let normalized = match region {
-    "United States" => "USA",
-    "United Kingdom" => "UK",
-    "Frankfurt" => "Frank",
-    "Toronto" | "Toronto Venture" => "TOR",
-    "India/Bombay" | "India" | "Bombay" => "Bomb",
-    "Brazil/Sao Paolo" | "Brazil" | "Sao Paolo" => "SaoP",
-    "Amsterdam" => "AMS",
-    "XETRA" => "XETRA",
-    "Shanghai" => "SH",
-    "Hong Kong" => "HK",
-    "Tokyo" => "TYO",
-    "London" => "LON",
-    "Paris" => "PAR",
-    "Singapore" => "SG",
-    "Sydney" => "SYD",
-    "Mexico" => "MEX",
-    "Canada" => "CAN",
-    "Germany" => "DE",
-    "Switzerland" => "CH",
-    "Japan" => "JP",
-    "Australia" => "AU",
-    "Netherlands" => "NL",
-    _ => region,
-  };
-
-  // Ensure the result fits in VARCHAR(10)
-  if normalized.len() > 10 {
-    warn!("Region '{}' exceeds 10 characters, truncating to '{}'", normalized, &normalized[..10]);
-    normalized[..10].to_string()
-  } else {
-    normalized.to_string()
-  }
 }
 
 /// Main entry point for `av-cli load securities`.

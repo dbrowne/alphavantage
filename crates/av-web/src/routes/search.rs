@@ -6,7 +6,7 @@
 
 //! Symbol lookup route handler.
 
-use actix_web::{web, HttpResponse};
+use actix_web::{HttpResponse, web};
 use av_api::queries::{
   format_market_cap, get_crypto_overview_row, get_overview_row, get_sids, get_symbol_row,
   security_snapshot_by_sid,
@@ -93,10 +93,7 @@ pub async fn search(
   };
 
   // 4) Determine if this is a cryptocurrency.
-  let is_crypto = symbol_row
-    .as_ref()
-    .map(|s| s.sec_type == "Cryptocurrency")
-    .unwrap_or(false);
+  let is_crypto = symbol_row.as_ref().map(|s| s.sec_type == "Cryptocurrency").unwrap_or(false);
   ctx.insert("is_crypto", &is_crypto);
 
   // 5) Fetch the appropriate overview: crypto_overview_basic for crypto,
@@ -135,23 +132,12 @@ pub async fn search(
 
   // Pre-format market cap values.
   let market_cap_fmt = if is_crypto {
-    crypto_overview
-      .as_ref()
-      .and_then(|c| c.market_cap)
-      .map(format_market_cap)
-      .unwrap_or_default()
+    crypto_overview.as_ref().and_then(|c| c.market_cap).map(format_market_cap).unwrap_or_default()
   } else {
-    snapshot
-      .as_ref()
-      .and_then(|s| s.market_cap)
-      .map(format_market_cap)
-      .unwrap_or_default()
+    snapshot.as_ref().and_then(|s| s.market_cap).map(format_market_cap).unwrap_or_default()
   };
 
-  let ebitda_fmt = overview_row
-    .as_ref()
-    .map(|o| format_market_cap(o.ebitda))
-    .unwrap_or_default();
+  let ebitda_fmt = overview_row.as_ref().map(|o| format_market_cap(o.ebitda)).unwrap_or_default();
 
   ctx.insert("sid_entries", &sid_entries);
   ctx.insert("snapshot", &snapshot);

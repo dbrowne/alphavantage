@@ -122,8 +122,10 @@
 
 mod classifications;
 mod exchange;
+mod region;
 mod security_type;
 
 pub use classifications::{MarketCap, Sector, TopType};
 pub use exchange::Exchange;
+pub use region::normalize_alpha_region;
 pub use security_type::{SecurityIdentifier, SecurityType};

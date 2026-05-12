@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}Load Missing Symbol — AlphaVantage{% endblock %}
+
+{% block content %}
+<h1>Load Missing Symbol / Overview</h1>
+
+<form action="/load" method="get" class="search-form">
+  <input
+    type="text"
+    name="q"
+    value="{{ query }}"
+    placeholder="Search AlphaVantage for a ticker or company name (e.g. apple, BHP, tesla)"
+    autofocus
+    autocomplete="off"
+  >
+  <button type="submit">Search</button>
+</form>
+
+{% if api_unavailable %}
+<div class="no-results">
+  <p><strong>AlphaVantage API is not configured.</strong> Set
+  <code>ALPHA_VANTAGE_API_KEY</code> in your <code>.env</code> and restart
+  the server.</p>
+</div>
+{% endif %}
+
+{% if flashes and flashes | length > 0 %}
+<section class="detail-section flashes-ok">
+  <h2>Applied</h2>
+  <ul class="flash-list">
+    {% for f in flashes %}<li>{{ f }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if errors and errors | length > 0 %}
+<section class="detail-section flashes-err">
+  <h2>Errors</h2>
+  <ul class="flash-list">
+    {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if search_error %}
+<div class="no-results">
+  <p>Search failed: <code>{{ search_error }}</code></p>
+</div>
+{% endif %}
+
+{% if searched and not api_unavailable %}
+  {% if matches | length > 0 %}
+  <form action="/load" method="post" class="load-form">
+    <input type="hidden" name="q" value="{{ query }}">
+
+    <section class="detail-section">
+      <h2>{{ matches | length }} match{% if matches | length != 1 %}es{% endif %} for "{{ query }}"</h2>
+      <p class="hint">Tick the boxes for symbols you want to add, or for symbols whose overview you want to load. Then click <strong>Apply</strong>.</p>
+
+      <table class="data-table load-matches">
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Symbol</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Region</th>
+            <th>Match</th>
+            <th>Status</th>
+            <th>Raw</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in matches %}
+          <tr class="load-row status-{{ m.status }}">
+            <td>
+              {% if m.status == "not_in_db" %}
+                <label class="load-action">
+                  <input type="checkbox" name="add_symbol" value="{{ m.symbol }}|{{ m.stock_type }}">
+                  add
+                </label>
+              {% elif m.status == "in_db_no_overview" %}
+                <label class="load-action">
+                  <input type="checkbox" name="load_overview" value="{{ m.symbol }}|{{ m.stock_type }}">
+                  load overview
+                </label>
+              {% else %}
+                <label class="load-action load-action-reload">
+                  <input type="checkbox" name="load_overview" value="{{ m.symbol }}|{{ m.stock_type }}">
+                  reload
+                </label>
+              {% endif %}
+            </td>
+            <td><code>{{ m.symbol }}</code></td>
+            <td>{{ m.name }}</td>
+            <td>{{ m.stock_type }}</td>
+            <td>{{ m.region }}</td>
+            <td>{{ m.match_score }}</td>
+            <td>
+              {% if m.status == "not_in_db" %}
+                <span class="badge badge-status-missing">not in DB</span>
+              {% elif m.status == "in_db_no_overview" %}
+                <span class="badge badge-status-pending">no overview</span>
+                <code class="sid-inline">SID {{ m.existing_sid }}</code>
+              {% else %}
+                <span class="badge badge-status-loaded">loaded</span>
+                <code class="sid-inline">SID {{ m.existing_sid }}</code>
+              {% endif %}
+            </td>
+            <td>
+              <details class="raw-details">
+                <summary>view</summary>
+                <pre class="raw-json">{{ m.raw_json }}</pre>
+              </details>
+            </td>
+          </tr>
+          {% if raw_overviews and raw_overviews[m.symbol] %}
+          <tr class="raw-overview-row">
+            <td colspan="8">
+              <details class="raw-details" open>
+                <summary>OVERVIEW response for {{ m.symbol }}</summary>
+                <pre class="raw-json">{{ raw_overviews[m.symbol] }}</pre>
+              </details>
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="load-form-actions">
+        <button type="submit">Apply selections</button>
+        <span class="hint">Adding a symbol only inserts the symbols row; come back and tick "load overview" to populate the overview details. Already-loaded rows show "reload" — checking it re-fetches from AlphaVantage and upserts (good for stale data).</span>
+      </div>
+    </section>
+  </form>
+  {% else %}
+    {% if not search_error %}
+    <div class="no-results">
+      <p>No AlphaVantage matches for "<strong>{{ query }}</strong>"</p>
+    </div>
+    {% endif %}
+  {% endif %}
+{% endif %}
+{% endblock %}

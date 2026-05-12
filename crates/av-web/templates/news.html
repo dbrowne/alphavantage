@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}News — AlphaVantage{% endblock %}
+
+{% block content %}
+<h1>News Lookup</h1>
+
+<form action="/news" method="get" class="search-form">
+  <input
+    type="text"
+    name="q"
+    value="{{ query }}"
+    placeholder="Enter ticker symbol (e.g. AAPL, BTC) or use ?sid="
+    autofocus
+    autocomplete="off"
+  >
+  <input
+    type="number"
+    name="days"
+    value="{{ days }}"
+    min="1"
+    max="365"
+    class="days-input"
+    title="Lookback window (days)"
+  >
+  <input
+    type="number"
+    name="limit"
+    value="{{ limit }}"
+    min="1"
+    max="500"
+    class="limit-input"
+    title="Maximum articles"
+  >
+  <button type="submit">Search</button>
+</form>
+
+{% if searched %}
+
+  {# ── SID disambiguation table (multi-match tickers) ──────────────── #}
+  {% if sid_entries | length > 1 %}
+  <section class="detail-section">
+    <h2>{{ sid_entries | length }} securities match "{{ query }}"</h2>
+    <p class="hint">Click a row to view its news.</p>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>SID</th>
+          <th>Symbol</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Priority</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in sid_entries %}
+        <tr class="{% if selected_sid and entry.sid == selected_sid %}active-row{% endif %} clickable-row"
+            onclick="window.location='/news?q={{ query | urlencode }}&sid={{ entry.sid }}&days={{ days }}&limit={{ limit }}'">
+          <td><code>{{ entry.sid }}</code></td>
+          <td>{{ entry.symbol }}</td>
+          <td>{{ entry.name }}</td>
+          <td><span class="badge badge-{{ entry.sec_type | lower }}">{{ entry.sec_type }}</span></td>
+          <td>{{ entry.priority }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {# ── Snapshot summary card (compact header) ──────────────────────── #}
+  {% if snapshot %}
+  <section class="snapshot-card">
+    <div class="snapshot-header">
+      <h2>{{ snapshot.symbol }}</h2>
+      <span class="badge badge-{{ snapshot.sec_type | lower }}">{{ snapshot.sec_type }}</span>
+      {% if snapshot.exchange %}
+        <span class="badge badge-exchange">{{ snapshot.exchange }}</span>
+      {% endif %}
+      <code class="sid-label">SID: {{ snapshot.sid }}</code>
+    </div>
+    <h3>{{ snapshot.name }}</h3>
+  </section>
+  {% elif selected_sid %}
+  <section class="snapshot-card">
+    <div class="snapshot-header">
+      <h2>SID {{ selected_sid }}</h2>
+      <code class="sid-label">No symbol metadata loaded</code>
+    </div>
+  </section>
+  {% endif %}
+
+  {# ── Article list ───────────────────────────────────────────────── #}
+  {% if articles | length > 0 %}
+  <section class="detail-section">
+    <h2>Recent News <span class="count">— {{ article_count }} article{% if article_count != 1 %}s{% endif %} (last {{ days }} day{% if days != 1 %}s{% endif %})</span></h2>
+    <ul class="news-list">
+      {% for art in articles %}
+      <li class="news-article">
+        <div class="news-article-head">
+          <a href="{{ art.url }}" target="_blank" rel="noopener noreferrer" class="news-title">{{ art.title }}</a>
+          <span class="badge badge-sentiment badge-{{ art.sentiment_label | lower | replace(from=" ", to="-") }}">
+            {{ art.sentiment_label }}
+            <span class="news-score">{{ art.sentiment_score | round(method="common", precision=3) }}</span>
+          </span>
+        </div>
+
+        {% if art.summary %}
+        <p class="news-summary">{{ art.summary }}</p>
+        {% endif %}
+
+        <div class="news-meta">
+          <span class="news-meta-item news-published">{{ art.published_at }}</span>
+          {% if art.category %}
+          <span class="news-meta-item">
+            <span class="badge badge-category">{{ art.category }}</span>
+          </span>
+          {% endif %}
+          {% if art.authors | length > 0 %}
+          <span class="news-meta-item news-authors">
+            By {{ art.authors | join(sep=", ") }}
+          </span>
+          {% endif %}
+          {% if art.source_name %}
+          <span class="news-meta-item news-source">
+            {% if art.source_domain %}
+              <a href="https://{{ art.source_domain }}/" target="_blank" rel="noopener noreferrer">{{ art.source_name }}</a>
+            {% else %}
+              {{ art.source_name }}
+            {% endif %}
+          </span>
+          {% endif %}
+          {% if art.source_link %}
+          <span class="news-meta-item">
+            {% if art.source_link is starting_with("http") %}
+              <a href="{{ art.source_link }}" target="_blank" rel="noopener noreferrer">canonical link</a>
+            {% else %}
+              <a href="https://{{ art.source_link }}" target="_blank" rel="noopener noreferrer">canonical link</a>
+            {% endif %}
+          </span>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% elif selected_sid %}
+  <section class="detail-section no-overview">
+    <h2>Recent News</h2>
+    <p class="hint">No articles found for this security in the last {{ days }} day{% if days != 1 %}s{% endif %}.</p>
+  </section>
+  {% endif %}
+
+  {# ── No matches at all ──────────────────────────────────────────── #}
+  {% if not selected_sid %}
+  <div class="no-results">
+    {% if query %}
+    <p>No securities found for "<strong>{{ query }}</strong>"</p>
+    {% else %}
+    <p>Enter a ticker symbol above, or pass a direct <code>?sid=</code> in the URL.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+{% endif %}
+{% endblock %}
