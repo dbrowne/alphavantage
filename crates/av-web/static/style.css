@@ -13,6 +13,12 @@
   --purple:   #bc8cff;
   --yellow:   #e3b341;
   --radius:   8px;
+  /* Fixed height for the /movers top row. Sized to fit 3 stacked
+     months at their worst-case 6-week layout with the current
+     compact calendar cell sizing. Both the calendar and top-gainers
+     box use this value, so they're always the same height. Tweak
+     this one number to adjust both boxes together. */
+  --movers-box-height: 48rem;
 }
 
 body {
@@ -501,6 +507,55 @@ h1 {
   margin-bottom: 1.5rem;
 }
 
+/* Scroll container for the Top Gainers box — fills the gainers
+   column's leftover height so the box matches the calendar's height.
+   Vertical scroll only; horizontal overflow is hidden, so the table
+   styling below must keep content within the column width. */
+.movers-scroll-10 {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* Tighten the table inside the gainers scroll box so its 6 columns
+   fit the ~2/3-width sidebar without spilling. Smaller font + tighter
+   padding + a fixed table layout = predictable widths. The Name
+   column gets word-break so long company names wrap rather than
+   force a horizontal scrollbar. */
+.movers-scroll-10 .data-table {
+  table-layout: fixed;
+  width: 100%;
+  font-size: 0.78rem;
+}
+
+.movers-scroll-10 .data-table th,
+.movers-scroll-10 .data-table td {
+  padding: 0.35rem 0.5rem;
+}
+
+.movers-scroll-10 .data-table td:nth-child(2),
+.movers-scroll-10 .data-table th:nth-child(2) {
+  /* Name column — allow wrap, break long words if needed. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Header stays visible while the body scrolls. Sticky needs an explicit
+   background since the cells would otherwise let scrolling rows show
+   through; we already set background: var(--surface) on .data-table th
+   in the base rules, so we just need the position + a bottom shadow to
+   replace the row-border that sticky steals. */
+.movers-scroll-10 .data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
 .movers-table .num {
   text-align: right;
   font-family: "SF Mono", "Fira Code", monospace;
@@ -526,6 +581,8 @@ h1 {
   grid-template-columns: 1fr 2fr;
   gap: 1.5rem;
   margin-bottom: 1.5rem;
+  /* Each column has its own explicit fixed height (see below); no
+     grid-level stretch needed. */
   align-items: start;
 }
 
@@ -533,9 +590,31 @@ h1 {
    — the grid gap handles spacing. */
 .movers-top-row > .detail-section { margin-bottom: 0; }
 
+/* ── Fixed, identical height for both top-row boxes ──────────────
+   The calendar fits its 3 stacked months inside this height; the
+   top-gainers box uses the same height and scrolls its overflow. */
+.movers-calendar-col,
+.movers-gainers-col {
+  height: var(--movers-box-height);
+  box-sizing: border-box;
+}
+
+/* The gainers column is a flex column so the inner scroll wrapper
+   consumes whatever space remains under the section title. */
+.movers-gainers-col {
+  display: flex;
+  flex-direction: column;
+}
+
 /* The calendar column is dense; tighten its padding a touch so the
-   narrower column still feels balanced against the wider table. */
-.movers-calendar-col { padding: 1rem 1.1rem; }
+   narrower column still feels balanced against the wider table.
+   `overflow: hidden` is defensive — the box height is sized for the
+   worst case, so clipping shouldn't happen, but if it ever does
+   we'd rather clip than break out of the fixed box. */
+.movers-calendar-col {
+  padding: 1rem 1.1rem;
+  overflow: hidden;
+}
 .movers-calendar-col h2 { font-size: 1rem; }
 .movers-calendar-col .hint { font-size: 0.78rem; margin-bottom: 0.75rem; }
 

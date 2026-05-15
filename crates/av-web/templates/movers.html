@@ -70,38 +70,40 @@
   </aside>
   {% endif %}
 
-  {# Top Gainers #}
+  {# Top Gainers — capped at ~10 visible rows; scroll for the rest #}
   {% if gainers | length > 0 %}
   <section class="detail-section movers-gainers-col">
     <h2>Top Gainers <span class="count">— {{ gainers | length }}</span></h2>
-    <table class="data-table movers-table">
-      <thead>
-        <tr>
-          <th>Symbol</th>
-          <th>Name</th>
-          <th class="num">Price</th>
-          <th class="num">Δ%</th>
-          <th class="num">Δ$</th>
-          <th class="num">Volume</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in gainers %}
-        <tr>
-          <td>
-            <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
-              <code>{{ r.symbol }}</code>
-            </a>
-          </td>
-          <td>{{ r.name }}</td>
-          <td class="num">${{ r.price | round(method="common", precision=2) }}</td>
-          <td class="num mover-gain">+{{ r.change_pct | round(method="common", precision=2) }}%</td>
-          <td class="num mover-gain">+{{ r.change_val | round(method="common", precision=2) }}</td>
-          <td class="num">{{ r.volume }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="movers-scroll-10">
+      <table class="data-table movers-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Name</th>
+            <th class="num">Price</th>
+            <th class="num">Δ%</th>
+            <th class="num">Δ$</th>
+            <th class="num">Volume</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in gainers %}
+          <tr>
+            <td>
+              <a href="/news?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
+                <code>{{ r.symbol }}</code>
+              </a>
+            </td>
+            <td>{{ r.name }}</td>
+            <td class="num">${{ r.price | round(method="common", precision=2) }}</td>
+            <td class="num mover-gain">+{{ r.change_pct | round(method="common", precision=2) }}%</td>
+            <td class="num mover-gain">+{{ r.change_val | round(method="common", precision=2) }}</td>
+            <td class="num">{{ r.volume }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
   {% endif %}
 
@@ -126,7 +128,7 @@
       {% for r in losers %}
       <tr>
         <td>
-          <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
+          <a href="/news?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
             <code>{{ r.symbol }}</code>
           </a>
         </td>
@@ -161,7 +163,7 @@
       {% for r in most_active %}
       <tr>
         <td>
-          <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
+          <a href="/news?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
             <code>{{ r.symbol }}</code>
           </a>
         </td>
