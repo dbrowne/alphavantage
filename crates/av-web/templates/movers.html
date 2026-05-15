@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+
+{% block title %}Top Movers — AlphaVantage{% endblock %}
+
+{% block content %}
+<h1>Top Movers</h1>
+
+{% if selected_date %}
+<p class="hint movers-updated">
+  Viewing <code>{{ selected_date }}</code> &middot;
+  <a href="/movers">← latest batch</a>
+</p>
+{% elif last_updated %}
+<p class="hint movers-updated">Most recent batch: <code>{{ last_updated }}</code></p>
+{% endif %}
+
+{# ── Calendar of available data ───────────────────────────────── #}
+{% if calendar_months | length > 0 %}
+<section class="detail-section calendar-section">
+  <h2>
+    Calendar
+    <span class="count">— {{ available_count }} day{% if available_count != 1 %}s{% endif %} with data</span>
+  </h2>
+  <p class="hint">Click a highlighted date to load that day's top movers.</p>
+  <div class="calendar-stack">
+    {% for m in calendar_months %}
+    <div class="calendar-month">
+      <h3 class="calendar-month-title">{{ m.month_name }} {{ m.year }}</h3>
+      <table class="calendar-grid">
+        <thead>
+          <tr>
+            <th>Sun</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for week in m.weeks %}
+          <tr>
+            {% for cell in week %}
+            <td class="cal-cell
+              {% if not cell.day %}cal-blank{% endif %}
+              {% if cell.has_data %}cal-has-data{% endif %}
+              {% if cell.is_selected %}cal-selected{% endif %}
+              {% if cell.is_today %}cal-today{% endif %}">
+              {% if cell.day %}
+                {% if cell.has_data %}
+                <a href="/movers?date={{ cell.date_str }}" class="cal-link">{{ cell.day }}</a>
+                {% else %}
+                <span class="cal-num">{{ cell.day }}</span>
+                {% endif %}
+              {% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if not has_data %}
+<div class="no-results">
+  <p>No top-movers data has been loaded yet.</p>
+  <p class="hint">Run <code>av-cli load top-movers</code> to populate the <code>topstats</code> table, then refresh this page.</p>
+</div>
+{% endif %}
+
+{# ── Top Gainers ────────────────────────────────────────────────── #}
+{% if gainers | length > 0 %}
+<section class="detail-section">
+  <h2>Top Gainers <span class="count">— {{ gainers | length }}</span></h2>
+  <table class="data-table movers-table">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Name</th>
+        <th class="num">Price</th>
+        <th class="num">Δ%</th>
+        <th class="num">Δ$</th>
+        <th class="num">Volume</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in gainers %}
+      <tr>
+        <td>
+          <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
+            <code>{{ r.symbol }}</code>
+          </a>
+        </td>
+        <td>{{ r.name }}</td>
+        <td class="num">${{ r.price | round(method="common", precision=2) }}</td>
+        <td class="num mover-gain">+{{ r.change_pct | round(method="common", precision=2) }}%</td>
+        <td class="num mover-gain">+{{ r.change_val | round(method="common", precision=2) }}</td>
+        <td class="num">{{ r.volume }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# ── Top Losers ─────────────────────────────────────────────────── #}
+{% if losers | length > 0 %}
+<section class="detail-section">
+  <h2>Top Losers <span class="count">— {{ losers | length }}</span></h2>
+  <table class="data-table movers-table">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Name</th>
+        <th class="num">Price</th>
+        <th class="num">Δ%</th>
+        <th class="num">Δ$</th>
+        <th class="num">Volume</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in losers %}
+      <tr>
+        <td>
+          <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
+            <code>{{ r.symbol }}</code>
+          </a>
+        </td>
+        <td>{{ r.name }}</td>
+        <td class="num">${{ r.price | round(method="common", precision=2) }}</td>
+        <td class="num mover-loss">{{ r.change_pct | round(method="common", precision=2) }}%</td>
+        <td class="num mover-loss">{{ r.change_val | round(method="common", precision=2) }}</td>
+        <td class="num">{{ r.volume }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# ── Most Active ────────────────────────────────────────────────── #}
+{% if most_active | length > 0 %}
+<section class="detail-section">
+  <h2>Most Active <span class="count">— {{ most_active | length }}</span></h2>
+  <table class="data-table movers-table">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Name</th>
+        <th class="num">Price</th>
+        <th class="num">Δ%</th>
+        <th class="num">Δ$</th>
+        <th class="num">Volume</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in most_active %}
+      <tr>
+        <td>
+          <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
+            <code>{{ r.symbol }}</code>
+          </a>
+        </td>
+        <td>{{ r.name }}</td>
+        <td class="num">${{ r.price | round(method="common", precision=2) }}</td>
+        <td class="num {% if r.change_pct >= 0 %}mover-gain{% else %}mover-loss{% endif %}">
+          {% if r.change_pct >= 0 %}+{% endif %}{{ r.change_pct | round(method="common", precision=2) }}%
+        </td>
+        <td class="num {% if r.change_val >= 0 %}mover-gain{% else %}mover-loss{% endif %}">
+          {% if r.change_val >= 0 %}+{% endif %}{{ r.change_val | round(method="common", precision=2) }}
+        </td>
+        <td class="num">{{ r.volume }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

@@ -496,6 +496,115 @@ h1 {
 .flash-list { padding-left: 1.25rem; }
 .flash-list li { color: var(--muted); padding: 0.15rem 0; }
 
+/* ── Top movers page ──────────────────────────────────────── */
+.movers-updated {
+  margin-bottom: 1.5rem;
+}
+
+.movers-table .num {
+  text-align: right;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.movers-table th.num { text-align: right; }
+
+.mover-gain { color: var(--green); }
+.mover-loss { color: var(--red); }
+
+.mover-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.mover-link:hover { text-decoration: underline; }
+.mover-link code { color: inherit; font-weight: 600; }
+
+/* ── Calendar ─────────────────────────────────────────────── */
+.calendar-section .hint { margin-bottom: 1rem; }
+
+.calendar-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.calendar-month-title {
+  font-size: 0.95rem;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.calendar-grid {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 2px;
+  table-layout: fixed;
+}
+
+.calendar-grid th {
+  padding: 0.35rem 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  text-align: center;
+}
+
+.calendar-grid td.cal-cell {
+  height: 2.2rem;
+  text-align: center;
+  vertical-align: middle;
+  font-size: 0.85rem;
+  background: #00000020;
+  border-radius: 4px;
+  color: var(--muted);
+  border-bottom: none;
+  padding: 0;
+}
+
+/* Override .data-table hover style inherited from base table rules — the
+   calendar isn't a data table. */
+.calendar-grid tbody tr:hover { background: transparent; }
+
+.cal-blank { background: transparent !important; }
+
+.cal-has-data {
+  background: #1f6feb22;
+  color: var(--fg);
+}
+
+.cal-link {
+  display: block;
+  width: 100%;
+  height: 100%;
+  line-height: 2.2rem;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  border-radius: 4px;
+}
+.cal-link:hover { background: var(--accent); color: #fff; }
+
+.cal-num {
+  display: block;
+  line-height: 2.2rem;
+}
+
+.cal-selected {
+  background: var(--accent) !important;
+  outline: 2px solid var(--accent);
+}
+.cal-selected .cal-link { color: #fff; }
+
+.cal-today:not(.cal-selected) {
+  outline: 1px dashed var(--accent);
+  outline-offset: -2px;
+}
+
 /* ── Footer ───────────────────────────────────────────────── */
 .footer {
   text-align: center;

@@ -687,6 +687,201 @@ pub async fn news_by_sid_recent(
   Ok(result)
 }
 
+// ─── Top movers (gainers / losers / most active) ─────────────────────────
+
+/// A single row from the `topstats` hypertable, joined with `symbols` to
+/// pick up the human-readable name and security type.
+///
+/// Returned by [`top_movers_by_type`]. Three buckets exist via
+/// `event_type`: `"gainers"`, `"losers"`, `"most_active"`. Each `topstats`
+/// load batch shares a single `date`; the query below scopes to the most
+/// recent batch per event_type so the result is a coherent snapshot rather
+/// than a mix across loads.
+///
+/// # Fields
+///
+/// | Field         | Source     | Description                              |
+/// |---------------|-----------|------------------------------------------|
+/// | `date`        | `topstats` | Timestamp of the batch this row came from|
+/// | `event_type`  | `topstats` | `"gainers"` / `"losers"` / `"most_active"`|
+/// | `sid`         | `topstats` | Bitmap-encoded security ID                |
+/// | `symbol`      | `topstats` | Ticker (denormalised on the topstats row) |
+/// | `name`        | `symbols`  | Display name (empty if no symbols row)    |
+/// | `sec_type`    | `symbols`  | Security type (empty if no symbols row)   |
+/// | `price`       | `topstats` | Most recent price at batch time           |
+/// | `change_val`  | `topstats` | Absolute price change (USD)               |
+/// | `change_pct`  | `topstats` | Percent change                            |
+/// | `volume`      | `topstats` | Trading volume                            |
+#[derive(Debug, Clone, QueryableByName, Serialize, Deserialize)]
+pub struct TopMoverRow {
+  #[diesel(sql_type = Timestamptz)]
+  pub date: chrono::DateTime<chrono::Utc>,
+
+  #[diesel(sql_type = Text)]
+  pub event_type: String,
+
+  #[diesel(sql_type = BigInt)]
+  pub sid: i64,
+
+  #[diesel(sql_type = Text)]
+  pub symbol: String,
+
+  #[diesel(sql_type = Text)]
+  pub name: String,
+
+  #[diesel(sql_type = Text)]
+  pub sec_type: String,
+
+  #[diesel(sql_type = Float4)]
+  pub price: f32,
+
+  #[diesel(sql_type = Float4)]
+  pub change_val: f32,
+
+  #[diesel(sql_type = Float4)]
+  pub change_pct: f32,
+
+  #[diesel(sql_type = BigInt)]
+  pub volume: i64,
+}
+
+/// Fetches the most-recent batch of top movers for a given event type
+/// (`"gainers"`, `"losers"`, `"most_active"`). Up to `limit` rows.
+///
+/// Scoping by `date = (SELECT MAX(date) FROM topstats WHERE event_type=$1)`
+/// gives a coherent snapshot — multiple loads in a 24h window would
+/// otherwise produce a mix of rows from different points in time.
+///
+/// Ordering depends on event_type:
+/// - `"gainers"`     → `change_pct DESC` (biggest gain first)
+/// - `"losers"`      → `change_pct ASC`  (biggest loss first; values are negative)
+/// - `"most_active"` → `volume DESC`     (highest volume first)
+///
+/// The ORDER BY string is selected from a hard-coded match (no string
+/// concatenation from user input) so this is SQL-injection-safe even
+/// though it interpolates into the query text.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # async fn run(db: &av_database_postgres::DatabaseContext) -> av_api::error::Result<()> {
+/// use av_api::queries::top_movers_by_type;
+///
+/// let gainers = top_movers_by_type(db, "gainers", 20).await?;
+/// for r in &gainers {
+///     println!("{} ({}) {:+.2}%", r.symbol, r.name, r.change_pct);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub async fn top_movers_by_type(
+  db: &DatabaseContext,
+  event_type: &str,
+  limit: i64,
+  on_date: Option<NaiveDate>,
+) -> Result<Vec<TopMoverRow>> {
+  // Hard-coded ORDER BY clauses; never interpolate user input here.
+  let order_by = match event_type {
+    "losers" => "t.change_pct ASC",
+    "most_active" => "t.volume DESC",
+    _ => "t.change_pct DESC",
+  };
+  let event_type = event_type.to_string();
+
+  let result = db
+    .run(move |conn| match on_date {
+      Some(d) => {
+        let sql = format!(
+          r#"
+          SELECT
+              t.date,
+              t.event_type,
+              t.sid,
+              t.symbol,
+              COALESCE(s.name, '')     AS name,
+              COALESCE(s.sec_type, '') AS sec_type,
+              t.price,
+              t.change_val,
+              t.change_pct,
+              t.volume
+          FROM topstats t
+          LEFT JOIN symbols s ON s.sid = t.sid
+          WHERE t.event_type = $1
+            AND (t.date AT TIME ZONE 'UTC')::date = $2
+          ORDER BY {order_by}
+          LIMIT $3
+          "#
+        );
+        diesel::sql_query(sql)
+          .bind::<Text, _>(&event_type)
+          .bind::<Date, _>(d)
+          .bind::<BigInt, _>(limit)
+          .load::<TopMoverRow>(conn)
+          .map_err(Into::into)
+      }
+      None => {
+        let sql = format!(
+          r#"
+          SELECT
+              t.date,
+              t.event_type,
+              t.sid,
+              t.symbol,
+              COALESCE(s.name, '')     AS name,
+              COALESCE(s.sec_type, '') AS sec_type,
+              t.price,
+              t.change_val,
+              t.change_pct,
+              t.volume
+          FROM topstats t
+          LEFT JOIN symbols s ON s.sid = t.sid
+          WHERE t.event_type = $1
+            AND t.date = (
+                SELECT MAX(date) FROM topstats WHERE event_type = $1
+            )
+          ORDER BY {order_by}
+          LIMIT $2
+          "#
+        );
+        diesel::sql_query(sql)
+          .bind::<Text, _>(&event_type)
+          .bind::<BigInt, _>(limit)
+          .load::<TopMoverRow>(conn)
+          .map_err(Into::into)
+      }
+    })
+    .await?;
+  Ok(result)
+}
+
+/// Returns every distinct calendar date (UTC) on which `topstats` has data,
+/// most-recent first. Capped at 200 entries to bound the response.
+///
+/// Used by the /movers calendar to highlight days with available top-movers.
+pub async fn top_movers_available_dates(db: &DatabaseContext) -> Result<Vec<NaiveDate>> {
+  #[derive(QueryableByName)]
+  struct DateRow {
+    #[diesel(sql_type = Date)]
+    d: NaiveDate,
+  }
+
+  let rows = db
+    .run(move |conn| {
+      diesel::sql_query(
+        r#"
+        SELECT DISTINCT (date AT TIME ZONE 'UTC')::date AS d
+        FROM topstats
+        ORDER BY d DESC
+        LIMIT 200
+        "#,
+      )
+      .load::<DateRow>(conn)
+      .map_err(Into::into)
+    })
+    .await?;
+  Ok(rows.into_iter().map(|r| r.d).collect())
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
