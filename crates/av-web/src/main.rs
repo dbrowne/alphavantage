@@ -101,6 +101,7 @@ async fn main() -> std::io::Result<()> {
       .route("/load", web::get().to(routes::load::load))
       .route("/load", web::post().to(routes::load::apply))
       .route("/movers", web::get().to(routes::movers::movers))
+      .route("/sources", web::get().to(routes::sources::sources))
   })
   .bind(("0.0.0.0", port))?
   .run()

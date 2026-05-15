@@ -10,3 +10,4 @@ pub mod load;
 pub mod movers;
 pub mod news;
 pub mod search;
+pub mod sources;

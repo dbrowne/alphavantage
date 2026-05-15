@@ -716,6 +716,29 @@ h1 {
   outline-offset: -2px;
 }
 
+/* ── Sources page ─────────────────────────────────────────── */
+.sources-table .num {
+  text-align: right;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-variant-numeric: tabular-nums;
+  width: 4rem;
+}
+.sources-table th.num { text-align: right; }
+
+.source-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.9rem;
+}
+.source-link:hover { text-decoration: underline; }
+
+.source-last {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+
 /* ── Footer ───────────────────────────────────────────────── */
 .footer {
   text-align: center;

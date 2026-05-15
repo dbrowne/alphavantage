@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}News Sources — AlphaVantage{% endblock %}
+
+{% block content %}
+<h1>Top News Sources</h1>
+
+{% if sources_count > 0 %}
+<p class="hint">
+  {{ sources_count }} publisher{% if sources_count != 1 %}s{% endif %} ranked by total
+  articles ingested. Click a domain to open the publisher's site in a new tab.
+</p>
+
+<section class="detail-section">
+  <table class="data-table sources-table">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>Source</th>
+        <th>Domain</th>
+        <th class="num">Articles</th>
+        <th>Last article</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sources %}
+      <tr>
+        <td class="num"><code>{{ loop.index }}</code></td>
+        <td>{{ s.source_name }}</td>
+        <td>
+          {% if s.domain %}
+          <a href="https://{{ s.domain }}/" target="_blank" rel="noopener noreferrer" class="source-link">
+            {{ s.domain }}
+          </a>
+          {% else %}
+          <span class="hint">—</span>
+          {% endif %}
+        </td>
+        <td class="num">{{ s.article_count }}</td>
+        <td class="source-last">{{ s.last_article }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<div class="no-results">
+  <p>No news sources in the database.</p>
+  <p class="hint">Load news with <code>av-cli load news</code> to populate the <code>sources</code> table.</p>
+</div>
+{% endif %}
+{% endblock %}

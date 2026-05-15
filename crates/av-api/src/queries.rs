@@ -13,7 +13,9 @@ use crate::error::Result;
 use av_database_postgres::DatabaseContext;
 use chrono::NaiveDate;
 use diesel::prelude::*;
-use diesel::sql_types::{Array, BigInt, Date, Float4, Nullable, Text, Timestamp, Timestamptz};
+use diesel::sql_types::{
+  Array, BigInt, Date, Float4, Integer, Nullable, Text, Timestamp, Timestamptz,
+};
 use serde::{Deserialize, Serialize};
 
 /// A point-in-time snapshot of a security: identity, description, and
@@ -880,6 +882,87 @@ pub async fn top_movers_available_dates(db: &DatabaseContext) -> Result<Vec<Naiv
     })
     .await?;
   Ok(rows.into_iter().map(|r| r.d).collect())
+}
+
+// ─── News sources ─────────────────────────────────────────────────────────
+
+/// One row from the `sources` table joined with `articles`, with a
+/// pre-computed article count and most-recent article timestamp.
+/// Returned by [`top_news_sources`].
+///
+/// # Fields
+///
+/// | Field           | Source     | Description                                |
+/// |-----------------|-----------|--------------------------------------------|
+/// | `id`            | `sources`  | Source PK (FK target for `articles.sourceid`)|
+/// | `source_name`   | `sources`  | Publisher name (e.g. `"Reuters"`)          |
+/// | `domain`        | `sources`  | Publisher domain (e.g. `"reuters.com"`)    |
+/// | `article_count` | `articles` | Distinct articles ingested for this source |
+/// | `last_article`  | `articles` | Most recent `articles.ct` for this source  |
+#[derive(Debug, Clone, QueryableByName, Serialize, Deserialize)]
+pub struct NewsSourceRow {
+  #[diesel(sql_type = Integer)]
+  pub id: i32,
+
+  #[diesel(sql_type = Text)]
+  pub source_name: String,
+
+  #[diesel(sql_type = Text)]
+  pub domain: String,
+
+  #[diesel(sql_type = BigInt)]
+  pub article_count: i64,
+
+  #[diesel(sql_type = Timestamp)]
+  pub last_article: chrono::NaiveDateTime,
+}
+
+/// Returns up to `limit` news sources ordered by total article count
+/// (most prolific publishers first), with ties broken by source name.
+///
+/// Uses an `INNER JOIN articles` so sources with zero ingested articles
+/// are excluded automatically — the page is meant to show "top news
+/// sources", not the entire `sources` table.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # async fn run(db: &av_database_postgres::DatabaseContext) -> av_api::error::Result<()> {
+/// use av_api::queries::top_news_sources;
+///
+/// for s in top_news_sources(db, 50).await? {
+///     println!("{:4} {:20} {}", s.article_count, s.source_name, s.domain);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub async fn top_news_sources(
+  db: &DatabaseContext,
+  limit: i64,
+) -> Result<Vec<NewsSourceRow>> {
+  let result = db
+    .run(move |conn| {
+      diesel::sql_query(
+        r#"
+        SELECT
+            s.id,
+            s.source_name,
+            s.domain,
+            COUNT(a.hashid)::BIGINT AS article_count,
+            MAX(a.ct)               AS last_article
+        FROM sources s
+        JOIN articles a ON a.sourceid = s.id
+        GROUP BY s.id, s.source_name, s.domain
+        ORDER BY article_count DESC, s.source_name ASC
+        LIMIT $1
+        "#,
+      )
+      .bind::<BigInt, _>(limit)
+      .load::<NewsSourceRow>(conn)
+      .map_err(Into::into)
+    })
+    .await?;
+  Ok(result)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
