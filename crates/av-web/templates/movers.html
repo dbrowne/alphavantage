@@ -14,52 +14,6 @@
 <p class="hint movers-updated">Most recent batch: <code>{{ last_updated }}</code></p>
 {% endif %}
 
-{# ── Calendar of available data ───────────────────────────────── #}
-{% if calendar_months | length > 0 %}
-<section class="detail-section calendar-section">
-  <h2>
-    Calendar
-    <span class="count">— {{ available_count }} day{% if available_count != 1 %}s{% endif %} with data</span>
-  </h2>
-  <p class="hint">Click a highlighted date to load that day's top movers.</p>
-  <div class="calendar-stack">
-    {% for m in calendar_months %}
-    <div class="calendar-month">
-      <h3 class="calendar-month-title">{{ m.month_name }} {{ m.year }}</h3>
-      <table class="calendar-grid">
-        <thead>
-          <tr>
-            <th>Sun</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for week in m.weeks %}
-          <tr>
-            {% for cell in week %}
-            <td class="cal-cell
-              {% if not cell.day %}cal-blank{% endif %}
-              {% if cell.has_data %}cal-has-data{% endif %}
-              {% if cell.is_selected %}cal-selected{% endif %}
-              {% if cell.is_today %}cal-today{% endif %}">
-              {% if cell.day %}
-                {% if cell.has_data %}
-                <a href="/movers?date={{ cell.date_str }}" class="cal-link">{{ cell.day }}</a>
-                {% else %}
-                <span class="cal-num">{{ cell.day }}</span>
-                {% endif %}
-              {% endif %}
-            </td>
-            {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
 {% if not has_data %}
 <div class="no-results">
   <p>No top-movers data has been loaded yet.</p>
@@ -67,40 +21,91 @@
 </div>
 {% endif %}
 
-{# ── Top Gainers ────────────────────────────────────────────────── #}
-{% if gainers | length > 0 %}
-<section class="detail-section">
-  <h2>Top Gainers <span class="count">— {{ gainers | length }}</span></h2>
-  <table class="data-table movers-table">
-    <thead>
-      <tr>
-        <th>Symbol</th>
-        <th>Name</th>
-        <th class="num">Price</th>
-        <th class="num">Δ%</th>
-        <th class="num">Δ$</th>
-        <th class="num">Volume</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in gainers %}
-      <tr>
-        <td>
-          <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
-            <code>{{ r.symbol }}</code>
-          </a>
-        </td>
-        <td>{{ r.name }}</td>
-        <td class="num">${{ r.price | round(method="common", precision=2) }}</td>
-        <td class="num mover-gain">+{{ r.change_pct | round(method="common", precision=2) }}%</td>
-        <td class="num mover-gain">+{{ r.change_val | round(method="common", precision=2) }}</td>
-        <td class="num">{{ r.volume }}</td>
-      </tr>
+{# ── Calendar (left, 1/3) + Top Gainers (right, 2/3) ───────────── #}
+<div class="movers-top-row">
+
+  {# Calendar #}
+  {% if calendar_months | length > 0 %}
+  <aside class="detail-section calendar-section movers-calendar-col">
+    <h2>
+      Calendar
+      <span class="count">— {{ available_count }} day{% if available_count != 1 %}s{% endif %} with data</span>
+    </h2>
+    <p class="hint">Click a highlighted date to load that day's top movers.</p>
+    <div class="calendar-stack">
+      {% for m in calendar_months %}
+      <div class="calendar-month">
+        <h3 class="calendar-month-title">{{ m.month_name }} {{ m.year }}</h3>
+        <table class="calendar-grid">
+          <thead>
+            <tr>
+              <th>Su</th><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for week in m.weeks %}
+            <tr>
+              {% for cell in week %}
+              <td class="cal-cell
+                {% if not cell.day %}cal-blank{% endif %}
+                {% if cell.has_data %}cal-has-data{% endif %}
+                {% if cell.is_selected %}cal-selected{% endif %}
+                {% if cell.is_today %}cal-today{% endif %}">
+                {% if cell.day %}
+                  {% if cell.has_data %}
+                  <a href="/movers?date={{ cell.date_str }}" class="cal-link">{{ cell.day }}</a>
+                  {% else %}
+                  <span class="cal-num">{{ cell.day }}</span>
+                  {% endif %}
+                {% endif %}
+              </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
       {% endfor %}
-    </tbody>
-  </table>
-</section>
-{% endif %}
+    </div>
+  </aside>
+  {% endif %}
+
+  {# Top Gainers #}
+  {% if gainers | length > 0 %}
+  <section class="detail-section movers-gainers-col">
+    <h2>Top Gainers <span class="count">— {{ gainers | length }}</span></h2>
+    <table class="data-table movers-table">
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Name</th>
+          <th class="num">Price</th>
+          <th class="num">Δ%</th>
+          <th class="num">Δ$</th>
+          <th class="num">Volume</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in gainers %}
+        <tr>
+          <td>
+            <a href="/search?q={{ r.symbol | urlencode }}&sid={{ r.sid }}" class="mover-link">
+              <code>{{ r.symbol }}</code>
+            </a>
+          </td>
+          <td>{{ r.name }}</td>
+          <td class="num">${{ r.price | round(method="common", precision=2) }}</td>
+          <td class="num mover-gain">+{{ r.change_pct | round(method="common", precision=2) }}%</td>
+          <td class="num mover-gain">+{{ r.change_val | round(method="common", precision=2) }}</td>
+          <td class="num">{{ r.volume }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+</div>
 
 {# ── Top Losers ─────────────────────────────────────────────────── #}
 {% if losers | length > 0 %}
